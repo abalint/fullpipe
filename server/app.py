@@ -12,6 +12,7 @@ import argparse
 import shutil
 import subprocess
 import sys
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -98,6 +99,7 @@ def create_app(cfg, start_worker=True):
                 "tags": verdict["tags"] if verdict else []}
 
     durations = {}  # episode_id → seconds; staged artifacts never change in place
+    comps = {}  # episode_id → token_comprehensibility; same never-changes contract
     freq_cache = {}  # lemma → corpus rank, for /transcript highlight tiers
 
     def _duration(episode_id):
@@ -128,18 +130,36 @@ def create_app(cfg, start_worker=True):
             durations[episode_id] = dur
         return dur
 
+    def _comprehensibility(episode_id):
+        """Coverage's token_comprehensibility (0..1) so the queue can show and
+        sort by difficulty. None until Stage 1 has written coverage.json;
+        misses are not cached so the value appears once the artifact does."""
+        if episode_id in comps:
+            return comps[episode_id]
+        try:
+            val = load_coverage(cfg, episode_id).get("stats", {}).get(
+                "token_comprehensibility")
+        except FileNotFoundError:
+            return None
+        if val is not None:
+            comps[episode_id] = val
+        return val
+
+    def _annotate(job, verdict):
+        return {**job, **_taste(verdict),
+                "duration": _duration(job["episode_id"]),
+                "comprehensibility": _comprehensibility(job["episode_id"])}
+
     @app.get("/jobs", dependencies=[Depends(auth)])
     def get_jobs():
         verdicts = _verdicts()
-        return [{**j, **_taste(verdicts.get(j["episode_id"])),
-                 "duration": _duration(j["episode_id"])}
+        return [_annotate(j, verdicts.get(j["episode_id"]))
                 for j in q.list_jobs(queue_conn())]
 
     @app.get("/jobs/{id_}", dependencies=[Depends(auth)])
     def get_job(id_: str):
         job = get_job_or_404(id_)
-        return {**job, **_taste(lc.query_enjoyment(ledger_conn(), job["episode_id"])),
-                "duration": _duration(job["episode_id"])}
+        return _annotate(job, lc.query_enjoyment(ledger_conn(), job["episode_id"]))
 
     @app.post("/jobs/{id_}/curate", dependencies=[Depends(auth)])
     def post_curate(id_: str):
@@ -165,6 +185,9 @@ def create_app(cfg, start_worker=True):
         if job["state"] in q.STAGE1_STATES:
             raise HTTPException(
                 409, f"job is {job['state']} — let Stage 1 finish or fail first")
+        if job["state"] == "pushing":
+            raise HTTPException(
+                409, "cards are being pushed to Anki — wait for the close-out to finish")
         ep = job["episode_id"]
         files_removed = 0
         d = episode_dir(cfg, ep)
@@ -180,6 +203,7 @@ def create_app(cfg, start_worker=True):
         ledger = lc.purge_episode(ledger_conn(), ep)
         q.delete_job(queue_conn(), job["id"])
         durations.pop(ep, None)
+        comps.pop(ep, None)
         return {"deleted": job["id"], "episode_id": ep,
                 "files_removed": files_removed, "ledger": ledger}
 
@@ -310,21 +334,73 @@ def create_app(cfg, start_worker=True):
             _mark_job(episode_id, "reconciled")
         return result
 
+    def _close_out(episode_id, picks):
+        """The slow tail of mark-watched, off the request thread: cut clips +
+        push cards (an ffmpeg encode and several AnkiConnect round-trips per
+        card), poll lapses (grows with the collection), promote. Progress
+        lands on the queue row; the terminal state is `watched`, carrying the
+        push error if there was one (the phone offers retry — a re-POST of
+        /watched is safe, AnkiConnect skips duplicates)."""
+        qconn = q.open_queue(queue_db_path(cfg))  # own handles: thread-bound
+        lconn = lc.open_db(cfg["ledger_db"])
+        job = q.get_job(qconn, episode_id)
+
+        def progress(msg):
+            if job:
+                q.set_progress(qconn, job["id"], msg)
+
+        error = None
+        if picks:
+            try:
+                from tools.deck import push_cards
+                push_cards(cfg, episode_id, picks, conn=lconn,
+                           log=lambda m: None, on_progress=progress)
+            except Exception as e:
+                # watched still stands; the queue row surfaces this for retry
+                error = f"cards failed: {str(e)[:300]}"
+        progress("polling Anki for lapses…")
+        try:
+            from functools import partial
+            from ledger.anki_known import anki_request
+            url = cfg.get("anki_connect_url", "http://localhost:8765")
+            lc.poll_lapses(lconn, partial(anki_request, url=url))
+        except Exception:
+            pass  # best-effort, as before: the next close-out catches up
+        try:
+            lc.promote(lconn)
+        except Exception as e:
+            error = error or f"promote failed: {str(e)[:200]}"
+        if job:
+            q.set_state(qconn, job["id"], "watched",
+                        episode_id=job["episode_id"], title=job.get("title"),
+                        error=error)
+
+    closeouts = {}  # episode_id → Thread; lets tests (and debuggers) join
+    app.state.closeouts = closeouts
+
     @app.post("/watched/{episode_id}", dependencies=[Depends(auth)])
     def post_watched(episode_id: str, body: dict | None = None):
-        """Post-watch close-out: activate exposures AND push the selected
-        cards to Anki. Re-POST retries a failed push (duplicates are skipped
-        by AnkiConnect, so it's safe). Body {"cards": false} is the
-        disliked-it branch: exposures still activate (you did watch it), but
-        nothing lands in the deck."""
+        """Post-watch close-out: activate exposures now, then hand the slow
+        tail (clip cutting, Anki push, lapse poll) to a background thread so
+        the phone gets its answer immediately. The queue row narrates the
+        tail (state `pushing`, progress "card 3/12") and flips to `watched`
+        when done — a push failure lands on the row's error, and a re-POST
+        retries it (duplicates are skipped by AnkiConnect, so it's safe).
+        Body {"cards": false} is the disliked-it branch: exposures still
+        activate (you did watch it), but nothing lands in the deck."""
+        qconn = queue_conn()
+        job = q.get_job(qconn, episode_id)
+        if job and job["state"] == "pushing":
+            raise HTTPException(409, "close-out already running for this episode")
         conn = ledger_conn()
         try:
             result = lc.mark_watched(conn, episode_id)
         except KeyError as e:
             raise HTTPException(404, str(e))
 
+        picks = None
         if not (body or {}).get("cards", True):
-            result["cards"] = {"pushed": 0, "note": "declined — cards skipped"}
+            result["cards"] = {"queued": 0, "note": "declined — cards skipped"}
         else:
             # cards: feedback-selected picks; fall back to curated picks capped
             # at the daily limit (pool order = curate's preference order)
@@ -334,26 +410,18 @@ def create_app(cfg, start_worker=True):
             picks = read_json(picks_path) if picks_path.exists() else None
             if picks is None and (ep_dir / "picks.json").exists():
                 picks = read_json(ep_dir / "picks.json")[:cap]
-            if picks:
-                try:
-                    from tools.deck import push_cards
-                    result["cards"] = push_cards(cfg, episode_id, picks, conn=conn,
-                                                 log=lambda m: None)
-                except Exception as e:
-                    # watched still stands; the app surfaces this and offers retry
-                    result["cards"] = {"pushed": 0, "error": str(e)[:300]}
-            else:
-                result["cards"] = {"pushed": 0, "note": "no picks staged"}
+            result["cards"] = ({"queued": len(picks)} if picks
+                               else {"queued": 0, "note": "no picks staged"})
 
-        try:
-            from functools import partial
-            from ledger.anki_known import anki_request
-            url = cfg.get("anki_connect_url", "http://localhost:8765")
-            result["lapse_poll"] = lc.poll_lapses(conn, partial(anki_request, url=url))
-        except Exception as e:
-            result["lapse_poll"] = {"skipped": str(e)[:120]}
-        result["promote"] = lc.promote(conn)
-        _mark_job(episode_id, "watched")
+        if job:
+            q.set_state(qconn, job["id"], "pushing",
+                        episode_id=job["episode_id"], title=job.get("title"),
+                        progress_msg=(f"pushing {len(picks)} cards…" if picks
+                                      else "closing out…"))
+        t = threading.Thread(target=_close_out, args=(episode_id, picks),
+                             name=f"closeout-{episode_id}", daemon=True)
+        closeouts[episode_id] = t
+        t.start()
         return result
 
     @app.post("/episodes/{episode_id}/rating", dependencies=[Depends(auth)])

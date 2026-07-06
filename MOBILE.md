@@ -96,7 +96,8 @@ download/ASR/tokenize it used to do up front is exactly the batch that already r
 | `curating` | 2 | curate step | — |
 | `staged` | 2 done | curate step | **pull prep-doc** (tiny, fast); review + tap |
 | `reconciled` | — | `POST /taps` (pre-watch feedback) | ready to watch; cards selected |
-| `watched` | — | `POST /watched` | terminal: cards pushed to Anki (skipped for the disliked-it branch, body `{cards:false}`); **delete local files** |
+| `pushing` | — | `POST /watched` | close-out running in the background (clips + Anki push + lapse poll); `progress_msg` narrates it ("pushing card 3/12"); delete is refused |
+| `watched` | — | close-out thread | terminal: cards pushed to Anki (skipped for the disliked-it branch, body `{cards:false}`); a failed push lands on the row's `error` — re-POST `/watched` retries; **delete local files** |
 | `failed` | any | worker | surface error + retry action |
 
 *(Revised 2026-07-05: taps are pre-watch feedback — known-taps correct the
@@ -166,7 +167,7 @@ Thin HTTP over `ledgerctl` verbs + the queue. (Verbs: `materialize-known`, `comp
 | endpoint | maps to | notes |
 |---|---|---|
 | `POST /jobs` | enqueue | `{source: url\|file\|topic}` → `episode_id`; idempotent |
-| `GET /jobs` · `GET /jobs/{id}` | queue read | lifecycle state + progress |
+| `GET /jobs` · `GET /jobs/{id}` | queue read | lifecycle state + progress; annotated with `duration` (seconds) and `comprehensibility` (coverage's token_comprehensibility, 0..1) for the queue's sort/display |
 | `POST /jobs/{id}/curate` | launch Stage 2 | kicks the live `/immerse` curate over one/many `prepared` jobs |
 | `GET /video/{id}` | staged file | **resumable** (HTTP range) — available at `prepared` |
 | `GET /video/{id}/subs` | staged file | subtitle sidecar |
@@ -174,7 +175,7 @@ Thin HTTP over `ledgerctl` verbs + the queue. (Verbs: `materialize-known`, `comp
 | `GET /transcript/{id}` | staged coverage | **every** sentence w/ start/end + tokens (prep ships only the i+1 subset) — drives the in-app player's tap-able subtitle overlay; available at `prepared` |
 | `GET /definitions/{id}` | jmdict.db | JMdict entries for every content lemma in the episode (the player's any-word popup); keyed by the Sudachi lemma already on each token, so no client deinflection. `{}` until `tools.jmdict build` has run |
 | `POST /taps` | `apply-taps` + `tools.select` | `{episode_id, batch_id, taps:[[lemma,"k"\|"h"],…]}`; pre-watch feedback: "k"→ledger, "h"→card priority; runs final card selection; does NOT imply watched |
-| `POST /watched/{id}` | `mark-watched` + `tools.deck` | post-watch close-out: activates exposures, **pushes the selected cards to Anki**, lapse-polls; re-POST retries a failed push. Body `{cards: false}` = watched-but-disliked: exposures still activate, no cards pushed |
+| `POST /watched/{id}` | `mark-watched` + `tools.deck` | post-watch close-out: activates exposures immediately, then **pushes the selected cards to Anki in a background thread** (responds with `{cards: {queued: N}}`; the job row narrates progress via state `pushing` and flips to `watched`, carrying any push error); re-POST retries a failed push. Body `{cards: false}` = watched-but-disliked: exposures still activate, no cards pushed |
 | `POST /episodes/{id}/rating` | `record-rating` | `{rating: 1-5\|null, tags:[…]}` star rating + optional taste tags, appended to the append-only `taste_events` log (DESIGN.md — Taste metadata); tags ∈ `already_knew·over_my_head·didnt_grab·format_miss·fascinating·loved_format`; re-POST appends a new review (on-read verdict takes the latest), null rating clears; ratings ride back on `GET /jobs`. Ratable pre-watch; a rated-but-unwatched episode keeps its rating through `DELETE /jobs/{id}` (rating-only ledger tombstone) |
 | `GET /coverage` | `query` | coverage %, trends, `needs_review` queue, mining candidates |
 | `GET /health` | — | liveness for the client's reachability check |

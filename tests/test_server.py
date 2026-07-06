@@ -68,11 +68,20 @@ class ServerTestBase(unittest.TestCase):
             "anki_connect_url": "http://localhost:1",  # nothing listens — poll must degrade
             "server": {"token": "sekrit"},
         }
-        self.client = TestClient(create_app(self.cfg, start_worker=False))
+        self.app = create_app(self.cfg, start_worker=False)
+        self.client = TestClient(self.app)
         self.auth = {"Authorization": "Bearer sekrit"}
 
     def tearDown(self):
+        self.join_closeout()  # never let a close-out outlive its temp dir
         self.tmp.cleanup()
+
+    def join_closeout(self, episode_id=EP):
+        """POST /watched hands the card push to a background thread — wait
+        for it so assertions see the terminal state."""
+        t = self.app.state.closeouts.get(episode_id)
+        if t:
+            t.join(timeout=30)
 
     def stage_episode(self, with_curate=False):
         ep_dir = episode_dir(self.cfg, EP, create=True)
@@ -305,13 +314,19 @@ class TestRoutes(ServerTestBase):
         final = json.loads((ep_dir / "final_picks.json").read_text(encoding="utf-8"))
         self.assertEqual([p["lemma"] for p in final], ["犬"])
 
-        # mark watched: exposures activate; card push attempted (Anki is down
-        # here — watched must still stand and the error must surface)
+        # mark watched: the response returns immediately (exposures active,
+        # push queued); the push itself runs in the background and — Anki is
+        # down here — its error must land on the queue row for retry
+        qconn, _ = self._enqueue_at("reconciled")
         r = self.client.post(f"/watched/{EP}", headers=self.auth)
         body = r.json()
         self.assertTrue(body["watched"])
-        self.assertEqual(body["cards"]["pushed"], 0)
-        self.assertIn("error", body["cards"])
+        self.assertEqual(body["cards"]["queued"], 1)
+        self.assertIn(q.get_job(qconn, EP)["state"], ("pushing", "watched"))
+        self.join_closeout()
+        job = q.get_job(qconn, EP)
+        self.assertEqual(job["state"], "watched")
+        self.assertIn("cards failed", job["error"])
         conn = lc.open_db(self.cfg["ledger_db"])
         self.assertEqual(conn.execute(
             "SELECT watched FROM episodes WHERE id=?", (EP,)).fetchone()[0], 1)
@@ -330,9 +345,16 @@ class TestRoutes(ServerTestBase):
         r = self.client.post(f"/watched/{EP}", headers=self.auth)
         self.assertEqual(r.status_code, 200)
         self.assertTrue(r.json()["watched"])
-        self.assertEqual(r.json()["cards"]["pushed"], 0)  # nothing staged to push
+        self.assertEqual(r.json()["cards"]["queued"], 0)  # nothing staged to push
         self.assertEqual(self.client.post("/watched/ghost", headers=self.auth)
                          .status_code, 404)
+
+    def test_watched_conflicts_while_pushing(self):
+        """A close-out is already running — a second POST must not stack."""
+        self.stage_episode()
+        self._enqueue_at("pushing")
+        r = self.client.post(f"/watched/{EP}", headers=self.auth)
+        self.assertEqual(r.status_code, 409)
 
     def test_watched_skip_cards(self):
         """The disliked-it branch: {"cards": false} activates exposures and
@@ -346,14 +368,17 @@ class TestRoutes(ServerTestBase):
                              headers=self.auth)
         body = r.json()
         self.assertTrue(body["watched"])
-        self.assertEqual(body["cards"]["pushed"], 0)
-        # Anki is down in this suite, so a push attempt would surface an
-        # error — its absence proves the push was skipped, not just failed
-        self.assertNotIn("error", body["cards"])
+        self.assertEqual(body["cards"]["queued"], 0)
+        self.assertIn("declined", body["cards"]["note"])
+        self.join_closeout()
         lconn = lc.open_db(self.cfg["ledger_db"])
         self.assertEqual(lconn.execute(
             "SELECT watched FROM episodes WHERE id=?", (EP,)).fetchone()[0], 1)
-        self.assertEqual(q.get_job(conn, EP)["state"], "watched")
+        # Anki is down in this suite, so a push attempt would land an error
+        # on the row — its absence proves the push was skipped, not failed
+        job = q.get_job(conn, EP)
+        self.assertEqual(job["state"], "watched")
+        self.assertIsNone(job["error"])
 
     def test_rating_roundtrip(self):
         """Rate over HTTP → ledger row; job listings carry the stars back."""
@@ -462,6 +487,7 @@ class TestRoutes(ServerTestBase):
         ep_dir = self.stage_episode()
         conn, job = self._enqueue_at("staged")
         self.client.post(f"/watched/{EP}", headers=self.auth)  # full pipeline
+        self.join_closeout()  # deleting mid-push would 409
 
         r = self.client.request("DELETE", f"/jobs/{EP}", headers=self.auth)
         self.assertEqual(r.status_code, 200)
@@ -479,8 +505,22 @@ class TestRoutes(ServerTestBase):
         conn, job = self._enqueue_at("downloading")
         r = self.client.request("DELETE", f"/jobs/{EP}", headers=self.auth)
         self.assertEqual(r.status_code, 409)
+        # mid-card-push is just as protected — cards are landing in Anki
+        q.set_state(conn, job["id"], "pushing", episode_id=EP)
+        r = self.client.request("DELETE", f"/jobs/{EP}", headers=self.auth)
+        self.assertEqual(r.status_code, 409)
         self.assertEqual(self.client.request("DELETE", "/jobs/ghost", headers=self.auth)
                          .status_code, 404)
+
+    def test_jobs_carry_comprehensibility(self):
+        """The queue's sort/display metric rides on both job reads."""
+        self.stage_episode()
+        self._enqueue_at("staged")
+        jobs = self.client.get("/jobs", headers=self.auth).json()
+        self.assertEqual([j["comprehensibility"] for j in jobs
+                          if j["episode_id"] == EP], [0.8])
+        self.assertEqual(self.client.get(f"/jobs/{EP}", headers=self.auth)
+                         .json()["comprehensibility"], 0.8)
 
     def test_coverage_query(self):
         self.stage_episode()

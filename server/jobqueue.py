@@ -21,7 +21,7 @@ from engine.downloader import _extract_video_id  # noqa: E402
 from engine.local_file import generate_local_file_id, is_local_file  # noqa: E402
 
 STATES = ("queued", "downloading", "transcribing", "tokenizing", "prepared",
-          "curating", "staged", "watched", "reconciled", "failed")
+          "curating", "staged", "pushing", "watched", "reconciled", "failed")
 STAGE1_STATES = ("downloading", "transcribing", "tokenizing")
 
 SCHEMA = """

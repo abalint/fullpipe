@@ -108,8 +108,11 @@ def _clip_sentence(audio_path, sentence, clip_path, total_duration,
     return clip_path
 
 
-def _prepare_clips(cfg, episode_id, transcript, picks, log=print):
-    """Cut one native-audio clip per pick. Returns enriched pick dicts."""
+def _prepare_clips(cfg, episode_id, transcript, picks, log=print,
+                   on_progress=None):
+    """Cut one native-audio clip per pick. Returns enriched pick dicts.
+    on_progress(msg) narrates the per-card work (an ffmpeg encode each) for
+    live consumers like the server's queue row."""
     audio = transcript["episode"]["audio"]
     total = probe_audio_duration(audio)
     if total is None:
@@ -120,7 +123,9 @@ def _prepare_clips(cfg, episode_id, transcript, picks, log=print):
     target_lufs = cfg.get("deck", {}).get("clip_target_lufs", CLIP_TARGET_LUFS)
 
     prepared = []
-    for p in picks:
+    for i, p in enumerate(picks, 1):
+        if on_progress:
+            on_progress(f"cutting clip {i}/{len(picks)}")
         sent = by_idx.get(p["sentence_idx"])
         if sent is None:
             log(f"  skip {p['lemma']}: sentence_idx {p['sentence_idx']} not in transcript")
@@ -148,10 +153,12 @@ def _ensure_model(anki_call):
               cardTemplates=MODEL_TEMPLATES)
 
 
-def push_cards(cfg, episode_id, picks, anki_call=None, conn=None, log=print):
+def push_cards(cfg, episode_id, picks, anki_call=None, conn=None, log=print,
+               on_progress=None):
     """AnkiConnect path: store media, add notes, register in the ledger."""
     transcript = load_transcript(cfg, episode_id)
-    prepared = _prepare_clips(cfg, episode_id, transcript, picks, log=log)
+    prepared = _prepare_clips(cfg, episode_id, transcript, picks, log=log,
+                              on_progress=on_progress)
     anki_call = anki_call or partial(
         anki_request, url=cfg.get("anki_connect_url", "http://localhost:8765"))
     conn = conn or lc.open_db(cfg["ledger_db"])
@@ -169,7 +176,9 @@ def push_cards(cfg, episode_id, picks, anki_call=None, conn=None, log=print):
 
     title = transcript["episode"].get("title", episode_id)
     minted, skipped = [], []
-    for p in prepared:
+    for i, p in enumerate(prepared, 1):
+        if on_progress:
+            on_progress(f"pushing card {i}/{len(prepared)}")
         anki_call("storeMediaFile", filename=p["clip_name"], path=p["clip_path"])
         note = {
             "deckName": deck_name,
