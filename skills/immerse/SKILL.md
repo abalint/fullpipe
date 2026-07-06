@@ -283,9 +283,11 @@ And in `<episode_dir>/picks.json`, the card **pool** (workflow decided
 ```
 
 The pool is **ordered by your preference** — after feedback, `tools.select`
-prunes known-tapped lemmas, moves high-interest (★) taps to the front, and
-caps at `deck.new_cards_per_day`; the final picks are pushed to Anki when the
-user marks the episode watched (`POST /watched`), not at curate time. Your
+prunes known-tapped lemmas, moves high-interest (★) taps to the front —
+alongside the *standing* interest set carried over from earlier shows (★ taps
+persist in the ledger until the word is known) — and caps at
+`deck.new_cards_per_day`; the final picks are pushed to Anki when the user
+marks the episode watched (`POST /watched`), not at curate time. Your
 pool order IS the default selection, so lead with your best.
 
 Include `english` (a natural full-sentence translation) on **every** pool

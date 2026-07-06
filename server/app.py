@@ -231,11 +231,15 @@ def create_app(cfg, start_worker=True):
         coverage classification (`cls` — i_plus_1/reinforcement/... ), each
         token the corpus freq rank (`f`, absent = not in the corpus), and the
         doc the ranked candidate lemmas (`candidates`, coverage order = the
-        episode's high-value words)."""
+        episode's high-value words), and `interest` — the standing "want to
+        learn" lemmas (persist across shows until known) that appear here, so
+        the player highlights them wherever they surface."""
         try:
             coverage = load_coverage(cfg, episode_id)
         except FileNotFoundError as e:
             raise HTTPException(404, str(e))
+        interest = lc.active_interest(ledger_conn())
+        here = {t.get("l") for s in coverage["sentences"] for t in s["tokens"]}
         # ~300k rows, ~0.5s to load — cache it; freq only changes when
         # build_freq reruns (offline, rare), which warrants a server restart
         if not freq_cache:
@@ -249,6 +253,7 @@ def create_app(cfg, start_worker=True):
 
         return {"episode_id": episode_id,
                 "candidates": [c["lemma"] for c in coverage.get("candidates", [])],
+                "interest": sorted(interest & here),
                 "sentences": [{"idx": s["idx"], "start": s["start"],
                                "end": s["end"], "cls": s.get("classification"),
                                "tokens": [tok(t) for t in s["tokens"]]}
@@ -325,9 +330,11 @@ def create_app(cfg, start_worker=True):
         if not result["duplicate"]:
             result["promote"] = lc.promote(conn)
             # run card selection from the full tap set (k prunes, h prioritizes)
+            # plus the standing high-interest set carried over from prior shows
             try:
                 from tools.select import run_select
-                final = run_select(cfg, episode_id, payload.get("taps", []))
+                interest = lc.active_interest(conn)
+                final = run_select(cfg, episode_id, payload.get("taps", []), interest)
                 result["cards_selected"] = len(final)
             except FileNotFoundError:
                 result["cards_selected"] = None  # no coverage staged (blob-only episode)
@@ -402,14 +409,22 @@ def create_app(cfg, start_worker=True):
         if not (body or {}).get("cards", True):
             result["cards"] = {"queued": 0, "note": "declined — cards skipped"}
         else:
-            # cards: feedback-selected picks; fall back to curated picks capped
-            # at the daily limit (pool order = curate's preference order)
+            # cards: feedback-selected picks; if none were staged (watched with
+            # no pre-watch feedback), still run selection so the standing
+            # high-interest set prioritizes wanted words — falling back to raw
+            # curated picks only when there's no coverage (blob-only episode).
             ep_dir = episode_dir(cfg, episode_id)
             cap = cfg.get("deck", {}).get("new_cards_per_day", 15)
             picks_path = ep_dir / "final_picks.json"
-            picks = read_json(picks_path) if picks_path.exists() else None
-            if picks is None and (ep_dir / "picks.json").exists():
-                picks = read_json(ep_dir / "picks.json")[:cap]
+            if picks_path.exists():
+                picks = read_json(picks_path)
+            elif (ep_dir / "picks.json").exists():
+                try:
+                    from tools.select import run_select
+                    interest = lc.active_interest(conn)
+                    picks = run_select(cfg, episode_id, [], interest)
+                except FileNotFoundError:
+                    picks = read_json(ep_dir / "picks.json")[:cap]
             result["cards"] = ({"queued": len(picks)} if picks
                                else {"queued": 0, "note": "no picks staged"})
 

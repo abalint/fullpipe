@@ -249,6 +249,36 @@ class LedgerTest(unittest.TestCase):
             "SELECT COUNT(*) FROM evidence WHERE source='card_lapse'").fetchone()[0]
         self.assertEqual(rows, 1)
 
+    def test_interest_persists_until_known(self):
+        # "h" writes durable tap_interest (not knowledge); it stays active
+        # across episodes and is retired only when the lemma becomes known.
+        lc.apply_taps(self.conn, {"episode_id": "e1", "batch_id": "bi",
+                                  "taps": [["設計", "h"]]})
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM evidence WHERE source='tap_interest'").fetchone()[0], 1)
+        # not a knowledge claim: promote leaves it unknown
+        lc.promote(self.conn)
+        row = self.conn.execute(
+            "SELECT status FROM lemmas WHERE lemma='設計'").fetchone()
+        self.assertNotEqual(row["status"], "known")
+        self.assertIn("設計", lc.active_interest(self.conn, known=()))
+        # once known, it drops out of the active set
+        self.assertNotIn("設計", lc.active_interest(self.conn, known={"設計"}))
+
+    def test_deleted_card_reopens_for_remine(self):
+        # A minted card the user later deletes in Anki: poll_lapses can't find
+        # the note → stamps deleted_at, and the lemma leaves the live-card set.
+        lc.record_mined_cards(self.conn, "e1", [
+            {"lemma": "設計", "sentence": "s", "anki_guid": "g1", "anki_note_id": 99}])
+        r = lc.poll_lapses(self.conn, lambda action, **p: [])  # findCards → gone
+        self.assertEqual(r["deleted"], 1)
+        self.assertIsNotNone(self.conn.execute(
+            "SELECT deleted_at FROM cards WHERE anki_note_id=99").fetchone()[0])
+        # live-card guard (what coverage uses) no longer contains the lemma
+        live = {row[0] for row in self.conn.execute(
+            "SELECT lemma FROM cards WHERE deleted_at IS NULL")}
+        self.assertNotIn("設計", live)
+
     def test_card_lapse_demotes(self):
         # Diagram: known → learning via card_lapse (fresh negative).
         self._expose_watched("勝負", 6)

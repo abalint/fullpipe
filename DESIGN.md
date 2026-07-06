@@ -167,6 +167,7 @@ ways: all-known (comprehensible, counts for exposure) · one unknown that is `le
 | `exposure` | +weak, accrues | seen in a **watched** episode. Written unconditionally with `known_ratio` + `other_unknown_count` context; the comprehension bar is applied at `promote`, not at write — retunable over evidence already collected *(resolved Q1)* |
 | `tap_known` | +strong | tapped "I know this" in the prep doc |
 | `tap_unknown` | −strong | tapped "I don't know" |
+| `tap_interest` | 0 (a *want*, not knowledge) | tapped ★ "I want to learn this". Durable across episodes: `active_interest` (= tap_interest − known) keeps steering card selection (prioritize + rescue) and player highlighting until the lemma is known. A minted card that's later deleted in Anki (`cards.deleted_at`) reopens the lemma for a fresh mining candidate |
 | `mined_card` | learning | pipeline minted a card for it |
 | `card_lapse` | −medium | a minted card lapsed in Anki |
 | `import` | +strong (< tap) | bulk-seeded from an external known list (e.g. an AnkiMorphs known-morphs export) at bootstrap; a fresh `tap_unknown` demotes it quietly — no `needs_review`, bulk lists are noisy |
@@ -194,7 +195,7 @@ CREATE TABLE lemmas (
 CREATE TABLE evidence (
     id         INTEGER PRIMARY KEY,
     lemma      TEXT NOT NULL,
-    source     TEXT NOT NULL, -- exposure|tap_known|tap_unknown|mined_card|card_lapse
+    source     TEXT NOT NULL, -- exposure|tap_known|tap_unknown|tap_interest|mined_card|card_lapse
     polarity   INTEGER NOT NULL,-- +1 / -1 / 0(=learning)
     weight     REAL NOT NULL DEFAULT 1.0,
     episode_id TEXT,          -- real column, not JSON: watched-gate + spread query it (P3)

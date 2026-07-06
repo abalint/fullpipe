@@ -137,7 +137,10 @@ def run_coverage(cfg, episode_id, refresh_known=False, record=True, conn=None):
 
     known_bundle = lc.materialize_known(conn, cfg, force_refresh=refresh_known)
     freq = dict(conn.execute("SELECT lemma, rank FROM freq").fetchall())
-    carded = {r[0] for r in conn.execute("SELECT lemma FROM cards")}
+    # Live cards only: a deleted card (user culled a sub-par one) reopens the
+    # lemma for a fresh mining candidate — matters for still-wanted words.
+    carded = {r[0] for r in conn.execute(
+        "SELECT lemma FROM cards WHERE deleted_at IS NULL")}
 
     cov = analyze(transcript, known_bundle, freq, carded)
     cov["known_sources"] = known_bundle["sources"]

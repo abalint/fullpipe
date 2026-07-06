@@ -34,10 +34,14 @@ from lib_config import load_config  # noqa: E402
 SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
 
 # Evidence semantics (DESIGN.md — evidence sources table).
-POLARITY = {"exposure": 1, "tap_known": 1, "tap_unknown": -1, "mined_card": 0,
-            "card_lapse": -1, "import": 1}
-WEIGHT = {"exposure": 1.0, "tap_known": 3.0, "tap_unknown": 3.0, "mined_card": 1.0,
-          "card_lapse": 2.0, "import": 2.0}  # import: strong, but below a deliberate tap
+# tap_interest ("I want to learn this") is a *want*, not a knowledge claim:
+# polarity/weight 0 so `promote` never reads it as known/learning. It persists
+# across episodes and is retired only when the lemma becomes known (see
+# active_interest).
+POLARITY = {"exposure": 1, "tap_known": 1, "tap_unknown": -1, "tap_interest": 0,
+            "mined_card": 0, "card_lapse": -1, "import": 1}
+WEIGHT = {"exposure": 1.0, "tap_known": 3.0, "tap_unknown": 3.0, "tap_interest": 0.0,
+          "mined_card": 1.0, "card_lapse": 2.0, "import": 2.0}  # import: strong, but below a deliberate tap
 
 # Taste metadata (DESIGN.md — Taste metadata). Scalar columns the recommender
 # filters/groups/correlates on; bulky embed-only payload goes to metadata JSON.
@@ -100,6 +104,9 @@ def _migrate(conn):
     ):
         if col not in have:
             conn.execute(f"ALTER TABLE episodes ADD COLUMN {decl}")
+    card_cols = {r["name"] for r in conn.execute("PRAGMA table_info(cards)")}
+    if "deleted_at" not in card_cols:
+        conn.execute("ALTER TABLE cards ADD COLUMN deleted_at TEXT")
     conn.commit()
 
 
@@ -371,20 +378,30 @@ def purge_episode(conn, episode_id):
 
 
 def poll_lapses(conn, anki_call):
-    """Append card_lapse evidence for minted cards whose lapse count grew (P6).
+    """Append card_lapse evidence for minted cards whose lapse count grew (P6),
+    and flag cards the user deleted in Anki.
+
+    A minted note that findCards can no longer locate was deleted (the user
+    culls sub-par cards). We stamp cards.deleted_at so the lemma drops out of
+    the re-mine guard (tools.coverage) — a still-wanted word (tap_interest)
+    then becomes eligible for a fresh, better card next time it appears.
 
     anki_call(action, **params) — injectable for testing; production passes
     ledger.anki_known.anki_request bound to the configured URL.
     """
     rows = conn.execute(
         "SELECT id, lemma, episode_id, anki_note_id, lapses FROM cards "
-        "WHERE anki_note_id IS NOT NULL"
+        "WHERE anki_note_id IS NOT NULL AND deleted_at IS NULL"
     ).fetchall()
     ts = now_iso()
     new_lapses = 0
+    deleted = 0
     for row in rows:
         card_ids = anki_call("findCards", query=f"nid:{row['anki_note_id']}")
         if not card_ids:
+            # Note gone from Anki → user deleted the card. Re-open for re-mining.
+            conn.execute("UPDATE cards SET deleted_at = ? WHERE id = ?", (ts, row["id"]))
+            deleted += 1
             continue
         infos = anki_call("cardsInfo", cards=card_ids)
         current = max((c.get("lapses", 0) or 0) for c in infos)
@@ -399,16 +416,17 @@ def poll_lapses(conn, anki_call):
             conn.execute("UPDATE cards SET lapses = ? WHERE id = ?", (current, row["id"]))
             new_lapses += 1
     conn.commit()
-    return {"cards_polled": len(rows), "new_lapses": new_lapses}
+    return {"cards_polled": len(rows), "new_lapses": new_lapses, "deleted": deleted}
 
 
 def apply_taps(conn, payload, anki_call=None, watched=True):
     """Apply a phone correction batch.
 
     payload: {"episode_id", "batch_id", "taps": [[lemma, mark], ...]}
-    Marks: "k" → tap_known, "u" → tap_unknown. "h" (high-interest, the app's
-    pre-watch mining priority) is NOT knowledge evidence — it's skipped here
-    and handled by tools.select at the feedback layer.
+    Marks: "k" → tap_known, "u" → tap_unknown (knowledge evidence, counted in
+    `applied`). "h" → tap_interest, a durable "I want to learn this" want that
+    is NOT knowledge (counted in `interest`): it persists across episodes and
+    steers future card selection (tools.select) until the lemma becomes known.
 
     watched=True (the classic post-watch corrections blob) implies
     mark-watched (P5). The app's pre-watch feedback flow passes
@@ -424,21 +442,26 @@ def apply_taps(conn, payload, anki_call=None, watched=True):
             "SELECT 1 FROM tap_batches WHERE batch_id = ?", (batch_id,)
         ).fetchone()
         if dup:
-            return {"batch_id": batch_id, "applied": 0, "duplicate": True}
+            return {"batch_id": batch_id, "applied": 0, "interest": 0,
+                    "duplicate": True}
 
     ts = now_iso()
-    applied = 0
+    applied = interest = 0
+    sources = {"k": "tap_known", "u": "tap_unknown", "h": "tap_interest"}
     for lemma, verdict in payload.get("taps", []):
-        if verdict not in ("k", "u"):
+        source = sources.get(verdict)
+        if source is None:
             continue
-        source = "tap_known" if verdict == "k" else "tap_unknown"
         _touch_lemma(conn, lemma, ts=ts)
         conn.execute(
             """INSERT INTO evidence (lemma, source, polarity, weight, episode_id, context, ts)
                VALUES (?, ?, ?, ?, ?, NULL, ?)""",
             (lemma, source, POLARITY[source], WEIGHT[source], episode_id, ts),
         )
-        applied += 1
+        if verdict == "h":
+            interest += 1
+        else:
+            applied += 1
 
     if batch_id:
         conn.execute(
@@ -447,7 +470,7 @@ def apply_taps(conn, payload, anki_call=None, watched=True):
         )
     conn.commit()
 
-    result = {"batch_id": batch_id, "episode_id": episode_id,
+    result = {"batch_id": batch_id, "episode_id": episode_id, "interest": interest,
               "applied": applied, "duplicate": False}
     if episode_id and watched:
         # Pasting a prep doc's corrections is proof you watched it (P5).
@@ -614,6 +637,24 @@ def materialize_known(conn, cfg, force_refresh=False):
         "sources": {"anki": len(anki_set), "ledger": len(ledger_known),
                     "union": len(known)},
     }
+
+
+def active_interest(conn, known=()):
+    """The standing "words I want to learn" set (tap_interest), minus lemmas
+    the user now knows. Persists across episodes and *through* card minting —
+    a wanted word keeps being highlighted and prioritized until it's known
+    (the user's rule). If its card was later deleted (cards.deleted_at, set by
+    poll_lapses), the re-mine guard in tools.coverage reopens it, so selection
+    will mint a fresh one.
+
+    Retirement reads the ledger `lemmas` projection (status='known') — cheap,
+    no AnkiConnect, so this stays usable in hot read paths (GET /transcript).
+    `known` optionally adds extra known lemmas the caller already has in hand."""
+    interested = {r[0] for r in conn.execute(
+        "SELECT DISTINCT lemma FROM evidence WHERE source = 'tap_interest'")}
+    ledger_known = {r[0] for r in conn.execute(
+        "SELECT lemma FROM lemmas WHERE status = 'known'")}
+    return interested - ledger_known - set(known)
 
 
 def query_summary(conn):

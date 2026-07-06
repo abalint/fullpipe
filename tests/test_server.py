@@ -282,7 +282,8 @@ class TestRoutes(ServerTestBase):
         r = self.client.post("/taps", json=payload, headers=self.auth)
         self.assertEqual(r.status_code, 200)
         body = r.json()
-        self.assertEqual(body["applied"], 1)  # only "k" is ledger evidence
+        self.assertEqual(body["applied"], 1)   # only "k" is knowledge evidence
+        self.assertEqual(body["interest"], 1)  # "h" persists as tap_interest
         self.assertIn("promote", body)
         self.assertIsNotNone(body["cards_selected"])
 
@@ -294,6 +295,12 @@ class TestRoutes(ServerTestBase):
         conn = lc.open_db(self.cfg["ledger_db"])
         self.assertEqual(conn.execute(
             "SELECT status FROM lemmas WHERE lemma='犬'").fetchone()[0], "known")
+        # the high-interest tap is durable (persists across episodes) and 公園
+        # is not known, so it stands as active interest
+        self.assertEqual(
+            conn.execute("SELECT COUNT(*) FROM evidence "
+                         "WHERE lemma='公園' AND source='tap_interest'").fetchone()[0], 1)
+        self.assertIn("公園", lc.active_interest(conn, known=()))
         # feedback does NOT imply watched — watching is its own later step
         self.assertEqual(conn.execute(
             "SELECT watched FROM episodes WHERE id=?", (EP,)).fetchone()[0], 0)
@@ -564,6 +571,30 @@ class TestSelect(unittest.TestCase):
         from tools.select import select_picks
         final = select_picks(self.POOL, self.COV, [], cap=2)
         self.assertEqual([p["lemma"] for p in final], ["a", "b"])
+
+    def test_standing_interest_prioritizes_pool_pick(self):
+        # No taps this episode, but "c" is a carried-over wanted word: it
+        # jumps ahead of pool order even without being re-tapped.
+        from tools.select import select_picks
+        final = select_picks(self.POOL, self.COV, [], cap=2,
+                             standing_interest=["c"])
+        self.assertEqual(final[0]["lemma"], "c")
+
+    def test_standing_interest_rescues_candidate(self):
+        # "e" isn't in the curated pool but is a wanted word with a clean
+        # candidate → rescued into a fresh card, no re-tap needed.
+        from tools.select import select_picks
+        final = select_picks(self.POOL, self.COV, [], cap=15,
+                             standing_interest=["e"])
+        e = next(p for p in final if p["lemma"] == "e")
+        self.assertTrue(e.get("rescued"))
+
+    def test_fresh_tap_outranks_standing_interest(self):
+        from tools.select import select_picks
+        final = select_picks(self.POOL, self.COV, [["b", "h"]], cap=15,
+                             standing_interest=["c"])
+        # fresh tap "b" first, then standing interest "c", then pool order
+        self.assertEqual([p["lemma"] for p in final][:2], ["b", "c"])
 
 
 class TestWorkerDrain(ServerTestBase):

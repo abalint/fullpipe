@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS lemmas (
 CREATE TABLE IF NOT EXISTS evidence (
     id         INTEGER PRIMARY KEY,
     lemma      TEXT NOT NULL,
-    source     TEXT NOT NULL, -- exposure|tap_known|tap_unknown|mined_card|card_lapse|import
+    source     TEXT NOT NULL, -- exposure|tap_known|tap_unknown|tap_interest|mined_card|card_lapse|import
     polarity   INTEGER NOT NULL,-- +1 / -1 / 0(=learning)
     weight     REAL NOT NULL DEFAULT 1.0,
     episode_id TEXT,          -- real column, not JSON: watched-gate + spread query it (P3)
@@ -85,6 +85,9 @@ CREATE TABLE IF NOT EXISTS cards (
     anki_guid TEXT,
     anki_note_id INTEGER,
     lapses INTEGER NOT NULL DEFAULT 0,        -- last polled value (P6)
+    deleted_at TEXT,                          -- set when lapse-poll finds the note gone
+                                              -- from Anki (user deleted a sub-par card);
+                                              -- re-opens the lemma for re-mining
     created_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_cards_lemma ON cards(lemma);
