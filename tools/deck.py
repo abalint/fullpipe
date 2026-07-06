@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""deck — curated card picks → Anki cards with native audio.
+"""deck — curated card picks → Anki cards with native audio + a video frame.
 
 Cuts the native audio clip to the MERGED sentence span (±0.5s pad) — the
-resolution of the subs2srs fragment flaw (DESIGN.md — Card philosophy) —
+resolution of the subs2srs fragment flaw (DESIGN.md — Card philosophy) — and
+grabs a still frame from the sentence midpoint (from the phone-staged
+video.mp4, or a local video source; skipped when the episode is audio-only),
 and pushes cards live via AnkiConnect (primary: createModel/createDeck/
 addNote → note ids the ledger can lapse-poll). `--apkg` is the offline
 fallback (genanki, stable guids). Every minted card is registered in the
@@ -38,6 +40,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from engine.audio import probe_audio_duration, slice_audio, MIN_SLICE_DURATION  # noqa: E402
+from engine.frames import extract_frame  # noqa: E402
+from engine.local_file import get_video_path  # noqa: E402
 from lib_config import load_config  # noqa: E402
 from ledger import ledgerctl as lc  # noqa: E402
 from ledger.anki_known import anki_request  # noqa: E402
@@ -50,15 +54,20 @@ CLIP_PAD = 0.5
 CLIP_TARGET_LUFS = -16.0
 
 MODEL_NAME = "fullPipe Sentence Mining"
-MODEL_FIELDS = ["Expression", "Audio", "Lemma", "Reading", "Source", "Sequence"]
+# Image is appended last so the field indices of the original six stay put —
+# the .apkg guid keys off Sequence (index 5), which must not shift.
+MODEL_FIELDS = ["Expression", "Audio", "Lemma", "Reading", "Source",
+                "Sequence", "Image"]
 MODEL_CSS = """.card {
   font-family: "Hiragino Sans", "Noto Sans JP", sans-serif;
   font-size: 26px; text-align: center; }
+.card img { max-width: 100%; max-height: 320px; border-radius: 6px;
+  margin-bottom: 0.5em; }
 .lemma { color: #4a90d9; font-size: 30px; }
 .meta { font-size: 14px; color: #888; margin-top: 1em; }"""
 MODEL_TEMPLATES = [{
     "Name": "Card 1",
-    "Front": "{{Expression}}<br>{{Audio}}",
+    "Front": "{{#Image}}{{Image}}<br>{{/Image}}{{Expression}}<br>{{Audio}}",
     "Back": ("{{FrontSide}}<hr id=answer>"
              "<div class=lemma>{{Lemma}}【{{Reading}}】</div>"
              "<div class=meta>{{Source}}</div>"),
@@ -71,6 +80,7 @@ _GENANKI_MODEL_ID = 1998244353  # distinct from engine.anki's subs2srs model
 DEFAULT_FIELD_MAP = {
     "sentence": "Expression", "audio": "Audio", "lemma": "Lemma",
     "reading": "Reading", "source": "Source", "sequence": "Sequence",
+    "image": "Image",
 }
 
 
@@ -96,6 +106,25 @@ def _note_fields(field_map, p, title):
     return fields
 
 
+def _resolve_video(cfg, episode_id, transcript):
+    """Return a video path to grab card frames from, or None.
+
+    Prefers the phone-staged ``<episode_dir>/video.mp4`` — the worker lands this
+    for every youtube/local-video episode (server.worker.stage_video) — and
+    falls back to a local video source. Audio-only episodes have no video, so
+    the caller simply mints cards without an image.
+    """
+    staged = episode_dir(cfg, episode_id) / "video.mp4"
+    if staged.exists():
+        return staged
+    ep = transcript.get("episode", {})
+    if ep.get("kind") == "local":
+        vp = get_video_path(ep.get("source", ""))
+        if vp and Path(vp).exists():
+            return Path(vp)
+    return None
+
+
 def _clip_sentence(audio_path, sentence, clip_path, total_duration,
                    target_lufs=CLIP_TARGET_LUFS):
     start = max(0.0, sentence["start"] - CLIP_PAD)
@@ -109,18 +138,26 @@ def _clip_sentence(audio_path, sentence, clip_path, total_duration,
 
 
 def _prepare_clips(cfg, episode_id, transcript, picks, log=print,
-                   on_progress=None):
+                   on_progress=None, want_image=True):
     """Cut one native-audio clip per pick. Returns enriched pick dicts.
     on_progress(msg) narrates the per-card work (an ffmpeg encode each) for
-    live consumers like the server's queue row."""
+    live consumers like the server's queue row. want_image=False skips the
+    frame grab entirely (the target note type has no image field)."""
     audio = transcript["episode"]["audio"]
     total = probe_audio_duration(audio)
     if total is None:
         raise RuntimeError(f"cannot probe audio: {audio}")
     by_idx = {s["idx"]: s for s in transcript["sentences"]}
-    clips_dir = episode_dir(cfg, episode_id, create=True) / "clips"
+    ep_dir = episode_dir(cfg, episode_id, create=True)
+    clips_dir = ep_dir / "clips"
     clips_dir.mkdir(exist_ok=True)
     target_lufs = cfg.get("deck", {}).get("clip_target_lufs", CLIP_TARGET_LUFS)
+
+    # Frame source (staged video.mp4 / local video); None → cards get no image.
+    video = _resolve_video(cfg, episode_id, transcript) if want_image else None
+    images_dir = ep_dir / "images"
+    if video is not None:
+        images_dir.mkdir(exist_ok=True)
 
     prepared = []
     for i, p in enumerate(picks, 1):
@@ -133,40 +170,74 @@ def _prepare_clips(cfg, episode_id, transcript, picks, log=print,
         clip_name = f"fullPipe_{episode_id}_{p['sentence_idx']:04d}.mp3"
         _clip_sentence(audio, sent, clips_dir / clip_name, total,
                        target_lufs=target_lufs)
+
+        # Grab a still from the sentence midpoint. Best-effort: a frame that
+        # won't extract must not sink the card (DESIGN.md — Card philosophy).
+        image_name = image_path = None
+        if video is not None:
+            candidate = f"fullPipe_{episode_id}_{p['sentence_idx']:04d}.jpg"
+            candidate_path = images_dir / candidate
+            midpoint = (sent["start"] + sent["end"]) / 2.0
+            try:
+                if not candidate_path.exists():
+                    extract_frame(video, midpoint, candidate_path)
+                image_name = candidate
+                image_path = str(candidate_path)
+            except RuntimeError as e:
+                log(f"  no frame for {p['lemma']}: {e}")
+
         prepared.append({
             **p,
             "sentence": sent["text"],
             "reading": p.get("reading", ""),
             "clip_name": clip_name,
             "clip_path": str(clips_dir / clip_name),
+            "image_name": image_name,
+            "image_path": image_path,
+            "image": f'<img src="{image_name}">' if image_name else "",
         })
     return prepared
 
 
 def _ensure_model(anki_call):
-    if MODEL_NAME in anki_call("modelNames"):
+    if MODEL_NAME not in anki_call("modelNames"):
+        anki_call("createModel",
+                  modelName=MODEL_NAME,
+                  inOrderFields=MODEL_FIELDS,
+                  css=MODEL_CSS,
+                  cardTemplates=MODEL_TEMPLATES)
         return
-    anki_call("createModel",
-              modelName=MODEL_NAME,
-              inOrderFields=MODEL_FIELDS,
-              css=MODEL_CSS,
-              cardTemplates=MODEL_TEMPLATES)
+    # Migrate copies of the built-in model minted before the Image field: add
+    # the field and refresh the template/styling so old decks show frames too.
+    existing = anki_call("modelFieldNames", modelName=MODEL_NAME) or []
+    if "Image" not in existing:
+        anki_call("modelFieldAdd", modelName=MODEL_NAME,
+                  fieldName="Image", index=len(existing))
+        t = MODEL_TEMPLATES[0]
+        anki_call("updateModelTemplates", model={
+            "name": MODEL_NAME,
+            "templates": {t["Name"]: {"Front": t["Front"], "Back": t["Back"]}},
+        })
+        anki_call("updateModelStyling",
+                  model={"name": MODEL_NAME, "css": MODEL_CSS})
 
 
 def push_cards(cfg, episode_id, picks, anki_call=None, conn=None, log=print,
                on_progress=None):
     """AnkiConnect path: store media, add notes, register in the ledger."""
     transcript = load_transcript(cfg, episode_id)
-    prepared = _prepare_clips(cfg, episode_id, transcript, picks, log=log,
-                              on_progress=on_progress)
-    anki_call = anki_call or partial(
-        anki_request, url=cfg.get("anki_connect_url", "http://localhost:8765"))
-    conn = conn or lc.open_db(cfg["ledger_db"])
-
     deck_cfg = cfg.get("deck", {})
     deck_name = deck_cfg.get("name", "Immersion Mining")
     note_type = deck_cfg.get("note_type", MODEL_NAME)
     field_map = deck_cfg.get("field_map") or DEFAULT_FIELD_MAP
+    # Only grab frames when the target note type actually has an image field.
+    prepared = _prepare_clips(cfg, episode_id, transcript, picks, log=log,
+                              on_progress=on_progress,
+                              want_image="image" in field_map)
+    anki_call = anki_call or partial(
+        anki_request, url=cfg.get("anki_connect_url", "http://localhost:8765"))
+    conn = conn or lc.open_db(cfg["ledger_db"])
+
     if note_type == MODEL_NAME:
         _ensure_model(anki_call)
     elif note_type not in anki_call("modelNames"):
@@ -180,6 +251,9 @@ def push_cards(cfg, episode_id, picks, anki_call=None, conn=None, log=print,
         if on_progress:
             on_progress(f"pushing card {i}/{len(prepared)}")
         anki_call("storeMediaFile", filename=p["clip_name"], path=p["clip_path"])
+        if p.get("image_name"):
+            anki_call("storeMediaFile", filename=p["image_name"],
+                      path=p["image_path"])
         note = {
             "deckName": deck_name,
             "modelName": note_type,
@@ -231,10 +305,12 @@ def build_apkg(cfg, episode_id, picks, conn=None, log=print):
     for p in prepared:
         note = _Note(model=model, fields=[
             p["sentence"], f"[sound:{p['clip_name']}]", p["lemma"],
-            p["reading"], title, str(p["sentence_idx"]),
+            p["reading"], title, str(p["sentence_idx"]), p.get("image", ""),
         ])
         deck.add_note(note)
         media.append(p["clip_path"])
+        if p.get("image_path"):
+            media.append(p["image_path"])
         minted.append({"lemma": p["lemma"], "sentence": p["sentence"],
                        "anki_guid": note.guid, "anki_note_id": None})
 

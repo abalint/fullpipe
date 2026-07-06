@@ -573,10 +573,13 @@ sentence — which defeats the purpose of studying whole-sentence usage.
 
 **The resolution (keeps native audio):** `merge_to_sentences` reconstructs complete
 sentences from subtitle/ASR fragments (merging trailed-off lines forward, splitting lines
-that jammed two sentences together), and `anki.py` cuts the native audio clip to span that
-**merged** range (±0.5s pad). Result: *full reconstructed sentence + real native audio of
-that whole sentence + screenshot.* No TTS. Beats both vanilla subs2srs (fragments) and
-AI-sentence+TTS (synthetic audio).
+that jammed two sentences together), and `tools/deck.py` cuts the native audio clip to span
+that **merged** range (±0.5s pad) and grabs a still frame at the sentence midpoint (from the
+phone-staged `video.mp4`, or a local video source; audio-only episodes mint without one — a
+missing frame never sinks the card). Result: *full reconstructed sentence + real native
+audio of that whole sentence + screenshot.* No TTS. Beats both vanilla subs2srs (fragments)
+and AI-sentence+TTS (synthetic audio). The frame lands in the note's `Image` field via the
+`field_map`, so the note template decides where/whether it shows.
 
 **Source priority (reordered for an audio-forward learner — native audio is the axis):**
 1. **Reconstructed full sentence from the watched video** — native audio, authentic, the

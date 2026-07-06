@@ -146,6 +146,66 @@ class DeckAndRenderTest(unittest.TestCase):
         self.assertEqual(self.conn.execute(
             "SELECT status FROM lemmas WHERE lemma='縄張り'").fetchone()[0], "learning")
 
+    def _stage_video(self):
+        """Land a 10s test-pattern video.mp4 in the episode dir (frame source)."""
+        vid = episode_dir(self.cfg, "test_ep", create=True) / "video.mp4"
+        subprocess.run(
+            ["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi",
+             "-i", "testsrc=duration=10:size=320x240:rate=5",
+             "-pix_fmt", "yuv420p", str(vid)], check=True)
+        return vid
+
+    def test_push_attaches_frame_when_video_present(self):
+        self._stage_video()
+        calls = []
+        picks = [{"lemma": "縄張り", "sentence_idx": 1, "reading": "なわばり"}]
+        result = deck.push_cards(self.cfg, "test_ep", picks,
+                                 anki_call=self._fake_anki(calls),
+                                 conn=self.conn, log=lambda m: None)
+        self.assertEqual(result["pushed"], 1)
+        # A real JPEG frame was extracted to images/
+        frame = episode_dir(self.cfg, "test_ep") / "images" / "fullPipe_test_ep_0001.jpg"
+        self.assertTrue(frame.exists() and frame.stat().st_size > 0)
+        # It was stored as media and referenced in the Image field as an <img>
+        stored = [p["filename"] for a, p in calls if a == "storeMediaFile"]
+        self.assertIn("fullPipe_test_ep_0001.jpg", stored)
+        note = next(p for a, p in calls if a == "addNote")["note"]
+        self.assertEqual(note["fields"]["Image"], '<img src="fullPipe_test_ep_0001.jpg">')
+
+    def test_push_without_video_leaves_image_empty(self):
+        # No video.mp4 staged → card still mints, Image field is blank.
+        calls = []
+        picks = [{"lemma": "縄張り", "sentence_idx": 1, "reading": "なわばり"}]
+        result = deck.push_cards(self.cfg, "test_ep", picks,
+                                 anki_call=self._fake_anki(calls),
+                                 conn=self.conn, log=lambda m: None)
+        self.assertEqual(result["pushed"], 1)
+        self.assertFalse((episode_dir(self.cfg, "test_ep") / "images").exists())
+        note = next(p for a, p in calls if a == "addNote")["note"]
+        self.assertEqual(note["fields"]["Image"], "")
+
+    def test_ensure_model_migrates_pre_image_copy(self):
+        # A built-in model minted before the Image field exists → migrate it.
+        old_fields = ["Expression", "Audio", "Lemma", "Reading", "Source", "Sequence"]
+        calls = []
+
+        def fake(action, **params):
+            calls.append((action, params))
+            if action == "modelNames":
+                return [deck.MODEL_NAME]
+            if action == "modelFieldNames":
+                return old_fields
+            return None
+
+        deck._ensure_model(fake)
+        actions = {a for a, _ in calls}
+        self.assertNotIn("createModel", actions)   # already exists
+        self.assertIn("modelFieldAdd", actions)
+        add = next(p for a, p in calls if a == "modelFieldAdd")
+        self.assertEqual(add["fieldName"], "Image")
+        self.assertIn("updateModelTemplates", actions)
+        self.assertIn("updateModelStyling", actions)
+
     def test_push_skips_duplicates(self):
         calls = []
         picks = [{"lemma": "縄張り", "sentence_idx": 1},

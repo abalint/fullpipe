@@ -13,6 +13,7 @@ Everything an episode produces lives under <work_dir>/episodes/<episode_id>/:
     prep.html         render   — the phone prep doc
     deck.apkg         deck     — offline fallback package
     clips/            deck     — native-audio card clips
+    images/           deck     — per-card video frames (skipped if no video)
 """
 
 import json
