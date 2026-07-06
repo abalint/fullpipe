@@ -200,6 +200,47 @@ class TestRoutes(ServerTestBase):
         self.assertEqual(len(data["iplus1"]), 1)
         self.assertEqual(self.client.get("/prep/nope", headers=self.auth).status_code, 404)
 
+    def test_transcript_serves_all_sentences(self):
+        # /prep ships only the i+1/reinforcement subset; the player's subtitle
+        # overlay needs every sentence with timing + tokens
+        self.stage_episode()
+        r = self.client.get(f"/transcript/{EP}", headers=self.auth)
+        self.assertEqual(r.status_code, 200)
+        data = r.json()
+        self.assertEqual(data["episode_id"], EP)
+        self.assertEqual(len(data["sentences"]), 2)
+        self.assertEqual(data["sentences"][0]["start"], 0.0)
+        self.assertEqual(data["sentences"][1]["end"], 4.0)
+        self.assertEqual(data["sentences"][1]["tokens"][0]["l"], "公園")
+        self.assertEqual(self.client.get("/transcript/nope", headers=self.auth)
+                         .status_code, 404)
+        self.assertEqual(self.client.get(f"/transcript/{EP}").status_code, 401)
+
+    def test_definitions_for_episode_lemmas(self):
+        self.stage_episode()
+        # dictionary not built yet → graceful empty map, not an error
+        r = self.client.get(f"/definitions/{EP}", headers=self.auth)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json(), {})
+        # build a one-entry dict db in the workspace, ask again
+        import sqlite3
+
+        from tools import jmdict
+        conn = sqlite3.connect(jmdict.db_path(self.cfg))
+        jmdict.build_db(conn, iter([
+            (2, {"公園", "こうえん"},
+             {"k": ["公園"], "r": ["こうえん"],
+              "s": [{"pos": ["noun"], "g": ["(public) park"]}]}),
+        ]))
+        conn.close()
+        data = self.client.get(f"/definitions/{EP}", headers=self.auth).json()
+        self.assertIn("公園", data)  # content lemma with an entry
+        self.assertNotIn("犬", data)  # content lemma, no dict entry
+        self.assertEqual(data["公園"][0]["s"][0]["g"], ["(public) park"])
+        self.assertEqual(self.client.get("/definitions/nope", headers=self.auth)
+                         .status_code, 404)
+        self.assertEqual(self.client.get(f"/definitions/{EP}").status_code, 401)
+
     def test_video_and_subs(self):
         ep_dir = self.stage_episode()
         self.assertEqual(self.client.get(f"/video/{EP}", headers=self.auth)

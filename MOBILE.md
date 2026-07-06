@@ -171,6 +171,8 @@ Thin HTTP over `ledgerctl` verbs + the queue. (Verbs: `materialize-known`, `comp
 | `GET /video/{id}` | staged file | **resumable** (HTTP range) — available at `prepared` |
 | `GET /video/{id}/subs` | staged file | subtitle sidecar |
 | `GET /prep/{id}` | prep-doc JSON | available at `staged`; pre-tokenized sentences w/ readings + glosses |
+| `GET /transcript/{id}` | staged coverage | **every** sentence w/ start/end + tokens (prep ships only the i+1 subset) — drives the in-app player's tap-able subtitle overlay; available at `prepared` |
+| `GET /definitions/{id}` | jmdict.db | JMdict entries for every content lemma in the episode (the player's any-word popup); keyed by the Sudachi lemma already on each token, so no client deinflection. `{}` until `tools.jmdict build` has run |
 | `POST /taps` | `apply-taps` + `tools.select` | `{episode_id, batch_id, taps:[[lemma,"k"\|"h"],…]}`; pre-watch feedback: "k"→ledger, "h"→card priority; runs final card selection; does NOT imply watched |
 | `POST /watched/{id}` | `mark-watched` + `tools.deck` | post-watch close-out: activates exposures, **pushes the selected cards to Anki**, lapse-polls; re-POST retries a failed push. Body `{cards: false}` = watched-but-disliked: exposures still activate, no cards pushed |
 | `POST /episodes/{id}/rating` | `record-rating` | `{rating: 1-5\|null, tags:[…]}` star rating + optional taste tags, appended to the append-only `taste_events` log (DESIGN.md — Taste metadata); tags ∈ `already_knew·over_my_head·didnt_grab·format_miss·fascinating·loved_format`; re-POST appends a new review (on-read verdict takes the latest), null rating clears; ratings ride back on `GET /jobs`. Ratable pre-watch; a rated-but-unwatched episode keeps its rating through `DELETE /jobs/{id}` (rating-only ledger tombstone) |
@@ -208,7 +210,13 @@ if best-in-class furigana/tap typography is worth a separate codebase.
   batch carries a client-generated `batch_id` so a re-flush after reconnect is **idempotent**.
 - Offline cache of pulled prep docs + videos; background sync via **WorkManager** constrained to
   *unmetered network + charging*.
-- Native video player with the subtitle sidecar.
+- In-app learning player: WebView `<video>` (local file when downloaded, else
+  server stream) under a subtitle overlay built from the tokenized transcript —
+  watch-time word taps land in the same tap store/outbox as prep-doc taps.
+  Prep-doc keywords highlight orange and pop gloss + curate notes on tap;
+  subtitle modes on / keyword-only / off; cues linger to the next line so ASR
+  end-times don't cut subs early. Replay-line / prev / next / speed /
+  furigana / fullscreen; resume position; VLC handoff kept as a fallback.
 - Queue screen: per-item lifecycle state, download progress, storage used, pin/delete.
 - **Not a card reviewer** — AnkiDroid owns review (cards arrive via AnkiConnect → AnkiWeb →
   AnkiDroid). The client may deep-link into AnkiDroid.

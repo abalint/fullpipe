@@ -26,6 +26,7 @@ from ledger import ledgerctl as lc  # noqa: E402
 from lib_config import load_config  # noqa: E402
 from server import jobqueue as q  # noqa: E402
 from server.worker import Worker  # noqa: E402
+from tools import jmdict  # noqa: E402
 from tools._staging import (  # noqa: E402
     downloads_dir, episode_dir, load_coverage, load_transcript, read_json)
 from tools.render import build_prep_data  # noqa: E402
@@ -193,6 +194,42 @@ def create_app(cfg, start_worker=True):
         curate_path = episode_dir(cfg, episode_id) / "curate.json"
         curate = read_json(curate_path) if curate_path.exists() else None
         return build_prep_data(transcript, coverage, curate)
+
+    @app.get("/transcript/{episode_id}", dependencies=[Depends(auth)])
+    def get_transcript(episode_id: str):
+        """Full tokenized sentence track for the in-app player's subtitle
+        overlay: every sentence with timing + prep-shaped tokens (/prep ships
+        only the i+1/reinforcement subset). Available from `prepared`, same
+        as the video."""
+        try:
+            coverage = load_coverage(cfg, episode_id)
+        except FileNotFoundError as e:
+            raise HTTPException(404, str(e))
+        return {"episode_id": episode_id,
+                "sentences": [{"idx": s["idx"], "start": s["start"],
+                               "end": s["end"], "tokens": s["tokens"]}
+                              for s in coverage["sentences"]]}
+
+    @app.get("/definitions/{episode_id}", dependencies=[Depends(auth)])
+    def get_definitions(episode_id: str):
+        """JMdict entries for every content lemma in the episode — the
+        player's any-word dictionary popup. Keyed by the Sudachi lemma the
+        transcript tokens already carry, so the client needs no deinflection.
+        {} until `tools.jmdict build` has produced <work_dir>/jmdict.db."""
+        try:
+            coverage = load_coverage(cfg, episode_id)
+        except FileNotFoundError as e:
+            raise HTTPException(404, str(e))
+        path = jmdict.db_path(cfg)
+        if not path.exists():
+            return {}
+        lemmas = {t["l"] for s in coverage["sentences"]
+                  for t in s["tokens"] if t.get("c") and t.get("l")}
+        conn = jmdict.open_db(path)  # per-request: sqlite handles are thread-bound
+        try:
+            return jmdict.lookup_many(conn, lemmas)
+        finally:
+            conn.close()
 
     def media_auth(request: Request, token_q: str | None):
         """External players (VLC) can't send headers — media endpoints also

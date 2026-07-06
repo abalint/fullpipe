@@ -53,6 +53,10 @@ tools/      dumb CLIs (importable modules + argparse mains)
                   Mints onto the user's own note type via config deck.note_type
                   + field_map (values may be lists — Anki requires the first
                   field non-empty); built-in model otherwise
+  jmdict.py       JMdict_e → <work_dir>/jmdict.db (one-off `build`, ~9 MB
+                  download) + lemma lookups; feeds GET /definitions — the
+                  mobile player's any-word dictionary popup (lemma-keyed, so
+                  no deinflection needed)
   render.py       coverage (+curate.json) → self-contained prep.html with
                   furigana throughout (annotate() tokenizes Japanese runs in
                   prose at build time); vocab grid word|reading|usage|english
@@ -164,10 +168,18 @@ merged sentences keep stray ASCII spaces from subtitle-block joins
 acquire → 480p H.264 video staging → coverage; Stage-2 stays `/immerse`,
 detected by artifact watch; launchd plist included; smoke-tested live against
 the real workspace) and the Android client at `anki/mobile/` (Capacitor —
-queue screen, offline prep viewer with tap outbox, streaming player with subs,
-share-sheet enqueue; see mobile/README.md). Server config block is in
-config.json (`server.token` shared with the app). 79 tests passing
+queue screen, offline prep viewer with tap outbox, share-sheet enqueue; see
+mobile/README.md). Server config block is in config.json (`server.token`
+shared with the app). 94 tests passing
 (`.venv/bin/python -m unittest discover -s tests`).
+
+**In-app learning player (2026-07-06):** the client plays episodes itself
+(WebView video: downloaded file, else server stream) under a subtitle overlay
+built from the tokenized transcript via the new `GET /transcript/{id}` (all
+coverage.json sentences w/ timing + tokens — /prep only ships the i+1
+subset). Words in the subs are tap targets feeding the same tap store as the
+prep doc; replay-line/prev/next/speed/furigana/fullscreen, resume position,
+prep-doc timestamps deep-link to the moment, VLC handoff kept as fallback.
 
 **Local Stage 1 (2026-07-05): `/prepare` skill** (`skills/prepare/SKILL.md`,
 symlinked like `/immerse`) runs Stage 1 without the app or server —
