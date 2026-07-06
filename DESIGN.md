@@ -481,6 +481,91 @@ signal, never taste.
 
 ---
 
+## Discovery — `/recommend` (ytSearch Phase 1)
+
+> **Built 2026-07-06** — Phase 1 of the discovery half (designed in the sibling
+> `../../ytSearch/DESIGN.md`) shipped *inside* fullPipe: `tools/harvest.py` +
+> `skills/recommend/SKILL.md`. Backed by a 2026-07-06 research pass (findings +
+> `/recommend` decisions in `[[rec-system-acquisition-research]]`; full evidence
+> report archived as a Claude artifact). This section is what shipped and why.
+
+The *"what should I watch next?"* half. Same topology as the enjoyment spine
+feeds it: `/recommend` reads the `taste_events` + episode-meta the watch loop
+records, and hands picks back to `/immerse`. It never writes the ledger — the
+crawl pool is a **separate discovery store** (`<work_dir>/discover.db`) so harvest
+junk can't pollute the event-sourced truth.
+
+### The decision: independent recommender, not "harvest YouTube's algorithm"
+
+The instinct is to borrow YouTube's own recommender. Two probed facts kill it:
+the **unauthenticated personalized home feed is unreachable** (InnerTube
+`FEwhat_to_watch` returns empty — "watch something first"), and even reachable it
+optimizes watch-time / centroid-convergence — the *opposite* of the
+novelty-seeking curiosity engine the taste calls for. So fullPipe builds an
+**independent, content-based recommender over structural graph edges that need no
+login** — which is also the better fit for the stated taste.
+
+### Topology (dumb tool + smart skill, no cloud LLM)
+
+Same split as everything else here — and the LLM half runs as **the Claude Code
+session**, not an API (the user prefers CLI/agent over cloud; precedent: the
+`/immerse` punctuation gate moved off `gpt-4o-mini` onto a subagent).
+
+- **`tools/harvest.py`** (dumb) — pulls candidates from three unauthenticated
+  edges, all probe-verified reachable with no key/account/PO-token: `related`
+  (InnerTube `/next` similarity rail around liked videos), `search` (yt-dlp
+  `ytsearchN:` — where the skill's JP query-expansion lands), `rss`
+  (`feeds/videos.xml` fresh uploads from known channels). Dedupes against the
+  ledger + the store, writes to `discover.db`. Verbs: `seeds · run · list ·
+  set-status · refilter`.
+- **`/recommend`** (smart) — reads `harvest seeds` (rated history + channels +
+  liked ids) and `taste.md`, **expands taste into ~15–20 native JP queries**
+  (the single highest-leverage AI step — the genre vocabulary is cultural, not
+  translational), drives `harvest run`, then **judges / ranks / diversifies** the
+  pool against the objective (relevance × novelty − expertise-redundancy −
+  repetition, round-robin across genre clusters, forced wildcards), and hands
+  picks to `/immerse` or the worker queue. `about <topic>` narrows the region but
+  keeps the variety.
+
+### The synthetic-TTS format filter (two-tier)
+
+The user can't listen to the ゆっくり / VOICEROID / ずんだもん synthetic-narrator
+voices that saturate the JP 解説 ecosystem. Filtered in two tiers: **(1)
+deterministic** — `discover.format_blocklist` in `config.json` (substrings on
+title+channel; matched at `harvest run` time → `status='filtered'`, kept but never
+surfaced, à la "log what you prune"). Match the *format compounds* (`ゆっくり解説`,
+`【ゆっくり`) **not** bare `ゆっくり` (= "leisurely" — a `ゆっくり散歩` walking vlog is
+exactly the loved content). **(2) judgment** — `/recommend` drops any unlabeled
+TTS it recognizes. Edit the list, then `harvest refilter` to re-clean the pool.
+
+### Account risk & the (deferred) keep-warm layer
+
+Harvesting is anonymous, so it carries no account risk. Feeding watch-signal
+*back* to YouTube to keep the real account's own recommendations warm is a
+**separate, optional, deferred** layer: fire `yt-dlp --cookies-from-browser
+--mark-watched` from the existing `mark_watched()` close-out — one authed ping per
+genuine watch, the lowest-risk cookie profile (research: restrictions are
+temporary, playback-scoped, and reported mainly on throwaway accounts, not
+paced real ones). Not part of `/recommend`; not the engine.
+
+### Corrections the research made to the ytSearch design
+
+- **Featured-channels tab is often gone** (`This channel does not have a channels
+  tab`) — the collab graph via description-mining is the reliable version of that
+  idea; don't lean on the tab.
+- **The `/next` rail is a *similarity* edge, not personalization** — treat it as
+  "near what you liked," which is exactly what it's for.
+
+### Deferred (Phase 2, when ratings thicken to ~dozens+)
+
+A local embedding + kNN taste prior (`tools/taste_knn.py`, Ruri v3 — local, no
+API) as a continuous predicted-rating score under the judge; plus
+playlist-co-occurrence and collab-graph (description-mining) edges for broader
+lateral reach. Dormant now — at a handful of ratings the kNN is cold and the LLM
+judge carries the pass. See `ytSearch/DESIGN.md` for the full discovery vision.
+
+---
+
 ## Card philosophy
 
 **The subs2srs flaw:** each card is one *subtitle line* — a fragment, not a full
@@ -563,7 +648,8 @@ the target word itself is mis-transcribed (drop those).
 **Dumb tools** (CLI, deterministic, no AI — vendored engine + ledger CRUD):
 `acquire` (file/URL → audio + sentence-segmented transcript) · `coverage` (transcript +
 ledger → i+1 flags, ranked unknowns) · `deck` (sentences → cards w/ native audio) ·
-`prime` (interleaved audio / m4b) · `render` (analysis → static prep HTML) · `ledgerctl`
+`prime` (interleaved audio / m4b) · `render` (analysis → static prep HTML) · `harvest`
+(unauthenticated YouTube graph → discovery candidates in `discover.db`) · `ledgerctl`
 (the seven verbs).
 
 **Smart skills** (Claude, live, reading real episode data):
@@ -577,6 +663,10 @@ ledger → i+1 flags, ranked unknowns) · `deck` (sentences → cards w/ native 
   episode; polls minted-card lapses) + `promote`, surface `needs_review`.
 - `/generate <topic>` — synthetic i+1 (folds in `ci/`).
 - `/replace` — fix existing bad cards in place (folds in the sentence-mining skill).
+- `/recommend [about <topic>]` — curiosity orchestrator (discovery half): reads
+  the taste on record, expands it into native JP queries, drives `harvest`, then
+  judges / ranks / diversifies the candidate pool and hands picks to `/immerse`.
+  All judgment inline (no cloud LLM). See the *Discovery* section above.
 - `/setup` — config interview → per-user `config.json`.
 
 Intelligence lives in skills, not frozen prompts — validated by the `sentence-mining`
@@ -676,10 +766,10 @@ fullPipe/                     # ✅ = built 2026-07-05 (see README.md for usage)
 │   ├── ledgerctl.py          # ✅ ledger verbs + promote + taste (record_rating/query_enjoyment/record_curation)
 │   ├── anki_known.py         # ✅ live known-set recompute (SudachiPy + AnkiConnect)
 │   └── build_freq.py         # ✅ P7 show-penetration ranks
-├── tools/                    # ✅ dumb CLI: acquire, coverage, deck, render
+├── tools/                    # ✅ dumb CLI: acquire, coverage, deck, render, harvest (discovery)
 │   └── (prime deferred with the interleaver)
 ├── tests/                    # ✅ 93 unittest cases (ledger/tools/server/engine)
-├── skills/                   # ✅ /immerse, /prepare (+ scripts/ensure_anki.sh); NEXT: /reconcile, /setup, /generate, /replace
+├── skills/                   # ✅ /immerse, /prepare, /recommend (+ scripts/ensure_anki.sh); NEXT: /reconcile, /setup, /generate, /replace
 ├── render/                   # ✅ template.html + demo-prep.html (also hydrated by GET /prep)
 ├── server/                   # ✅ FastAPI queue + ledgerctl verbs over Tailscale (MOBILE.md); taste tags on /rating
 └── (mobile client)           # ✅ Capacitor Android app → sibling repo anki/mobile/ (MOBILE.md); stars + taste-tag picker
@@ -727,4 +817,14 @@ fullPipe/                     # ✅ = built 2026-07-05 (see README.md for usage)
    `/immerse` `{genre, format, topics, difficulty_felt}` curation block all land on
    the `episodes` row. `POST /rating` takes tags; `GET /jobs` carries them back;
    the mobile app grew the stars + six-tag picker. Verified phone → server → ledger.
+8. **Discovery — `/recommend` Phase 1** — *done 2026-07-06.* Preceded by a research
+   pass (independent recommender over the unauthenticated graph beats harvesting
+   YouTube's unreachable, wrong-fit personalized feed). `tools/harvest.py`
+   (related / search / rss edges → `discover.db`, deduped vs. the ledger) +
+   `skills/recommend/SKILL.md` (seeds → JP query-expansion → judge/rank/diversify
+   → handoff to `/immerse`), all judgment inline (no cloud LLM). Two-tier
+   synthetic-TTS (ゆっくり/VOICEROID) format filter via `discover.format_blocklist`.
+   Verified end-to-end on the real ledger. **Next:** Phase 2 — local Ruri kNN
+   prior + playlist/collab edges when ratings thicken; the optional
+   `--mark-watched` keep-warm layer. See the *Discovery* section.
 ```

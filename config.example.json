@@ -32,6 +32,19 @@
     "model": "gpt-4o-mini"
   },
 
+  "discover": {
+    "_comment": "/recommend (ytSearch). format_blocklist drops candidates whose title or channel contains any of these substrings (case-insensitive) — a personal taste filter for formats you can't watch, e.g. the ゆっくり / VOICEROID synthetic-TTS narrators. Omit the key entirely to use the built-in default list (tools/harvest.py DEFAULT_FORMAT_BLOCKLIST); set [] to disable filtering. Use the format compounds (ゆっくり解説, 【ゆっくり) not bare ゆっくり, which also means 'leisurely' (a ゆっくり散歩 walking vlog must not be filtered). channel_blocklist hard-blocks specific channel_ids. After editing, run: python -m tools.harvest refilter.",
+    "format_blocklist": [
+      "ゆっくり解説", "ゆっくり実況", "ゆっくり茶番", "ゆっくり劇場", "ゆっくり歴史",
+      "ゆっくり地理", "ゆっくり科学", "ゆっくり雑学", "ゆっくり軍事", "ゆっくり動画",
+      "ゆっくりボイス", "【ゆっくり", "ゆっくり】",
+      "voiceroid", "ボイスロイド", "ボイロ", "voicevox", "ずんだもん",
+      "結月ゆかり", "琴葉茜", "琴葉葵", "東北きりたん", "音街ウナ", "弦巻マキ",
+      "cevio", "a.i.voice", "合成音声", "音声合成", "aquestalk", "softalk"
+    ],
+    "channel_blocklist": []
+  },
+
   "freq": {
     "show_graph_db": "~/Documents/code/anki/phrases/japaneseShowGraph/subs/japaneseShowGraph.db",
     "leeds_fallback": "~/Documents/code/audioPrimeProd/data/ja_frequency.txt"
