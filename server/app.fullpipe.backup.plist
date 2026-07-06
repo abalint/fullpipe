@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Daily off-site backup of the ledger (see tools/backup_ledger.sh).
+
+     Install:
+       cp server/app.fullpipe.backup.plist ~/Library/LaunchAgents/
+       launchctl load ~/Library/LaunchAgents/app.fullpipe.backup.plist
+     Runs:   every day at 03:00 (and on next wake if the Mac was asleep then)
+     Logs:   ~/immersion/backup.log
+     Test:   launchctl start app.fullpipe.backup
+     Stop:   launchctl unload ~/Library/LaunchAgents/app.fullpipe.backup.plist -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>app.fullpipe.backup</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/andrew/Documents/code/anki/fullPipe/tools/backup_ledger.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/andrew/Documents/code/anki/fullPipe</string>
+
+    <!-- launchd's default PATH lacks homebrew — rclone lives there -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <!-- Daily at 03:00. launchd runs a missed job once on the next wake. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>3</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/andrew/immersion/backup.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/andrew/immersion/backup.log</string>
+</dict>
+</plist>

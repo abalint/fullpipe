@@ -96,6 +96,25 @@ known-morphs export — how this install was seeded, 3,046 lemmas). Imports are
 strong positive evidence but weaker than a deliberate tap: a fresh
 `tap_unknown` demotes one quietly (bulk lists are noisy, no `needs_review`).
 
+## Backups
+
+The ledger is the one artifact that's expensive to lose, so it gets a daily
+off-site backup. `tools/backup_ledger.sh` takes a consistent `VACUUM INTO`
+snapshot (safe under WAL-mode writes), verifies `integrity_check`, gzips it,
+keeps a local copy in `~/immersion/backups/`, and uploads to a cloud remote
+via rclone — pruning both sides beyond `KEEP_DAYS` (30).
+
+```sh
+rclone config                                    # one-time: make a remote named 'gdrive'
+cp server/app.fullpipe.backup.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/app.fullpipe.backup.plist   # daily @ 03:00
+tools/backup_ledger.sh                           # run once by hand to verify
+```
+
+Restore: `gzcat ~/immersion/backups/ledger-YYYY-MM-DD.db.gz > ledger.db`
+(or `rclone copy gdrive:fullpipe-backups/ledger-YYYY-MM-DD.db.gz .`). Logs in
+`~/immersion/backup.log`.
+
 ## Tests
 
 ```sh
