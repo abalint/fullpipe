@@ -55,9 +55,10 @@ queue ──► acquire ──► coverage ────────────�
    will hit the cache); otherwise stop and tell the user — the known-set is the
    core of the analysis, don't run with a wrong one.
 4. **Keys** (from `$FULLPIPE/.env`, loaded automatically): `OPENAI_API_KEY`
-   is needed only when subtitles lack punctuation (restore pass);
-   `ELEVENLABS_API_KEY` only when there are no usable subs at all (ASR). Don't
-   preflight these — acquire degrades loudly (see Failure modes) and most
+   is the worker's unattended punctuation restore — **in this live skill you
+   punctuate with a subagent instead** (Step 2.5), so the key is irrelevant
+   here; `ELEVENLABS_API_KEY` only when there are no usable subs at all (ASR).
+   Don't preflight these — acquire degrades loudly (see Failure modes) and most
    YouTube sources have subs.
 
 ## Step 1 — take stock of the queue (default entry)
@@ -93,8 +94,11 @@ block, then decide together what this session does:
   (`.venv/bin/python -m server.app` / launchd).
 
 For each episode chosen: `$PY -m server.jobqueue set-state <id> curating`,
-then continue with Step 3 (its transcript + coverage already exist). Curate
-episodes **one at a time**, completing each through Step 6 before the next.
+then run the **punctuation gate (Step 2.5)** — a worker that ran without
+`OPENAI_API_KEY` leaves choppy, unpunctuated sentences you should fix before
+reading — and only then continue with Step 3 (its transcript + coverage already
+exist). Curate episodes **one at a time**, completing each through Step 6
+before the next.
 
 ## Step 2 — acquire + coverage (direct mode / missing artifacts only)
 
@@ -102,9 +106,16 @@ Skip this entirely when `<episode_dir>/transcript.json` **and**
 `coverage.json` already exist (the worker's Stage 1 output). Otherwise:
 
 ```sh
-$PY -m tools.acquire "<url-or-file>"        # stdout = episode_id (progress on stderr)
+$PY -m tools.acquire "<url-or-file>" --no-punct-restore   # stdout = episode_id
+# → run the punctuation gate (Step 2.5) here, BEFORE coverage —
+#   re-segmenting changes sentence indices coverage depends on
 $PY -m tools.coverage EPISODE_ID            # stdout = path to coverage.json
 ```
+
+`--no-punct-restore` skips acquire's OpenAI restore on purpose: when subs lack
+punctuation you restore it with a subagent (Step 2.5), which reads better than
+`gpt-4o-mini` and needs no key. (Drop the flag only if you deliberately want
+the cheap OpenAI pass — e.g. batch-acquiring many sources unattended.)
 
 (If the user wants the phone in the loop for this episode — video staged,
 queue entry tracked — run `$PY -m server.worker "<url-or-file>"` instead of
@@ -125,6 +136,57 @@ Relay the coverage stats line to the user (sentences, comprehensibility %,
 i+1 count, candidates) before curating — it sets expectations. If token
 comprehensibility is under ~80%, say so plainly: the episode is hard for them
 and the prep doc matters more than the cards.
+
+## Step 2.5 — punctuation gate (subagent restore)
+
+Speech transcripts (ASR, or auto-subs stripped of punctuation) arrive as
+run-on text. Sentence boundaries drive **everything downstream** — the merged
+sentences, their audio-clip spans, the i+1 classification — so unpunctuated
+subs must get sentence-ending marks (。？！) before curation. The worker does
+this unattended with OpenAI when it has a key; **here you do it with a
+subagent** (better than `gpt-4o-mini`, no key needed). Run the gate on every
+episode, both entry paths:
+
+```sh
+$PY -m tools.punctuate check EPISODE_ID     # stdout = blocks path, or empty
+```
+
+- **Empty stdout** → nothing to do (subs already punctuated, or already
+  restored). Skip straight to Step 3 (queue path) / coverage (direct path).
+- **A path on stdout** (`<episode_dir>/punct_blocks.json`, a
+  `[{"idx","text"}, …]` list of raw blocks) → this episode needs punctuation.
+  **Spawn a subagent** (Agent tool, `general-purpose`) to restore it:
+
+  > Read `<episode_dir>/punct_blocks.json` — a JSON list of Japanese subtitle
+  > blocks `{"idx", "text"}` from a speech transcript, lacking sentence
+  > punctuation. Return a JSON list of the **same length and idx order** where
+  > each `text` has sentence-ending punctuation inserted: 。 at declarative
+  > ends, ？ after questions, ！ after exclamations. **Only insert 。？！** —
+  > do not add commas, and do not rewrite, delete, reorder, translate, or
+  > otherwise change any character (non-punctuation edits are discarded
+  > downstream anyway, so they only waste effort). A block that ends
+  > mid-sentence gets no ending mark; a block spanning a boundary gets the mark
+  > mid-text. Write the result to `<episode_dir>/punct_out.json` and reply with
+  > that path only.
+
+  Then feed it back through the insert-only merge and rewrite the artifacts:
+
+  ```sh
+  $PY -m tools.punctuate apply EPISODE_ID <episode_dir>/punct_out.json
+  ```
+
+  `apply` runs the subagent's text through the **same diff** the OpenAI path
+  uses (`engine.punctuation`) — it keeps the original characters byte-for-byte
+  and absorbs only the punctuation, so audio spans stay aligned even if the
+  subagent slips and rewrites a word. It re-segments, rewrites `sentences.srt`
+  + `transcript.json` (`punctuation_source: "subagent"`), and deletes the
+  blocks file. If it errors on a block-count mismatch, re-spawn the subagent,
+  stressing *exactly one entry per input block, same order*.
+
+- **After `apply`, coverage is stale** — sentence indices changed. Re-run it:
+  direct path, this IS the Step 2 coverage call (run it now, after the gate);
+  queue path, re-run `$PY -m tools.coverage EPISODE_ID` before Step 3 (offer
+  `--refresh-known` if the worker prepared it long ago).
 
 ## Step 3 — curate (the live intelligence; this is your job, not a tool's)
 
@@ -317,7 +379,8 @@ session, M still in flight, any failures awaiting a retry decision.
 | symptom | meaning | move |
 |---|---|---|
 | `server.jobqueue list` → no queue.db | mobile layer unused on this machine | fine — direct mode |
-| acquire: "poor punctuation and no OPENAI_API_KEY" | merge falls back to duration/length caps → choppier sentences | warn user; cards still usable, offer to add the key and re-run |
+| acquire: "poor punctuation…" / "deferring restore to the /immerse subagent" | subs lack sentence punctuation | expected — the punctuation gate (Step 2.5) restores it via subagent; no key needed |
+| `punctuate apply`: "got N blocks, expected M" | subagent dropped/merged/added lines | re-spawn the subagent, stressing one entry per input block in the same order |
 | acquire: no subs + no ELEVENLABS_API_KEY + no `FULLPIPE_REAZONSPEECH_DIR` | no transcript possible | stop; ask for a key or the offline model dir |
 | coverage: AnkiConnect failed after 3 attempts | Anki closed mid-run, no fresh cache | `ensure_anki.sh`, re-run coverage |
 | job `failed` with a yt-dlp error | source gone/region-locked/needs cookies | show the error; retry only if the user says the source is fine |
@@ -329,7 +392,11 @@ session, M still in flight, any failures awaiting a retry decision.
 - Re-running the whole skill on the same source is safe: downloads cached,
   exposures deduped, already-carded lemmas excluded from candidates.
 - The worker's Stage 1 (MOBILE.md) is exactly Steps 1–2's tooling run
-  unattended — that's why artifacts-exist ⇒ skip is always correct.
+  unattended — that's why artifacts-exist ⇒ skip is always correct. The one
+  live-only step is the punctuation gate (Step 2.5): the worker restores with
+  OpenAI (or falls back to choppy sentences if it had no key), and
+  `punctuate check` is what tells you whether that fallback still needs
+  fixing — so run the gate on prepared jobs too, not just direct acquires.
 - A `curating` job you didn't just start usually means a previous session
   marked it and stopped (or the phone's curate button was tapped): treat it as
   ready — pick it up and finish it.

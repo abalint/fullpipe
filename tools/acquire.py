@@ -37,20 +37,27 @@ def clean_subs(subs):
 
 
 def segment(subs, api_key=None, punct_model="gpt-4o-mini", cache_dir=None,
-            cache_tag=None, log=print):
+            cache_tag=None, restore=True, log=print):
     """Punctuation-check → optional restore → merge to complete sentences.
 
     Returns (sentences, punctuation_restored). Pure given its inputs — the
     only side effect is the LLM call when restoration is needed.
+
+    restore=False skips the OpenAI restore even when a key is present: the
+    caller (the /immerse skill) will punctuate via a subagent instead
+    (tools.punctuate). Sentences fall back to duration/length caps until then.
     """
     restored = False
     if not SP.has_good_punctuation(subs, JA["sentence_punct"]):
-        if api_key:
+        if restore and api_key:
             log(f"punctuation below threshold — restoring over {len(subs)} blocks...")
             subs = punctuate_subs(api_key, subs, source_language="Japanese",
                                   model=punct_model, cache_tag=cache_tag,
                                   cache_dir=cache_dir)
             restored = True
+        elif not restore:
+            log("punctuation below threshold — deferring restore to the "
+                "/immerse subagent (tools.punctuate)")
         else:
             log("WARNING: poor punctuation and no OPENAI_API_KEY — sentence "
                 "merging will fall back to duration/length caps")
@@ -58,7 +65,7 @@ def segment(subs, api_key=None, punct_model="gpt-4o-mini", cache_dir=None,
     return sentences, restored
 
 
-def acquire(source, cfg, force_transcription=False, log=print):
+def acquire(source, cfg, force_transcription=False, restore_punct=True, log=print):
     """Run the full acquire stage for one source. Returns the episode record."""
     asr = cfg.get("asr", {})
     if asr.get("reazonspeech_model_dir"):
@@ -108,6 +115,7 @@ def acquire(source, cfg, force_transcription=False, log=print):
         punct_model=cfg.get("punctuation", {}).get("model", "gpt-4o-mini"),
         cache_dir=Path(cfg["work_dir"]) / ".punct_cache",
         cache_tag=episode_id,
+        restore=restore_punct,
         log=log,
     )
 
@@ -153,11 +161,15 @@ def main(argv=None):
     ap.add_argument("source", help="local media file or yt-dlp compatible URL")
     ap.add_argument("--force-transcribe", action="store_true",
                     help="skip subtitle download/discovery, always ASR")
+    ap.add_argument("--no-punct-restore", action="store_true",
+                    help="skip the OpenAI punctuation restore; leave it to the "
+                         "/immerse subagent (tools.punctuate)")
     ap.add_argument("--config")
     args = ap.parse_args(argv)
 
     cfg = load_config(args.config)
     record = acquire(args.source, cfg, force_transcription=args.force_transcribe,
+                     restore_punct=not args.no_punct_restore,
                      log=lambda m: print(m, file=sys.stderr))
     print(record["episode"]["id"])
 
