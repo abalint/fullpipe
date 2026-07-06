@@ -1,0 +1,11 @@
+.env
+config.json
+.venv/
+__pycache__/
+*.pyc
+.work/
+*.db
+.DS_Store
+
+# Personal known-vocabulary exports (generated, not source)
+known_morphs-*.csv

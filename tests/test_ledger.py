@@ -1,0 +1,436 @@
+"""Ledger state-machine tests: schema, idempotency, watched-gate, promote rules."""
+
+import json
+import sys
+import time
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from ledger import ledgerctl as lc
+
+
+def _exposure_payload(episode_id, lemmas, other_unknown=0):
+    return (
+        {"id": episode_id, "title": f"ep {episode_id}", "source": "test", "kind": "local"},
+        {lem: {"sentence_idx": 0, "known_ratio": 0.9,
+               "other_unknown_count": other_unknown} for lem in lemmas},
+    )
+
+
+class LedgerTest(unittest.TestCase):
+    def setUp(self):
+        self.conn = lc.open_db(":memory:")
+
+    def _expose_watched(self, lemma, n_episodes, other_unknown=0):
+        for i in range(n_episodes):
+            ep, exp = _exposure_payload(f"ep{i}", [lemma], other_unknown)
+            lc.record_exposure(self.conn, ep, exp)
+            lc.mark_watched(self.conn, f"ep{i}")
+
+    def test_schema_tables(self):
+        tables = {r[0] for r in self.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        self.assertTrue({"lemmas", "evidence", "episodes", "cards", "freq",
+                         "tap_batches"} <= tables)
+
+    def test_exposure_idempotent(self):
+        ep, exp = _exposure_payload("e1", ["犬"])
+        r1 = lc.record_exposure(self.conn, ep, exp)
+        r2 = lc.record_exposure(self.conn, ep, exp)
+        self.assertEqual(r1["new_rows"], 1)
+        self.assertEqual(r2["new_rows"], 0)  # P4: re-run is a no-op
+        count = self.conn.execute("SELECT COUNT(*) FROM evidence").fetchone()[0]
+        self.assertEqual(count, 1)
+
+    def test_watched_gate(self):
+        # 6 unwatched episodes: exposures stay inert, lemma stays unknown.
+        for i in range(6):
+            ep, exp = _exposure_payload(f"e{i}", ["猫"])
+            lc.record_exposure(self.conn, ep, exp)
+        lc.promote(self.conn)
+        status = self.conn.execute(
+            "SELECT status, exposure_count FROM lemmas WHERE lemma='猫'").fetchone()
+        self.assertEqual(status["status"], "unknown")
+        self.assertEqual(status["exposure_count"], 0)
+
+        # Watch them: rare-tier θ=6/spread 4 is met → known.
+        for i in range(6):
+            lc.mark_watched(self.conn, f"e{i}")
+        lc.promote(self.conn)
+        row = self.conn.execute(
+            "SELECT status, exposure_count, episode_spread FROM lemmas WHERE lemma='猫'").fetchone()
+        self.assertEqual(row["status"], "known")
+        self.assertEqual(row["exposure_count"], 6)
+        self.assertEqual(row["episode_spread"], 6)
+
+    def test_rating_set_clear_and_query(self):
+        ep, exp = _exposure_payload("er", ["犬"])
+        lc.record_exposure(self.conn, ep, exp)
+        self.assertEqual(lc.set_rating(self.conn, "er", 4)["rating"], 4)
+        rated = lc.query_ratings(self.conn)
+        self.assertEqual([(r["id"], r["rating"]) for r in rated], [("er", 4)])
+        self.assertIsNotNone(rated[0]["rated_at"])
+        lc.set_rating(self.conn, "er", 2)  # re-rate overwrites
+        self.assertEqual(lc.query_ratings(self.conn)[0]["rating"], 2)
+        lc.set_rating(self.conn, "er", None)  # clear
+        self.assertEqual(lc.query_ratings(self.conn), [])
+
+    def test_rating_validation(self):
+        ep, exp = _exposure_payload("er", ["犬"])
+        lc.record_exposure(self.conn, ep, exp)
+        for bad in (0, 6, 3.5, "4", True):
+            with self.assertRaises(ValueError):
+                lc.set_rating(self.conn, "er", bad)
+        with self.assertRaises(KeyError):
+            lc.set_rating(self.conn, "nope", 3)
+
+    def test_rating_migration_adds_columns(self):
+        # A pre-rating DB (episodes without the columns) must be healed by open_db.
+        import sqlite3
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            db = str(Path(d) / "old.db")
+            raw = sqlite3.connect(db)
+            raw.execute("""CREATE TABLE episodes (
+                id TEXT PRIMARY KEY, title TEXT, source TEXT, kind TEXT,
+                watched INTEGER DEFAULT 0, processed_at TEXT)""")
+            raw.execute("INSERT INTO episodes (id) VALUES ('old_ep')")
+            raw.commit()
+            raw.close()
+            conn = lc.open_db(db)
+            lc.set_rating(conn, "old_ep", 5)
+            self.assertEqual(lc.query_ratings(conn)[0]["rating"], 5)
+            conn.close()
+
+    def test_theta_scaled_by_freq_rank(self):
+        # Top-2k lemma needs only 2 exposures / 2 episodes.
+        self.conn.execute(
+            "INSERT INTO freq (lemma, rank, penetration, source) VALUES ('食べる', 100, 5000, 'show_graph')")
+        self._expose_watched("食べる", 2)
+        lc.promote(self.conn)
+        row = self.conn.execute("SELECT status, freq_rank FROM lemmas WHERE lemma='食べる'").fetchone()
+        self.assertEqual(row["status"], "known")
+        self.assertEqual(row["freq_rank"], 100)
+
+        # A rare lemma with the same 2 watched exposures stays unknown.
+        self._expose_watched("薔薇", 2)
+        lc.promote(self.conn)
+        self.assertEqual(self.conn.execute(
+            "SELECT status FROM lemmas WHERE lemma='薔薇'").fetchone()["status"], "unknown")
+
+    def test_exposure_comprehension_bar(self):
+        # Q1: exposures with other unknowns in the sentence don't qualify.
+        self._expose_watched("走る", 6, other_unknown=2)
+        lc.promote(self.conn)
+        row = self.conn.execute("SELECT status, exposure_count FROM lemmas WHERE lemma='走る'").fetchone()
+        self.assertEqual(row["status"], "unknown")
+        self.assertEqual(row["exposure_count"], 6)  # activated, just not qualifying
+
+    def test_tap_known_promotes(self):
+        lc.apply_taps(self.conn, {"episode_id": None, "batch_id": "b1",
+                                  "taps": [["諦める", "k"]]})
+        lc.promote(self.conn)
+        self.assertEqual(self.conn.execute(
+            "SELECT status FROM lemmas WHERE lemma='諦める'").fetchone()["status"], "known")
+
+    def test_tap_unknown_demotes_and_flags_conflict(self):
+        lc.apply_taps(self.conn, {"episode_id": None, "batch_id": "b1",
+                                  "taps": [["諦める", "k"]]})
+        time.sleep(1.1)  # ts resolution is seconds; make the demotion strictly fresher
+        lc.apply_taps(self.conn, {"episode_id": None, "batch_id": "b2",
+                                  "taps": [["諦める", "u"]]})
+        lc.promote(self.conn)
+        row = self.conn.execute(
+            "SELECT status, needs_review FROM lemmas WHERE lemma='諦める'").fetchone()
+        self.assertEqual(row["status"], "learning")  # rule 1 cancels known
+        self.assertEqual(row["needs_review"], 1)     # strong positive also exists
+
+    def test_tap_unknown_on_anki_known_flags_replace(self):
+        # Q2: demotion of a live-Anki-known word is a union no-op — the tap
+        # means the card isn't working → needs_review.
+        lc.apply_taps(self.conn, {"episode_id": None, "batch_id": "b1",
+                                  "taps": [["時計", "u"]]})
+        lc.promote(self.conn, anki_known={"時計"})
+        row = self.conn.execute(
+            "SELECT status, needs_review FROM lemmas WHERE lemma='時計'").fetchone()
+        self.assertEqual(row["needs_review"], 1)
+
+    def test_import_known_promotes(self):
+        r = lc.import_known(self.conn, ["諦める", "頑丈", "  "], origin="ankimorphs")
+        self.assertEqual(r["imported"], 2)  # blank line dropped
+        lc.promote(self.conn)
+        for lemma in ("諦める", "頑丈"):
+            self.assertEqual(self.conn.execute(
+                "SELECT status FROM lemmas WHERE lemma=?", (lemma,)
+            ).fetchone()["status"], "known")
+
+    def test_import_idempotent(self):
+        lc.import_known(self.conn, ["諦める"])
+        r = lc.import_known(self.conn, ["諦める", "頑丈"])
+        self.assertEqual(r["imported"], 1)
+        self.assertEqual(r["already_imported"], 1)
+        count = self.conn.execute(
+            "SELECT COUNT(*) FROM evidence WHERE source='import'").fetchone()[0]
+        self.assertEqual(count, 2)
+
+    def test_tap_unknown_demotes_import_quietly(self):
+        # Bulk lists are noisy: the user's correction wins with no conflict flag.
+        lc.import_known(self.conn, ["諦める"])
+        lc.apply_taps(self.conn, {"episode_id": None, "batch_id": "b1",
+                                  "taps": [["諦める", "u"]]})
+        lc.promote(self.conn)
+        row = self.conn.execute(
+            "SELECT status, needs_review FROM lemmas WHERE lemma='諦める'").fetchone()
+        self.assertEqual(row["status"], "learning")   # tie goes to the negative
+        self.assertEqual(row["needs_review"], 0)      # import ≠ deliberate tap
+
+    def test_materialize_bridges_external_lemma_forms(self):
+        # MeCab-style kana lemmas from an import must join Sudachi tokens
+        # via normalized_form (くる→来る, ところ→所).
+        import tempfile
+        lc.import_known(self.conn, ["くる", "ところ"])
+        lc.promote(self.conn)
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = {"work_dir": tmp,
+                   "known_words": {"sources": [], "cache_hours": 0}}
+            bundle = lc.materialize_known(self.conn, cfg)
+        self.assertIn("来る", bundle["norm_known"])
+        self.assertIn("所", bundle["norm_known"])
+        from engine.lemma import KnownSet, tokenize
+        ks = KnownSet(bundle["known"], bundle["norm_known"], bundle["known_stems"])
+        kita = next(t for t in tokenize("公園に来た。") if t.surface == "来")
+        self.assertIn(kita, ks)
+
+    def test_mined_card_is_learning(self):
+        lc.record_mined_cards(self.conn, "e1", [
+            {"lemma": "設計", "sentence": "この設計は美しい。", "anki_guid": "g1",
+             "anki_note_id": 111}])
+        lc.promote(self.conn)
+        self.assertEqual(self.conn.execute(
+            "SELECT status FROM lemmas WHERE lemma='設計'").fetchone()["status"], "learning")
+
+    def test_tap_batch_idempotent(self):
+        payload = {"episode_id": None, "batch_id": "batch-x", "taps": [["犬", "k"]]}
+        r1 = lc.apply_taps(self.conn, payload)
+        r2 = lc.apply_taps(self.conn, payload)
+        self.assertEqual(r1["applied"], 1)
+        self.assertTrue(r2["duplicate"])
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM evidence").fetchone()[0], 1)
+
+    def test_apply_taps_implies_mark_watched(self):
+        ep, exp = _exposure_payload("epw", ["犬"])
+        lc.record_exposure(self.conn, ep, exp)
+        r = lc.apply_taps(self.conn, {"episode_id": "epw", "batch_id": "b9",
+                                      "taps": [["犬", "k"]]})
+        self.assertTrue(r["marked_watched"])  # P5 implicit path
+        self.assertEqual(self.conn.execute(
+            "SELECT watched FROM episodes WHERE id='epw'").fetchone()[0], 1)
+
+    def test_lapse_poll(self):
+        lc.record_mined_cards(self.conn, "e1", [
+            {"lemma": "設計", "sentence": "s", "anki_guid": "g1", "anki_note_id": 42}])
+
+        def fake_anki(action, **params):
+            if action == "findCards":
+                return [4242]
+            if action == "cardsInfo":
+                return [{"cardId": 4242, "lapses": 3}]
+            raise AssertionError(action)
+
+        r1 = lc.poll_lapses(self.conn, fake_anki)
+        self.assertEqual(r1["new_lapses"], 1)
+        # Second poll with the same count: no new evidence (P6 delta semantics).
+        r2 = lc.poll_lapses(self.conn, fake_anki)
+        self.assertEqual(r2["new_lapses"], 0)
+        rows = self.conn.execute(
+            "SELECT COUNT(*) FROM evidence WHERE source='card_lapse'").fetchone()[0]
+        self.assertEqual(rows, 1)
+
+    def test_card_lapse_demotes(self):
+        # Diagram: known → learning via card_lapse (fresh negative).
+        self._expose_watched("勝負", 6)
+        lc.promote(self.conn)
+        self.assertEqual(self.conn.execute(
+            "SELECT status FROM lemmas WHERE lemma='勝負'").fetchone()["status"], "known")
+        time.sleep(1.1)
+        lc.record_mined_cards(self.conn, "ep0", [
+            {"lemma": "勝負", "sentence": "s", "anki_guid": "g", "anki_note_id": 7}])
+        time.sleep(1.1)
+
+        def fake_anki(action, **params):
+            return [700] if action == "findCards" else [{"lapses": 1}]
+
+        lc.poll_lapses(self.conn, fake_anki)
+        lc.promote(self.conn)
+        self.assertEqual(self.conn.execute(
+            "SELECT status FROM lemmas WHERE lemma='勝負'").fetchone()["status"], "learning")
+
+    def test_query_unwatched(self):
+        ep, exp = _exposure_payload("eq", ["犬", "猫"])
+        lc.record_exposure(self.conn, ep, exp)
+        unwatched = lc.query_unwatched(self.conn)
+        self.assertEqual(len(unwatched), 1)
+        self.assertEqual(unwatched[0]["inert_exposures"], 2)
+        lc.mark_watched(self.conn, "eq")
+        self.assertEqual(lc.query_unwatched(self.conn), [])
+
+    def test_query_why(self):
+        ep, exp = _exposure_payload("e1", ["犬"])
+        lc.record_exposure(self.conn, ep, exp)
+        lc.promote(self.conn)
+        why = lc.query_why(self.conn, "犬")
+        self.assertEqual(why["lemma"]["status"], "unknown")
+        self.assertEqual(len(why["evidence"]), 1)
+        self.assertEqual(why["evidence"][0]["source"], "exposure")
+
+    # --- taste metadata (DESIGN.md — Taste metadata) --------------------------
+
+    def _episode(self, episode_id="er", lemma="犬"):
+        ep, exp = _exposure_payload(episode_id, [lemma])
+        lc.record_exposure(self.conn, ep, exp)
+
+    def test_taste_events_table(self):
+        tables = {r[0] for r in self.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        self.assertIn("taste_events", tables)
+
+    def test_record_rating_with_tags(self):
+        self._episode()
+        r = lc.record_rating(self.conn, "er", 4, ["fascinating", "loved_format"])
+        self.assertEqual(r["rating"], 4)
+        self.assertEqual(r["tags"], ["fascinating", "loved_format"])
+        v = lc.query_enjoyment(self.conn, "er")
+        self.assertEqual(v["rating"], 4)
+        self.assertEqual(set(v["tags"]), {"fascinating", "loved_format"})
+        self.assertTrue(v["taste_valid"])
+        self.assertEqual(v["adjusted_enjoyment"], 4)
+
+    def test_over_my_head_censors_taste_label(self):
+        # A difficulty-driven low star is not a taste-low: excluded from the
+        # taste manifold (taste_valid=False, adjusted_enjoyment=None).
+        self._episode()
+        lc.record_rating(self.conn, "er", 2, ["over_my_head"])
+        v = lc.query_enjoyment(self.conn, "er")
+        self.assertEqual(v["rating"], 2)
+        self.assertFalse(v["taste_valid"])
+        self.assertIsNone(v["adjusted_enjoyment"])
+        # Still a rated episode in the dataset, just flagged.
+        rated = lc.query_ratings(self.conn)
+        self.assertEqual(rated[0]["id"], "er")
+        self.assertFalse(rated[0]["taste_valid"])
+
+    def test_rerate_appends_batch_and_latest_wins(self):
+        # Append-only: re-rating keeps history (drift), verdict takes the latest.
+        self._episode()
+        lc.record_rating(self.conn, "er", 4, ["fascinating"])
+        lc.record_rating(self.conn, "er", 2, ["didnt_grab"])
+        v = lc.query_enjoyment(self.conn, "er")
+        self.assertEqual(v["rating"], 2)
+        self.assertEqual(v["tags"], ["didnt_grab"])
+        rating_rows = self.conn.execute(
+            "SELECT COUNT(*) FROM taste_events WHERE episode_id='er' AND kind='rating'"
+        ).fetchone()[0]
+        self.assertEqual(rating_rows, 2)  # both batches preserved
+
+    def test_clear_rating_appends_clear_event(self):
+        self._episode()
+        lc.record_rating(self.conn, "er", 3, ["fascinating"])
+        lc.record_rating(self.conn, "er", None)  # clear
+        v = lc.query_enjoyment(self.conn, "er")
+        self.assertIsNone(v["rating"])
+        self.assertEqual(lc.query_ratings(self.conn), [])
+        # the 'clear' is itself a logged event, not an erasure
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM taste_events WHERE kind='rating' AND episode_id='er'"
+        ).fetchone()[0], 2)
+
+    def test_rating_rejects_unknown_tag(self):
+        self._episode()
+        with self.assertRaises(ValueError):
+            lc.record_rating(self.conn, "er", 3, ["bogus_tag"])
+        with self.assertRaises(KeyError):
+            lc.record_rating(self.conn, "nope", 3, ["fascinating"])
+
+    def test_update_episode_meta_columns_and_json_merge(self):
+        lc.update_episode_meta(self.conn, "ep1",
+                               columns={"channel": "Ch", "duration": 610.0,
+                                        "not_a_column": "x"},
+                               metadata={"view_count": 999, "tags": ["a"]})
+        # a later writer merges into metadata without clobbering earlier keys
+        lc.update_episode_meta(self.conn, "ep1",
+                               columns={"coverage_pct": 0.82},
+                               metadata={"topics": ["history"]})
+        row = self.conn.execute(
+            "SELECT channel, duration, coverage_pct, metadata FROM episodes "
+            "WHERE id='ep1'").fetchone()
+        self.assertEqual(row["channel"], "Ch")
+        self.assertEqual(row["duration"], 610.0)
+        self.assertEqual(row["coverage_pct"], 0.82)
+        meta = json.loads(row["metadata"])
+        self.assertEqual(meta, {"view_count": 999, "tags": ["a"],
+                                "topics": ["history"]})
+        # unknown column silently ignored (callers may pass a superset)
+        cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(episodes)")}
+        self.assertNotIn("not_a_column", cols)
+
+    def test_record_exposure_persists_provenance(self):
+        episode = {"id": "yt_x", "title": "t", "source": "u", "kind": "youtube",
+                   "channel": "散歩", "channel_id": "UC1", "duration": 610.0,
+                   "upload_date": "20250101", "view_count": 42,
+                   "description": "d", "tags": ["walk", "asmr"]}
+        lc.record_exposure(self.conn, episode,
+                           {"犬": {"sentence_idx": 0, "known_ratio": 0.9,
+                                   "other_unknown_count": 0}})
+        row = self.conn.execute(
+            "SELECT channel, channel_id, duration, upload_date, metadata "
+            "FROM episodes WHERE id='yt_x'").fetchone()
+        self.assertEqual(row["channel"], "散歩")
+        self.assertEqual(row["duration"], 610.0)
+        self.assertEqual(row["upload_date"], "20250101")
+        meta = json.loads(row["metadata"])
+        self.assertEqual(meta["view_count"], 42)
+        self.assertEqual(meta["tags"], ["walk", "asmr"])
+        self.assertEqual(meta["description"], "d")
+
+    def test_record_curation(self):
+        self._episode("epc")
+        lc.record_curation(self.conn, "epc", {
+            "synopsis": "ignored here", "genre": "explainer",
+            "format": "ゆっくり解説", "topics": ["history", "folklore"],
+            "difficulty_felt": 3})
+        row = self.conn.execute(
+            "SELECT genre, format, difficulty_felt, metadata FROM episodes "
+            "WHERE id='epc'").fetchone()
+        self.assertEqual(row["genre"], "explainer")
+        self.assertEqual(row["format"], "ゆっくり解説")
+        self.assertEqual(row["difficulty_felt"], 3)
+        self.assertEqual(json.loads(row["metadata"])["topics"],
+                         ["history", "folklore"])
+
+    def test_purge_retains_rated_keeps_taste_events(self):
+        self._episode("er")
+        lc.record_rating(self.conn, "er", 4, ["fascinating"])
+        res = lc.purge_episode(self.conn, "er")
+        self.assertTrue(res["rating_retained"])
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM episodes WHERE id='er'").fetchone()[0], 1)
+        self.assertGreater(self.conn.execute(
+            "SELECT COUNT(*) FROM taste_events WHERE episode_id='er'").fetchone()[0], 0)
+
+    def test_purge_unrated_drops_taste_events(self):
+        self._episode("eu", "猫")
+        lc.record_rating(self.conn, "eu", 3)
+        lc.record_rating(self.conn, "eu", None)  # cleared → no taste to keep
+        res = lc.purge_episode(self.conn, "eu")
+        self.assertFalse(res["rating_retained"])
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM episodes WHERE id='eu'").fetchone()[0], 0)
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM taste_events WHERE episode_id='eu'").fetchone()[0], 0)
+
+
+if __name__ == "__main__":
+    unittest.main()

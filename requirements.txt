@@ -1,0 +1,23 @@
+# Core (python3.12 — SudachiPy has no 3.14 wheels yet)
+sudachipy
+sudachidict_core
+genanki
+requests
+openai            # punctuation restore (engine/punctuation.py)
+
+# Optional — offline ASR fallback (ReazonSpeech k2-v2; see PROPOSALS.md P8)
+# sherpa-onnx
+# soundfile
+# numpy
+
+# Optional — TTS last resort (audio-forward: avoid)
+# piper-tts
+
+# Optional — exact token counts for punctuation chunking (falls back to a
+# char-based estimate when absent)
+# tiktoken
+
+# Sync server (server/ — MOBILE.md)
+fastapi
+uvicorn[standard]
+httpx             # FastAPI TestClient (tests/test_server.py)

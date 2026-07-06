@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sample</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1a1a1a; --muted: #777; --card: #f4f4f6;
+    --accent: #4a90d9; --know: #2e9e5b; --dunno: #d9544a; --hl: #fff3c4;
+    --border: #e0e0e4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #17181c; --fg: #e8e8ea; --muted: #9a9aa2; --card: #23242a;
+      --accent: #6aa9e9; --know: #4dbf7f; --dunno: #e9756c; --hl: #4a4020;
+      --border: #33343c;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 16px; background: var(--bg); color: var(--fg);
+    font-family: "Hiragino Sans", "Noto Sans JP", -apple-system, sans-serif;
+    line-height: 1.7; max-width: 720px; margin-inline: auto;
+  }
+  h1 { font-size: 1.25rem; margin: 0 0 4px; }
+  h2 { font-size: 1rem; color: var(--muted); margin: 28px 0 10px;
+       text-transform: uppercase; letter-spacing: .06em; }
+  .stats { display: flex; gap: 14px; flex-wrap: wrap; color: var(--muted);
+           font-size: .85rem; margin-bottom: 8px; }
+  .stats b { color: var(--fg); }
+  .synopsis { background: var(--card); border-radius: 10px; padding: 12px 14px; }
+  .sent { background: var(--card); border-radius: 10px; padding: 10px 14px;
+          margin-bottom: 10px; }
+  .sent .time { font-size: .75rem; color: var(--muted); }
+  .sent .reading { font-size: .8rem; color: var(--muted); margin-top: 2px; }
+  .w { cursor: pointer; border-radius: 4px; padding: 0 1px; }
+  .w.unk { background: var(--hl); }
+  .w.target { border-bottom: 2px solid var(--accent); font-weight: 600; }
+  .w.tap-k { background: color-mix(in srgb, var(--know) 25%, transparent);
+             outline: 1px solid var(--know); }
+  .w.tap-u { background: color-mix(in srgb, var(--dunno) 25%, transparent);
+             outline: 1px solid var(--dunno); }
+  .gloss { display: grid; grid-template-columns: max-content max-content 1fr minmax(4ch, auto);
+           gap: 6px 12px; align-items: end; }
+  .gloss .w { font-size: 1.05rem; }
+  .gloss .r { color: var(--muted); font-size: .8rem; }
+  .gloss .n { color: var(--muted); font-size: .8rem; overflow-wrap: anywhere; }
+  .gloss .n .rec { opacity: .7; }
+  .gloss .m { color: var(--muted); font-size: .85rem; overflow-wrap: anywhere; }
+  ruby rt { font-size: .5em; color: var(--muted); user-select: none; }
+  .m[data-i] { cursor: pointer; }
+  .m.masked { letter-spacing: 3px; opacity: .55; }
+  #reveal-all { padding: 4px 10px; font-size: .8rem; border-radius: 8px;
+                margin-left: 8px; vertical-align: middle; }
+  .legend { font-size: .8rem; color: var(--muted); margin: 6px 0 0; }
+  .legend .k { color: var(--know); } .legend .u { color: var(--dunno); }
+  button {
+    font: inherit; border: 1px solid var(--border); border-radius: 10px;
+    background: var(--card); color: var(--fg); padding: 10px 16px;
+    cursor: pointer; margin-right: 8px;
+  }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  #blob { width: 100%; margin-top: 10px; min-height: 84px; font-family: ui-monospace, monospace;
+          font-size: .75rem; background: var(--card); color: var(--fg);
+          border: 1px solid var(--border); border-radius: 10px; padding: 8px; display: none; }
+  #tapcount { color: var(--muted); font-size: .85rem; margin-left: 4px; }
+  footer { margin: 40px 0 20px; color: var(--muted); font-size: .75rem; }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title"></h1>
+  <div class="stats" id="stats"></div>
+</header>
+
+<section id="synopsis-section" hidden>
+  <h2>あらすじ</h2>
+  <div class="synopsis" id="synopsis"></div>
+</section>
+
+<section id="focal-section" hidden>
+  <h2>Focal points</h2>
+  <div id="focal"></div>
+</section>
+
+<section>
+  <h2>Key vocabulary <span id="tapcount"></span>
+      <button id="reveal-all">show all definitions</button></h2>
+  <p class="legend">tap the word to mark: <span class="k">✔ know it</span> →
+     <span class="u">✘ don't know</span> → clear · tap ··· to peek at one
+     definition (mark first, peek after!)</p>
+  <div class="gloss" id="glossary"></div>
+</section>
+
+<section id="iplus1-section">
+  <h2>i+1 sentences</h2>
+  <div id="iplus1"></div>
+</section>
+
+<section id="reinforce-section" hidden>
+  <h2>Reinforcement</h2>
+  <div id="reinforce"></div>
+</section>
+
+<section>
+  <h2>Corrections</h2>
+  <button class="primary" id="copy">Copy corrections</button>
+  <button id="share" hidden>Share…</button>
+  <textarea id="blob" readonly></textarea>
+</section>
+
+<footer>fullPipe prep doc · works offline · taps stay on this device until you copy them</footer>
+
+<script>
+const DATA = {"episode": {"id": "local_f1625312f2e7f58d", "title": "sample"}, "stats": {"comprehensible": 5, "reinforcement": 1, "i_plus_1": 3, "too_hard": 1, "total_sentences": 10, "token_comprehensibility": 0.85, "known_set_size": 23, "learning_size": 1, "unknown_lemmas": 6, "candidates_dropped_by_cap": 0}, "curate": {"synopsis": "A quiet slice-of-life narration: the speaker has breakfast and heads to the park on a fine day, meets a big dog guarding its territory, and walks the park's perimeter with a friend in the evening. Ends on wanting to return tomorrow.", "synopsis_segs": [["A quiet slice-of-life narration: the speaker has breakfast and heads to the park on a fine day, meets a big dog guarding its territory, and walks the park's perimeter with a friend in the evening. Ends on wanting to return tomorrow.", null]], "focal_points": [{"word": "縄張り", "why": "the dog's territorial behavior is the episode's one dramatic beat; everything at the park hinges on it", "why_segs": [["the dog's territorial behavior is the episode's one dramatic beat; everything at the park hinges on it", null]]}, {"word": "吠える", "why": "highest-frequency unknown verb (rank ~3200) and the audible event you'll hear before you parse it", "why_segs": [["highest-frequency unknown verb (rank ~3200) and the audible event you'll hear before you parse it", null]]}, {"word": "夕方", "why": "most frequent unknown overall (rank ~2800); anchors the episode's time structure", "why_segs": [["most frequent unknown overall (rank ~2800); anchors the episode's time structure", null]]}]}, "glossary": [{"lemma": "縄張り", "reading": "なわばり", "freq_rank": 6100, "recurrence": 1, "gloss": "territory", "gloss_segs": [["territory", null]], "note_segs": []}, {"lemma": "吠える", "reading": "ほえ", "freq_rank": 3200, "recurrence": 1, "gloss": "to bark", "gloss_segs": [["to bark", null]], "note_segs": []}, {"lemma": "夕方", "reading": "ゆうがた", "freq_rank": 2800, "recurrence": 1, "gloss": "early evening", "gloss_segs": [["early evening", null]], "note_segs": []}, {"lemma": "頑丈", "reading": "がんじょう", "freq_rank": 7900, "recurrence": 1, "gloss": "sturdy", "gloss_segs": [["sturdy", null]], "note_segs": []}, {"lemma": "柵", "reading": "さく", "freq_rank": null, "recurrence": 1, "gloss": "fence", "gloss_segs": [["fence", null]], "note_segs": []}], "iplus1": [{"lemma": "夕方", "reading": "ゆうがた", "sentence_idx": 5}, {"lemma": "吠える", "reading": "ほえ", "sentence_idx": 4}, {"lemma": "縄張り", "reading": "なわばり", "sentence_idx": 3}], "reinforcement": [7], "sentences_by_idx": {"3": {"idx": 3, "start": 15.0, "tokens": [{"s": "その", "l": "その", "r": "その", "c": false, "k": false}, {"s": "犬", "l": "犬", "r": "いぬ", "c": true, "k": true}, {"s": "は", "l": "は", "r": "は", "c": false, "k": false}, {"s": "自分", "l": "自分", "r": "じぶん", "c": true, "k": true}, {"s": "の", "l": "の", "r": "の", "c": false, "k": false}, {"s": "縄張り", "l": "縄張り", "r": "なわばり", "c": true, "k": false}, {"s": "を", "l": "を", "r": "を", "c": false, "k": false}, {"s": "守っ", "l": "守る", "r": "まもっ", "c": true, "k": true}, {"s": "て", "l": "て", "r": "て", "c": false, "k": false}, {"s": "い", "l": "いる", "r": "い", "c": false, "k": false}, {"s": "まし", "l": "ます", "r": "まし", "c": false, "k": false}, {"s": "た", "l": "た", "r": "た", "c": false, "k": false}, {"s": "。", "l": "。", "r": "。", "c": false, "k": false}]}, "4": {"idx": 4, "start": 19.5, "tokens": [{"s": "犬", "l": "犬", "r": "いぬ", "c": true, "k": true}, {"s": "は", "l": "は", "r": "は", "c": false, "k": false}, {"s": "大きな", "l": "大きな", "r": "おおきな", "c": true, "k": true}, {"s": "声", "l": "声", "r": "こえ", "c": true, "k": true}, {"s": "で", "l": "で", "r": "で", "c": false, "k": false}, {"s": "吠え", "l": "吠える", "r": "ほえ", "c": true, "k": false}, {"s": "まし", "l": "ます", "r": "まし", "c": false, "k": false}, {"s": "た", "l": "た", "r": "た", "c": false, "k": false}, {"s": "。", "l": "。", "r": "。", "c": false, "k": false}]}, "5": {"idx": 5, "start": 24.0, "tokens": [{"s": "夕方", "l": "夕方", "r": "ゆうがた", "c": true, "k": false}, {"s": "、", "l": "、", "r": "、", "c": false, "k": false}, {"s": "友達", "l": "友達", "r": "ともだち", "c": true, "k": true}, {"s": "と", "l": "と", "r": "と", "c": false, "k": false}, {"s": "一緒", "l": "一緒", "r": "いっしょ", "c": true, "k": true}, {"s": "に", "l": "に", "r": "に", "c": false, "k": false}, {"s": "公園", "l": "公園", "r": "こうえん", "c": true, "k": true}, {"s": "の", "l": "の", "r": "の", "c": false, "k": false}, {"s": "周り", "l": "周り", "r": "まわり", "c": true, "k": true}, {"s": "を", "l": "を", "r": "を", "c": false, "k": false}, {"s": "歩き", "l": "歩く", "r": "あるき", "c": true, "k": true}, {"s": "まし", "l": "ます", "r": "まし", "c": false, "k": false}, {"s": "た", "l": "た", "r": "た", "c": false, "k": false}, {"s": "。", "l": "。", "r": "。", "c": false, "k": false}]}, "6": {"idx": 6, "start": 32.0, "tokens": [{"s": "公園", "l": "公園", "r": "こうえん", "c": true, "k": true}, {"s": "の", "l": "の", "r": "の", "c": false, "k": false}, {"s": "柵", "l": "柵", "r": "さく", "c": true, "k": false}, {"s": "は", "l": "は", "r": "は", "c": false, "k": false}, {"s": "とても", "l": "とても", "r": "とても", "c": true, "k": true}, {"s": "頑丈", "l": "頑丈", "r": "がんじょう", "c": true, "k": false}, {"s": "です", "l": "です", "r": "です", "c": false, "k": false}, {"s": "。", "l": "。", "r": "。", "c": false, "k": false}]}, "7": {"idx": 7, "start": 37.5, "tokens": [{"s": "毎日", "l": "毎日", "r": "まいにち", "c": true, "k": true}, {"s": "、", "l": "、", "r": "、", "c": false, "k": false}, {"s": "犬", "l": "犬", "r": "いぬ", "c": true, "k": true}, {"s": "と", "l": "と", "r": "と", "c": false, "k": false}, {"s": "散歩", "l": "散歩", "r": "さんぽ", "c": true, "k": false}, {"s": "を", "l": "を", "r": "を", "c": false, "k": false}, {"s": "し", "l": "する", "r": "し", "c": false, "k": false}, {"s": "ます", "l": "ます", "r": "ます", "c": false, "k": false}, {"s": "。", "l": "。", "r": "。", "c": false, "k": false}]}}};
+
+// ---- tap state --------------------------------------------------------------
+// lemma -> "k" | "u". Kept in a JS var; localStorage is best-effort crash
+// recovery only (P9 — don't rely on it persisting between opens).
+let taps = {};
+const LS_KEY = "prep_taps_" + DATA.episode.id;
+try { taps = JSON.parse(localStorage.getItem(LS_KEY) || "{}"); } catch (e) {}
+
+function saveTaps() {
+  try { localStorage.setItem(LS_KEY, JSON.stringify(taps)); } catch (e) {}
+  document.getElementById("tapcount").textContent =
+    Object.keys(taps).length ? "· " + Object.keys(taps).length + " marked" : "";
+  document.querySelectorAll(".w[data-lemma]").forEach(el => {
+    el.classList.toggle("tap-k", taps[el.dataset.lemma] === "k");
+    el.classList.toggle("tap-u", taps[el.dataset.lemma] === "u");
+  });
+}
+
+function cycleTap(lemma) {
+  if (taps[lemma] === "k") taps[lemma] = "u";
+  else if (taps[lemma] === "u") delete taps[lemma];
+  else taps[lemma] = "k";
+  saveTaps();
+}
+
+function setGloss(m, shown) {
+  m.classList.toggle("masked", !shown);
+  m.textContent = "";
+  if (shown) m.appendChild(segsNode(DATA.glossary[m.dataset.i].gloss_segs));
+  else m.textContent = "···";
+}
+
+document.addEventListener("click", e => {
+  const m = e.target.closest(".m[data-i]");
+  if (m) { setGloss(m, m.classList.contains("masked")); return; }
+  const w = e.target.closest(".w[data-lemma]");
+  if (w) cycleTap(w.dataset.lemma);
+});
+
+// ---- rendering ---------------------------------------------------------------
+function el(tag, cls, text) {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined) n.textContent = text;
+  return n;
+}
+
+// Furigana: ruby only where there's kanji to gloss — kana words stay bare.
+const HAS_KANJI = /[㐀-鿿々〆]/;
+function rubyWord(text, reading) {
+  if (!(reading && HAS_KANJI.test(text) && reading !== text))
+    return document.createTextNode(text);
+  const r = document.createElement("ruby");
+  r.appendChild(document.createTextNode(text));
+  const rt = document.createElement("rt");
+  rt.textContent = reading;
+  r.appendChild(rt);
+  return r;
+}
+
+// Pre-annotated prose segments from render.py: [[chunk, reading|null], ...]
+function segsNode(segs) {
+  const frag = document.createDocumentFragment();
+  (segs || []).forEach(([text, reading]) => frag.appendChild(rubyWord(text, reading)));
+  return frag;
+}
+
+function tokenSpan(t, targetLemma) {
+  if (!t.c) return document.createTextNode(t.s);
+  const cls = ["w"];
+  if (!t.k) cls.push("unk");
+  if (targetLemma && t.l === targetLemma) cls.push("target");
+  const n = el("span", cls.join(" "));
+  n.appendChild(rubyWord(t.s, t.r));
+  n.dataset.lemma = t.l;
+  return n;
+}
+
+function fmtTime(sec) {
+  const m = Math.floor(sec / 60), s = Math.floor(sec % 60);
+  return m + ":" + String(s).padStart(2, "0");
+}
+
+function sentenceCard(s, targetLemma, readingLine) {
+  const card = el("div", "sent");
+  card.appendChild(el("div", "time", fmtTime(s.start)));
+  const body = el("div");
+  s.tokens.forEach(t => body.appendChild(tokenSpan(t, targetLemma)));
+  card.appendChild(body);
+  if (readingLine) card.appendChild(el("div", "reading", readingLine));
+  return card;
+}
+
+function render() {
+  document.getElementById("title").textContent = DATA.episode.title || DATA.episode.id;
+  document.title = DATA.episode.title || DATA.episode.id;
+
+  const st = DATA.stats;
+  const stats = document.getElementById("stats");
+  [["comprehension", Math.round(st.token_comprehensibility * 100) + "%"],
+   ["sentences", st.total_sentences],
+   ["i+1", st.i_plus_1],
+   ["reinforcement", st.reinforcement]]
+    .forEach(([k, v]) => {
+      const d = el("span"); d.append(el("b", "", String(v)), " " + k);
+      stats.appendChild(d);
+    });
+
+  if (DATA.curate && DATA.curate.synopsis) {
+    document.getElementById("synopsis-section").hidden = false;
+    const syn = document.getElementById("synopsis");
+    if (DATA.curate.synopsis_segs && DATA.curate.synopsis_segs.length)
+      syn.appendChild(segsNode(DATA.curate.synopsis_segs));
+    else syn.textContent = DATA.curate.synopsis;
+  }
+  const readings = {};
+  DATA.glossary.forEach(g => { if (g.reading) readings[g.lemma] = g.reading; });
+  DATA.iplus1.forEach(x => { if (x.reading) readings[x.lemma] = x.reading; });
+
+  if (DATA.curate && DATA.curate.focal_points && DATA.curate.focal_points.length) {
+    document.getElementById("focal-section").hidden = false;
+    const f = document.getElementById("focal");
+    DATA.curate.focal_points.forEach(fp => {
+      const card = el("div", "sent");
+      const w = el("span", "w"); w.dataset.lemma = fp.word;
+      w.appendChild(rubyWord(fp.word, readings[fp.word]));
+      card.append(w, " — ");
+      if (fp.why_segs && fp.why_segs.length) card.appendChild(segsNode(fp.why_segs));
+      else card.append(fp.why || "");
+      f.appendChild(card);
+    });
+  }
+
+  // Key vocabulary grid: word | reading | usage from the episode | english.
+  // English ships masked: mark known/unknown first, peek after, so the
+  // definition can't influence the self-assessment.
+  const gl = document.getElementById("glossary");
+  DATA.glossary.forEach((g, i) => {
+    const w = el("span", "w unk", g.lemma); w.dataset.lemma = g.lemma;
+    const r = el("span", "r", g.reading || "");
+    const n = el("span", "n");
+    if (g.note_segs && g.note_segs.length) n.appendChild(segsNode(g.note_segs));
+    if (g.recurrence > 1) n.appendChild(el("span", "rec",
+        (n.childNodes.length ? " " : "") + "×" + g.recurrence));
+    const m = el("span", "m");
+    if (g.gloss) { m.dataset.i = i; setGloss(m, false); }
+    gl.append(w, r, n, m);
+  });
+
+  const ip = document.getElementById("iplus1");
+  DATA.iplus1.forEach(x => {
+    const s = DATA.sentences_by_idx[x.sentence_idx];
+    if (s) ip.appendChild(sentenceCard(s, x.lemma, null));
+  });
+
+  if (DATA.reinforcement.length) {
+    document.getElementById("reinforce-section").hidden = false;
+    const rf = document.getElementById("reinforce");
+    DATA.reinforcement.forEach(idx => {
+      const s = DATA.sentences_by_idx[idx];
+      if (s) rf.appendChild(sentenceCard(s, null, null));
+    });
+  }
+  saveTaps();
+}
+
+// ---- corrections export (P9: clipboard + visible text + share) ---------------
+function blobText() {
+  const batch = Array.from(crypto.getRandomValues(new Uint8Array(8)))
+    .map(b => b.toString(16).padStart(2, "0")).join("");
+  return JSON.stringify({
+    episode_id: DATA.episode.id,
+    batch_id: batch,
+    taps: Object.entries(taps).map(([l, v]) => [l, v]),
+  });
+}
+
+document.getElementById("copy").addEventListener("click", async () => {
+  const text = blobText();
+  const ta = document.getElementById("blob");
+  ta.value = text; ta.style.display = "block";  // visible fallback always
+  try {
+    await navigator.clipboard.writeText(text);
+    document.getElementById("copy").textContent = "Copied ✔";
+    setTimeout(() => document.getElementById("copy").textContent = "Copy corrections", 1500);
+  } catch (e) {
+    ta.focus(); ta.select();  // clipboard denied → long-press-copy the textarea
+  }
+});
+
+let allShown = false;
+document.getElementById("reveal-all").addEventListener("click", () => {
+  allShown = !allShown;
+  document.querySelectorAll(".m[data-gloss]").forEach(m => setGloss(m, allShown));
+  document.getElementById("reveal-all").textContent =
+    allShown ? "hide definitions" : "show all definitions";
+});
+
+if (navigator.share) {
+  const btn = document.getElementById("share");
+  btn.hidden = false;
+  btn.addEventListener("click", () => navigator.share({ text: blobText() }).catch(() => {}));
+}
+
+render();
+</script>
+</body>
+</html>

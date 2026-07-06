@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- fullPipe sync server as a background service (MOBILE.md: "run it as a
+     background service, not a hand-started process").
+
+     Install:
+       cp server/app.fullpipe.server.plist ~/Library/LaunchAgents/
+       launchctl load ~/Library/LaunchAgents/app.fullpipe.server.plist
+     Logs:   ~/immersion/server.log
+     Stop:   launchctl unload ~/Library/LaunchAgents/app.fullpipe.server.plist -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>app.fullpipe.server</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/andrew/Documents/code/anki/fullPipe/.venv/bin/python</string>
+        <string>-m</string>
+        <string>server.app</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/andrew/Documents/code/anki/fullPipe</string>
+
+    <!-- launchd's default PATH lacks homebrew — yt-dlp/ffmpeg/tailscale live there -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/andrew/immersion/server.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/andrew/immersion/server.log</string>
+</dict>
+</plist>

@@ -1,0 +1,56 @@
+{
+  "anki_connect_url": "http://localhost:8765",
+
+  "work_dir": "~/immersion",
+  "ledger_db": "~/immersion/ledger.db",
+
+  "sub_lang": "ja",
+
+  "server": {
+    "_comment": "sync server (MOBILE.md). host 'tailscale' binds to the tailnet IP (falls back to 127.0.0.1 when tailscale is absent); set a random token and put the same one in the phone app's Settings.",
+    "host": "tailscale",
+    "port": 8321,
+    "token": "",
+    "video_resolution": "480p"
+  },
+
+  "known_words": {
+    "interval_threshold": 21,
+    "cache_hours": 6,
+    "sources": [
+      { "query": "deck:\"Sentence Cards\"", "field": "sentence" },
+      { "query": "note:\"Core 2k/6k\"", "field": "Vocabulary-Kanji" }
+    ]
+  },
+
+  "asr": {
+    "engine": "auto",
+    "reazonspeech_model_dir": ""
+  },
+
+  "punctuation": {
+    "model": "gpt-4o-mini"
+  },
+
+  "freq": {
+    "show_graph_db": "~/Documents/code/anki/phrases/japaneseShowGraph/subs/japaneseShowGraph.db",
+    "leeds_fallback": "~/Documents/code/audioPrimeProd/data/ja_frequency.txt"
+  },
+
+  "deck": {
+    "name": "Immersion Mining",
+    "new_cards_per_day": 15,
+
+    "_comment_loudness": "Card audio clips are loudness-normalized to this integrated loudness (LUFS) so volume is consistent across episodes when reviewing. Set to null to keep the source volume untouched.",
+    "clip_target_lufs": -16,
+
+    "_comment": "note_type/field_map are optional: omit them to mint onto the built-in 'fullPipe Sentence Mining' model (auto-created). Set them to mint onto your own note type (must already exist in Anki). field_map keys: sentence, audio, english, image, lemma, reading, source, sequence — map only the fields your note type has. A value may be a list of field names (e.g. below: Anki requires the FIRST field of a note non-empty, so the sentence fills it too).",
+    "note_type": "Sentence Cards",
+    "field_map": {
+      "sentence": ["Sentence", "Japanese"],
+      "english": "English",
+      "image": "Image",
+      "audio": "Audio"
+    }
+  }
+}
