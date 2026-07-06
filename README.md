@@ -180,6 +180,12 @@ coverage.json sentences w/ timing + tokens — /prep only ships the i+1
 subset). Words in the subs are tap targets feeding the same tap store as the
 prep doc; replay-line/prev/next/speed/furigana/fullscreen, resume position,
 prep-doc timestamps deep-link to the moment, VLC handoff kept as fallback.
+Same day, tiered word highlighting: /transcript now also carries per-sentence
+classification (`cls`), per-token corpus freq rank (`f`), and the ranked
+candidate lemmas (`candidates`), feeding the player's text-color-only
+highlight tiers (off / focus / learn / all), i+1 line badge + target
+underline, and an `Aa` panel with subtitle size + height prefs (see
+mobile/README.md — Player).
 
 **Local Stage 1 (2026-07-05): `/prepare` skill** (`skills/prepare/SKILL.md`,
 symlinked like `/immerse`) runs Stage 1 without the app or server —

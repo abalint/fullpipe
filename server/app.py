@@ -98,6 +98,7 @@ def create_app(cfg, start_worker=True):
                 "tags": verdict["tags"] if verdict else []}
 
     durations = {}  # episode_id → seconds; staged artifacts never change in place
+    freq_cache = {}  # lemma → corpus rank, for /transcript highlight tiers
 
     def _duration(episode_id):
         """Runtime in seconds: ffprobe the staged video, else the transcript's
@@ -200,14 +201,33 @@ def create_app(cfg, start_worker=True):
         """Full tokenized sentence track for the in-app player's subtitle
         overlay: every sentence with timing + prep-shaped tokens (/prep ships
         only the i+1/reinforcement subset). Available from `prepared`, same
-        as the video."""
+        as the video.
+
+        Enriched for the player's highlight tiers: each sentence carries its
+        coverage classification (`cls` — i_plus_1/reinforcement/... ), each
+        token the corpus freq rank (`f`, absent = not in the corpus), and the
+        doc the ranked candidate lemmas (`candidates`, coverage order = the
+        episode's high-value words)."""
         try:
             coverage = load_coverage(cfg, episode_id)
         except FileNotFoundError as e:
             raise HTTPException(404, str(e))
+        # ~300k rows, ~0.5s to load — cache it; freq only changes when
+        # build_freq reruns (offline, rare), which warrants a server restart
+        if not freq_cache:
+            freq_cache.update(
+                ledger_conn().execute("SELECT lemma, rank FROM freq").fetchall())
+        freq = freq_cache
+
+        def tok(t):
+            rank = freq.get(t.get("l"))
+            return {**t, "f": rank} if rank is not None else t
+
         return {"episode_id": episode_id,
+                "candidates": [c["lemma"] for c in coverage.get("candidates", [])],
                 "sentences": [{"idx": s["idx"], "start": s["start"],
-                               "end": s["end"], "tokens": s["tokens"]}
+                               "end": s["end"], "cls": s.get("classification"),
+                               "tokens": [tok(t) for t in s["tokens"]]}
                               for s in coverage["sentences"]]}
 
     @app.get("/definitions/{episode_id}", dependencies=[Depends(auth)])

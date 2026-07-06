@@ -204,6 +204,11 @@ class TestRoutes(ServerTestBase):
         # /prep ships only the i+1/reinforcement subset; the player's subtitle
         # overlay needs every sentence with timing + tokens
         self.stage_episode()
+        # a freq row so the corpus-rank enrichment has something to attach
+        conn = lc.open_db(self.cfg["ledger_db"])
+        conn.execute("INSERT INTO freq (lemma, rank, source) VALUES ('公園', 120, 'show_graph')")
+        conn.commit()
+        conn.close()
         r = self.client.get(f"/transcript/{EP}", headers=self.auth)
         self.assertEqual(r.status_code, 200)
         data = r.json()
@@ -212,6 +217,12 @@ class TestRoutes(ServerTestBase):
         self.assertEqual(data["sentences"][0]["start"], 0.0)
         self.assertEqual(data["sentences"][1]["end"], 4.0)
         self.assertEqual(data["sentences"][1]["tokens"][0]["l"], "公園")
+        # highlight-tier enrichment: classification, corpus rank, candidates
+        self.assertEqual(data["sentences"][0]["cls"], "comprehensible")
+        self.assertEqual(data["sentences"][1]["cls"], "i_plus_1")
+        self.assertEqual(data["sentences"][1]["tokens"][0]["f"], 120)
+        self.assertNotIn("f", data["sentences"][0]["tokens"][0])  # 犬 has no rank
+        self.assertEqual(data["candidates"], ["公園"])
         self.assertEqual(self.client.get("/transcript/nope", headers=self.auth)
                          .status_code, 404)
         self.assertEqual(self.client.get(f"/transcript/{EP}").status_code, 401)
