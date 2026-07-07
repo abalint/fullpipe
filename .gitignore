@@ -9,3 +9,6 @@ __pycache__/
 
 # Personal known-vocabulary exports (generated, not source)
 known_morphs-*.csv
+
+# Claude Code local runtime state
+.claude/
