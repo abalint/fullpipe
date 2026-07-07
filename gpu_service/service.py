@@ -69,6 +69,9 @@ COMPUTE = os.environ.get("FULLPIPE_ASR_COMPUTE", "float16")
 TOKEN = os.environ.get("FULLPIPE_GPU_TOKEN", "")
 PORT = int(os.environ.get("FULLPIPE_GPU_PORT", "8422"))
 VAD = os.environ.get("FULLPIPE_ASR_VAD", "1") not in ("0", "false", "False", "")
+# Forbid repeating any N-token sequence — curbs the distil model's repetition
+# loops (measured: removes duplicated sentences and recovers crowded-out content).
+NO_REPEAT_NGRAM = int(os.environ.get("FULLPIPE_ASR_NO_REPEAT_NGRAM", "3"))
 
 app = FastAPI(title="fullPipe GPU transcription", version="1.0")
 
@@ -109,6 +112,7 @@ def health():
         "device": DEVICE,
         "compute": COMPUTE,
         "vad": VAD,
+        "no_repeat_ngram": NO_REPEAT_NGRAM,
         "model_loaded": _MODEL is not None,
         "auth_required": bool(TOKEN),
     }
@@ -152,6 +156,7 @@ async def transcribe(
             vad_filter=VAD,
             beam_size=5,
             condition_on_previous_text=False,
+            no_repeat_ngram_size=NO_REPEAT_NGRAM,
         )
 
         words = []

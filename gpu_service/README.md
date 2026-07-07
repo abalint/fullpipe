@@ -51,6 +51,7 @@ transcription engine selected via `asr.gpu_url` in `config.json`.
 | `FULLPIPE_ASR_DEVICE` | `cuda` | `cpu` to test without a GPU |
 | `FULLPIPE_ASR_COMPUTE` | `float16` | `int8_float16` / `int8` to cut VRAM |
 | `FULLPIPE_ASR_VAD` | `1` | Silero VAD filtering |
+| `FULLPIPE_ASR_NO_REPEAT_NGRAM` | `3` | forbid repeating N-token spans; curbs distil-model repetition loops (0 disables) |
 | `FULLPIPE_GPU_TOKEN` | *(unset)* | bearer token; unset = no auth |
 | `FULLPIPE_GPU_PORT` | `8422` | listen port |
 
