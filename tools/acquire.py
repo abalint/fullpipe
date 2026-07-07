@@ -71,6 +71,8 @@ def acquire(source, cfg, force_transcription=False, restore_punct=True, log=prin
     if asr.get("reazonspeech_model_dir"):
         os.environ.setdefault("FULLPIPE_REAZONSPEECH_DIR", asr["reazonspeech_model_dir"])
     elevenlabs_key = os.environ.get("ELEVENLABS_API_KEY")
+    gpu_url = asr.get("gpu_url") or os.environ.get("FULLPIPE_GPU_URL")
+    gpu_token = asr.get("gpu_token") or os.environ.get("FULLPIPE_GPU_TOKEN")
     sub_lang = cfg.get("sub_lang", "ja")
     dl_dir = downloads_dir(cfg)
     meta = {}  # rich yt-dlp provenance (youtube only); empty for local files
@@ -85,6 +87,7 @@ def acquire(source, cfg, force_transcription=False, restore_punct=True, log=prin
             force_transcription=force_transcription,
             engine_pref=asr.get("engine", "auto"),
             elevenlabs_api_key=elevenlabs_key,
+            gpu_url=gpu_url, gpu_token=gpu_token,
         )
     else:
         kind = "youtube"
@@ -94,6 +97,7 @@ def acquire(source, cfg, force_transcription=False, restore_punct=True, log=prin
             force_transcription=force_transcription,
             engine_pref=asr.get("engine", "auto"),
             elevenlabs_api_key=elevenlabs_key,
+            gpu_url=gpu_url, gpu_token=gpu_token,
         )
         episode_id = f"yt_{mp3_path.stem}"
         from engine.downloader import fetch_full_metadata

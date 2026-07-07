@@ -1,8 +1,9 @@
 """Transcription engines for videos without subtitles.
 
 Supports:
+- GPU service (faster-whisper / Kotoba-Whisper on the desktop, over Tailscale)
 - ElevenLabs Scribe V2 (cloud API, all languages)
-- ReazonSpeech k2-v2 (offline, Japanese only)
+- ReazonSpeech k2-v2 (offline, Japanese only, CPU)
 """
 
 import json
@@ -657,6 +658,160 @@ class ReazonSpeechTranscriber:
             progress_callback("ReazonSpeech transcription complete")
 
         return words
+
+
+# ---------------------------------------------------------------------------
+# GPU service transcription (faster-whisper on the desktop, over Tailscale)
+# ---------------------------------------------------------------------------
+
+
+class GpuUnavailableError(TranscriptionError):
+    """Raised when the GPU service cannot be reached (host down / network).
+
+    Distinct from a generic TranscriptionError so callers can fall back to a
+    local/cloud engine when the desktop is simply off, but still surface real
+    transcription failures (bad audio, 500s) loudly.
+    """
+    pass
+
+
+class GpuTranscriber:
+    """Transcribe audio by POSTing it to the desktop GPU service.
+
+    Mirrors ElevenLabsTranscriber: uploads the audio file and receives
+    word-level timestamps. The remote service (gpu_service/service.py) runs
+    faster-whisper / Kotoba-Whisper on CUDA.
+    """
+
+    TIMEOUT = 900  # 15 min — covers cold model load + long videos
+    MAX_RETRIES = 2
+    RETRY_DELAYS = [2, 5]
+
+    def __init__(self, base_url: str, token: Optional[str] = None):
+        if not base_url:
+            raise ValueError("GPU service URL is required")
+        self.base_url = base_url.rstrip("/")
+        self.token = token
+
+    def transcribe(
+        self,
+        audio_path: Path,
+        language_code: str = "ja",
+        progress_callback: Optional[Callable[[str], None]] = None,
+    ) -> list[dict]:
+        """Transcribe an audio file. Returns a list of word dicts
+        ({'text', 'start', 'end'}), matching ReazonSpeechTranscriber.
+
+        Raises:
+            GpuUnavailableError: if the service host is unreachable.
+            TranscriptionError: on any other failure.
+        """
+        if not audio_path.exists():
+            raise TranscriptionError(f"Audio file not found: {audio_path}")
+
+        url = f"{self.base_url}/transcribe"
+        headers = {}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+
+        if progress_callback:
+            progress_callback(f"Transcribing on GPU service ({self.base_url})...")
+
+        last_error = None
+        for attempt in range(self.MAX_RETRIES):
+            try:
+                with open(audio_path, "rb") as audio_file:
+                    files = {"file": (audio_path.name, audio_file, "audio/mpeg")}
+                    response = requests.post(
+                        url,
+                        headers=headers,
+                        params={"language": language_code},
+                        files=files,
+                        timeout=self.TIMEOUT,
+                    )
+
+                if response.status_code == 200:
+                    payload = response.json()
+                    words = payload.get("words", [])
+                    if not words:
+                        raise TranscriptionError("GPU service returned no words")
+                    if progress_callback:
+                        progress_callback("GPU transcription successful")
+                    return words
+
+                # Retry transient server-side errors; fail fast otherwise.
+                if response.status_code in (429, 500, 502, 503, 504):
+                    last_error = TranscriptionError(
+                        self._parse_error(response)
+                    )
+                    if attempt < self.MAX_RETRIES - 1:
+                        time.sleep(self.RETRY_DELAYS[attempt])
+                        continue
+                raise TranscriptionError(self._parse_error(response))
+
+            except (requests.ConnectionError, requests.Timeout) as e:
+                # Host down / unreachable — signal fallback rather than failure.
+                last_error = GpuUnavailableError(
+                    f"GPU service unreachable at {self.base_url}: {e}"
+                )
+                if attempt < self.MAX_RETRIES - 1:
+                    if progress_callback:
+                        progress_callback("GPU service not responding, retrying...")
+                    time.sleep(self.RETRY_DELAYS[attempt])
+                    continue
+            except requests.RequestException as e:
+                last_error = TranscriptionError(f"GPU service request error: {e}")
+                if attempt < self.MAX_RETRIES - 1:
+                    time.sleep(self.RETRY_DELAYS[attempt])
+                    continue
+
+        raise last_error
+
+    def _parse_error(self, response: requests.Response) -> str:
+        try:
+            detail = response.json().get("detail")
+            message = detail if isinstance(detail, str) else str(detail)
+        except Exception:  # noqa: BLE001
+            message = response.text or f"HTTP {response.status_code}"
+        return f"GPU service error (HTTP {response.status_code}): {message}"
+
+
+def gpu_transcribe_to_srt(
+    audio_path: Path,
+    output_srt_path: Path,
+    language_code: str,
+    base_url: str,
+    token: Optional[str] = None,
+    progress_callback: Optional[Callable[[str], None]] = None,
+    logger=None,
+) -> None:
+    """Transcribe audio to SRT using the desktop GPU service.
+
+    Convenience function parallel to reazonspeech_transcribe_to_srt().
+
+    Raises:
+        GpuUnavailableError: if the service host is unreachable (caller may fall back).
+        TranscriptionError: on any other failure.
+    """
+    transcriber = GpuTranscriber(base_url, token=token)
+    words = transcriber.transcribe(audio_path, language_code, progress_callback)
+
+    if logger:
+        logger.debug("GPU transcription complete", word_count=len(words),
+                      language_code=language_code, service=base_url)
+
+    if progress_callback:
+        progress_callback("Converting transcription to SRT format...")
+
+    # Japanese has no inter-word spaces; other languages join on spaces.
+    separator = "" if language_code == "ja" else " "
+    srt_content = words_to_srt(words, separator=separator)
+
+    output_srt_path.parent.mkdir(parents=True, exist_ok=True)
+    output_srt_path.write_text(srt_content, encoding="utf-8")
+
+    if progress_callback:
+        progress_callback(f"Transcription saved to {output_srt_path.name}")
 
 
 def reazonspeech_transcribe_to_srt(

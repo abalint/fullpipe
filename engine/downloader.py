@@ -12,21 +12,107 @@ from .transcriber import TranscriptionError, transcribe_audio_to_srt
 
 
 def _resolve_transcription_engine(sub_lang: str, engine_pref: str = "auto",
-                                  elevenlabs_api_key: str = None) -> str:
+                                  elevenlabs_api_key: str = None,
+                                  gpu_url: str = None) -> str:
     """Determine which transcription engine to use.
 
-    engine_pref is "auto" | "elevenlabs" | "reazonspeech".
-    Returns "reazonspeech" or "elevenlabs".
+    engine_pref is "auto" | "gpu" | "elevenlabs" | "reazonspeech".
+    Returns "gpu" | "reazonspeech" | "elevenlabs".
+
+    The GPU service (Kotoba-Whisper on the desktop) runs a Japanese-tuned model,
+    so it is only chosen for ``sub_lang == "ja"``; other languages route to the
+    cloud engine. When the GPU host is unreachable, callers fall back via
+    ``transcribe_with_engine`` — not here.
     """
+    if engine_pref == "gpu":
+        if sub_lang == "ja" and gpu_url:
+            return "gpu"
+        return "reazonspeech" if sub_lang == "ja" else "elevenlabs"
     if engine_pref == "reazonspeech":
         # ReazonSpeech is Japanese-only; fall back to ElevenLabs otherwise
         return "reazonspeech" if sub_lang == "ja" else "elevenlabs"
     if engine_pref == "elevenlabs":
         return "elevenlabs"
-    # auto
+    # auto — prefer the local GPU service for Japanese when configured
+    if sub_lang == "ja" and gpu_url:
+        return "gpu"
     if sub_lang == "ja" and not elevenlabs_api_key:
         return "reazonspeech"
     return "elevenlabs"
+
+
+def transcribe_with_engine(audio_path, srt_path, sub_lang, *, engine_pref="auto",
+                           elevenlabs_api_key=None, gpu_url=None, gpu_token=None,
+                           progress_callback=None, label=None, logger=None):
+    """Resolve the engine and transcribe ``audio_path`` → ``srt_path``.
+
+    Centralizes engine dispatch for both download_youtube() and
+    prepare_local_file(). When the resolved engine is the GPU service but the
+    desktop is unreachable, transparently falls back to ReazonSpeech (ja) or
+    ElevenLabs so an offline desktop never blocks the pipeline.
+
+    Raises:
+        RuntimeError: if transcription fails on the chosen (or fallback) engine.
+    """
+    engine = _resolve_transcription_engine(sub_lang, engine_pref,
+                                           elevenlabs_api_key, gpu_url)
+    if progress_callback and label:
+        progress_callback(label)
+
+    if engine == "gpu":
+        from .transcriber import GpuUnavailableError, gpu_transcribe_to_srt
+        try:
+            gpu_transcribe_to_srt(
+                audio_path=audio_path,
+                output_srt_path=srt_path,
+                language_code=sub_lang,
+                base_url=gpu_url,
+                token=gpu_token,
+                progress_callback=progress_callback,
+                logger=logger,
+            )
+            return
+        except GpuUnavailableError as e:
+            # Desktop is off / unreachable — degrade gracefully.
+            if logger:
+                logger.warning("GPU service unavailable, falling back", error=str(e))
+            if progress_callback:
+                progress_callback(f"GPU service unavailable ({e}); falling back...")
+            engine = "reazonspeech" if sub_lang == "ja" else "elevenlabs"
+        except TranscriptionError as e:
+            raise RuntimeError(f"GPU transcription failed: {e}")
+
+    if engine == "reazonspeech":
+        from .transcriber import reazonspeech_transcribe_to_srt
+        try:
+            reazonspeech_transcribe_to_srt(
+                audio_path=audio_path,
+                output_srt_path=srt_path,
+                progress_callback=progress_callback,
+                logger=logger,
+            )
+        except TranscriptionError as e:
+            raise RuntimeError(f"Transcription failed: {e}")
+    else:
+        if not elevenlabs_api_key:
+            raise RuntimeError(
+                f"No {sub_lang} subtitles found and transcription is enabled but no "
+                "engine is available: set asr.gpu_url (desktop GPU service), "
+                "ELEVENLABS_API_KEY, or use engine_pref=reazonspeech for Japanese."
+            )
+        try:
+            transcribe_audio_to_srt(
+                audio_path=audio_path,
+                output_srt_path=srt_path,
+                language_code=sub_lang,
+                api_key=elevenlabs_api_key,
+                progress_callback=progress_callback,
+            )
+        except TranscriptionError as e:
+            raise RuntimeError(f"Transcription failed: {e}")
+
+    if progress_callback:
+        progress_callback("Transcription complete")
 
 
 def fetch_full_metadata(url, cookie_browser=None, logger=None, process_tracker=None):
@@ -134,7 +220,8 @@ def fetch_video_metadata(url, cookie_browser=None, logger=None, process_tracker=
 def download_youtube(url, output_dir, progress_callback=None, cookie_browser=None, sub_lang="ja",
                      force_transcription=False, logger=None,
                      process_tracker=None, transcribe_fallback=True,
-                     engine_pref="auto", elevenlabs_api_key=None):
+                     engine_pref="auto", elevenlabs_api_key=None,
+                     gpu_url=None, gpu_token=None):
     """Download audio (mp3) and subtitles (srt) from a media URL.
 
     This function supports YouTube and other yt-dlp compatible sites (e.g., stand.fm, Vimeo, etc.).
@@ -185,10 +272,14 @@ def download_youtube(url, output_dir, progress_callback=None, cookie_browser=Non
         "--no-overwrites",  # Don't re-download files that already exist
     ]
 
-    # Only request subtitles if not forcing transcription
+    # Only request subtitles if not forcing transcription.
+    # Request ONLY human/uploaded subs (--write-sub), NOT auto-generated
+    # captions (--write-auto-sub): creator-uploaded tracks are trustworthy,
+    # but YouTube's ASR auto-captions are error-prone, so we transcribe those
+    # ourselves (see the transcription fallback below).
     if not force_transcription:
         cmd.extend([
-            "--write-auto-sub", "--write-sub",
+            "--write-sub",
             "--sub-langs", sub_lang,
             "--convert-subs", "srt",
         ])
@@ -254,57 +345,24 @@ def download_youtube(url, output_dir, progress_callback=None, cookie_browser=Non
     if progress_callback and audio_already_exists:
         progress_callback("Audio cache verified")
 
-    # Check if subtitles exist, fallback to transcription if enabled
+    # No uploaded subtitles present → transcribe (auto-captions were never
+    # requested; see the --write-sub note above).
     if not srt_path.exists():
-        # Check if force transcription or transcription fallback is enabled
         if force_transcription or transcribe_fallback:
-            engine = _resolve_transcription_engine(sub_lang, engine_pref, elevenlabs_api_key)
-            if logger:
-                logger.info("Transcription fallback triggered", engine=engine,
-                            force=force_transcription, sub_lang=sub_lang)
-
-            if engine == "reazonspeech":
-                from .transcriber import reazonspeech_transcribe_to_srt
-                if progress_callback:
-                    label = "Force transcribing audio with ReazonSpeech..." if force_transcription else "No subtitles found, transcribing with ReazonSpeech..."
-                    progress_callback(label)
-                try:
-                    reazonspeech_transcribe_to_srt(
-                        audio_path=mp3_path,
-                        output_srt_path=srt_path,
-                        progress_callback=progress_callback,
-                    )
-                    if progress_callback:
-                        progress_callback("Transcription complete")
-                except TranscriptionError as e:
-                    raise RuntimeError(f"Transcription failed: {e}")
-            else:
-                api_key = elevenlabs_api_key
-                if not api_key:
-                    raise RuntimeError(
-                        f"No {sub_lang} subtitles found and transcription is enabled but no API key provided. "
-                        "Set ELEVENLABS_API_KEY in .env, or use engine_pref=reazonspeech for Japanese audio."
-                    )
-
-                if progress_callback:
-                    label = "Force transcribing audio with ElevenLabs..." if force_transcription else f"No subtitles found, transcribing audio with ElevenLabs..."
-                    progress_callback(label)
-
-                try:
-                    transcribe_audio_to_srt(
-                        audio_path=mp3_path,
-                        output_srt_path=srt_path,
-                        language_code=sub_lang,
-                        api_key=api_key,
-                        progress_callback=progress_callback
-                    )
-                    if progress_callback:
-                        progress_callback("Transcription complete")
-                except TranscriptionError as e:
-                    raise RuntimeError(f"Transcription failed: {e}")
+            verb = "Force transcribing" if force_transcription else "No uploaded subtitles, transcribing"
+            transcribe_with_engine(
+                mp3_path, srt_path, sub_lang,
+                engine_pref=engine_pref,
+                elevenlabs_api_key=elevenlabs_api_key,
+                gpu_url=gpu_url,
+                gpu_token=gpu_token,
+                progress_callback=progress_callback,
+                label=f"{verb} audio...",
+                logger=logger,
+            )
         else:
             raise RuntimeError(
-                f"No {sub_lang} subtitles found. This video may not have {sub_lang} captions. "
+                f"No {sub_lang} subtitles found. This video may not have uploaded {sub_lang} captions. "
                 "Pass transcribe_fallback=True or force_transcription=True to transcribe instead."
             )
 

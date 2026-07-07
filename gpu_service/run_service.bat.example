@@ -1,0 +1,20 @@
+@echo off
+REM fullPipe GPU transcription service launcher (desktop, RTX 2070S).
+REM Copy this to run_service.bat and fill in FULLPIPE_GPU_TOKEN with a secret
+REM that matches the Mac's config.json -> asr.gpu_token. run_service.bat is
+REM gitignored because it holds the token; keep it readable only by the
+REM service account + admins.
+
+set FULLPIPE_GPU_TOKEN=REPLACE_WITH_SHARED_SECRET
+set FULLPIPE_ASR_MODEL=kotoba-tech/kotoba-whisper-v2.0-faster
+set FULLPIPE_ASR_DEVICE=cuda
+set FULLPIPE_ASR_COMPUTE=float16
+set FULLPIPE_GPU_PORT=8422
+set PYTHONIOENCODING=utf-8
+REM Pin the HuggingFace model cache to the shared drive so the service works
+REM identically whether it runs as the service account (manual) or SYSTEM (boot task).
+set HF_HOME=I:\transcribe\hf_cache
+set HF_HUB_DISABLE_SYMLINKS_WARNING=1
+
+cd /d I:\transcribe
+I:\transcribe\.venv\Scripts\python.exe I:\transcribe\service.py

@@ -1,0 +1,15 @@
+# fullPipe GPU transcription service (runs on the desktop w/ RTX 2070S).
+# Install into a venv on the PC:  pip install -r requirements.txt
+#
+# GPU (CUDA 12) needs the cuBLAS + cuDNN runtime wheels below. faster-whisper
+# 1.x targets CUDA 12 / cuDNN 9. On Windows, ensure the DLLs are on PATH (the
+# nvidia-* wheels install them under site-packages/nvidia/*/bin).
+
+faster-whisper>=1.1.0
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9
+
+# CUDA 12 runtime libraries (skip if you run device=cpu):
+nvidia-cublas-cu12
+nvidia-cudnn-cu12

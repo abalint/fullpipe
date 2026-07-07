@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 
 from .paths import ffmpeg_path, _NOWWIN
-from .transcriber import LANGUAGE_CODE_MAP, TranscriptionError, transcribe_audio_to_srt
+from .transcriber import LANGUAGE_CODE_MAP
 
 # Display names for companion-subtitle discovery (video.Japanese.srt).
 # Replaces audioPrime's LANGUAGE_REGISTRY lookup.
@@ -148,7 +148,8 @@ def discover_subtitle_file(media_path, lang_code):
 def prepare_local_file(filepath, download_dir, lang_code,
                        progress_callback=None, force_transcription=False,
                        process_tracker=None, transcribe_fallback=True,
-                       engine_pref="auto", elevenlabs_api_key=None):
+                       engine_pref="auto", elevenlabs_api_key=None,
+                       gpu_url=None, gpu_token=None):
     """Prepare a local file for the pipeline, mirroring download_youtube().
 
     Converts to mp3, discovers or transcribes subtitles, and returns
@@ -191,7 +192,8 @@ def prepare_local_file(filepath, download_dir, lang_code,
             _transcribe_local(mp3_path, srt_path, lang_code, progress_callback,
                               label="Force transcribing audio...",
                               engine_pref=engine_pref,
-                              elevenlabs_api_key=elevenlabs_api_key)
+                              elevenlabs_api_key=elevenlabs_api_key,
+                              gpu_url=gpu_url, gpu_token=gpu_token)
         else:
             # Try to find a companion SRT
             companion = discover_subtitle_file(filepath, lang_code)
@@ -203,7 +205,8 @@ def prepare_local_file(filepath, download_dir, lang_code,
                 _transcribe_local(mp3_path, srt_path, lang_code, progress_callback,
                                   label="No subtitle file found, transcribing...",
                                   engine_pref=engine_pref,
-                                  elevenlabs_api_key=elevenlabs_api_key)
+                                  elevenlabs_api_key=elevenlabs_api_key,
+                                  gpu_url=gpu_url, gpu_token=gpu_token)
             else:
                 raise RuntimeError(
                     f"No {lang_code} subtitle file found next to {filepath.name}. "
@@ -219,44 +222,20 @@ def prepare_local_file(filepath, download_dir, lang_code,
 
 
 def _transcribe_local(mp3_path, srt_path, lang_code, progress_callback, label,
-                      engine_pref="auto", elevenlabs_api_key=None):
-    """Run transcription for a local file using the configured engine."""
-    from .downloader import _resolve_transcription_engine
-    engine = _resolve_transcription_engine(lang_code, engine_pref, elevenlabs_api_key)
+                      engine_pref="auto", elevenlabs_api_key=None,
+                      gpu_url=None, gpu_token=None):
+    """Run transcription for a local file using the configured engine.
 
-    if engine == "reazonspeech":
-        from .transcriber import reazonspeech_transcribe_to_srt
-        if progress_callback:
-            progress_callback(label)
-        try:
-            reazonspeech_transcribe_to_srt(
-                audio_path=mp3_path,
-                output_srt_path=srt_path,
-                progress_callback=progress_callback,
-            )
-            if progress_callback:
-                progress_callback("Transcription complete")
-        except TranscriptionError as e:
-            raise RuntimeError(f"Transcription failed: {e}")
-    else:
-        api_key = elevenlabs_api_key
-        if not api_key:
-            raise RuntimeError(
-                "Transcription is enabled but no ElevenLabs API key provided. "
-                "Set ELEVENLABS_API_KEY in .env, or use engine_pref=reazonspeech "
-                "for Japanese audio."
-            )
-        if progress_callback:
-            progress_callback(label)
-        try:
-            transcribe_audio_to_srt(
-                audio_path=mp3_path,
-                output_srt_path=srt_path,
-                language_code=lang_code,
-                api_key=api_key,
-                progress_callback=progress_callback,
-            )
-            if progress_callback:
-                progress_callback("Transcription complete")
-        except TranscriptionError as e:
-            raise RuntimeError(f"Transcription failed: {e}")
+    Delegates to the shared dispatcher so local files get the same GPU-service
+    routing (and GPU→local/cloud fallback) as downloaded videos.
+    """
+    from .downloader import transcribe_with_engine
+    transcribe_with_engine(
+        mp3_path, srt_path, lang_code,
+        engine_pref=engine_pref,
+        elevenlabs_api_key=elevenlabs_api_key,
+        gpu_url=gpu_url,
+        gpu_token=gpu_token,
+        progress_callback=progress_callback,
+        label=label,
+    )

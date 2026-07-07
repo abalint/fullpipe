@@ -24,8 +24,11 @@
   },
 
   "asr": {
+    "_comment": "engine: auto | gpu | reazonspeech | elevenlabs. 'auto' prefers the desktop GPU service (Kotoba-Whisper) for Japanese when gpu_url is set, then CPU ReazonSpeech, then ElevenLabs. If the GPU host is unreachable it falls back automatically. Only human-uploaded YouTube subs are trusted; auto-captions are re-transcribed. See gpu_service/README.md.",
     "engine": "auto",
-    "reazonspeech_model_dir": ""
+    "reazonspeech_model_dir": "",
+    "gpu_url": "http://100.x.x.x:8422",
+    "gpu_token": ""
   },
 
   "punctuation": {
