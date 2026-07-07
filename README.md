@@ -109,14 +109,14 @@ keeps a local copy in `~/immersion/backups/`, and uploads to a cloud remote
 via rclone — pruning both sides beyond `KEEP_DAYS` (30).
 
 ```sh
-rclone config                                    # one-time: make a remote named 'gdrive'
+rclone config                                    # one-time: make a remote named 'japanese' (or set REMOTE_NAME)
 cp server/app.fullpipe.backup.plist ~/Library/LaunchAgents/
 launchctl load ~/Library/LaunchAgents/app.fullpipe.backup.plist   # daily @ 03:00
 tools/backup_ledger.sh                           # run once by hand to verify
 ```
 
 Restore: `gzcat ~/immersion/backups/ledger-YYYY-MM-DD.db.gz > ledger.db`
-(or `rclone copy gdrive:fullpipe-backups/ledger-YYYY-MM-DD.db.gz .`). Logs in
+(or `rclone copy japanese:fullpipe-backups/ledger-YYYY-MM-DD.db.gz .`). Logs in
 `~/immersion/backup.log`.
 
 ## Tests

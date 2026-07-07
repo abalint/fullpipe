@@ -13,7 +13,7 @@
 # Run by hand any time:  tools/backup_ledger.sh
 #
 # One-time setup (interactive, done once by a human):
-#   rclone config     # create a Google Drive remote named per REMOTE_NAME below
+#   rclone config     # create a Google Drive remote named 'japanese' (REMOTE_NAME below)
 #
 set -euo pipefail
 
@@ -36,7 +36,7 @@ PY
 fi
 LEDGER_DB="${LEDGER_DB:-$default_db}"
 
-REMOTE_NAME="${REMOTE_NAME:-gdrive}"          # rclone remote (from `rclone config`)
+REMOTE_NAME="${REMOTE_NAME:-japanese}"        # rclone remote (from `rclone config`)
 REMOTE_PATH="${REMOTE_PATH:-fullpipe-backups}" # folder within that remote
 LOCAL_DIR="${LOCAL_DIR:-$HOME/immersion/backups}"
 KEEP_DAYS="${KEEP_DAYS:-30}"
