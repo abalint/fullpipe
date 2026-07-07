@@ -317,12 +317,21 @@ you now; nothing downstream can reconstruct this:
 **Selection bar** (DESIGN.md — Card philosophy; curate ruthlessly, fewer good
 cards beats hitting the cap):
 
-- Pool size: aim for up to ~2× `deck.new_cards_per_day` (default cap 15) so
+- Pool size: aim for up to ~2× `deck.new_cards_per_day` (default cap 10) so
   known-taps can prune without starving the final cut — but never pad with
-  weak entries to get there.
+  weak entries to get there. With the strict bars below, a short high-quality
+  pool (even under the cap) is the expected outcome, not a failure.
 - Complete merged sentence — drop fragments, trail-offs, interjection-only lines.
-- Prefer `other_unknown_count == 0` (true i+1); admit 1 other unknown only for
-  a high-value target on a long sentence.
+- **Strict i+1: require `other_unknown_count == 0`.** The card's sentence must
+  have exactly one gap — the target. Drop a lemma whose only sentences carry a
+  second unknown; it isn't ready yet and will resurface once the other word is
+  known. (A tapped-interest word gets rescued deterministically, but still only
+  from a true-i+1 sentence.)
+- **Frequency/recurrence floor:** don't card a lemma that is *both* rare
+  (`freq_rank` null — outside the show-frequency corpus) *and* a one-off
+  (`recurrence == 1`) in this episode. Low leverage: you may never meet it
+  again, so it's not worth a card. Exception: a tapped-interest word the user
+  explicitly wants. Rare-but-recurring or common-but-one-off words are fine.
 - **Strict on the target word**: correctly transcribed, in the card's intended
   sense/reading, ideally in its canonical collocation. Relaxed on incidental
   ASR errors elsewhere (the audio is the real native line regardless).

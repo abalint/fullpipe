@@ -622,16 +622,19 @@ computing i+1 leverage, ranking which unknowns unlock the most future sentences,
 frequency, "does this word recur enough to deserve a card." *The corpus scores and
 selects; the video supplies the actual card.*
 
-**Low volume (10–15 new cards/day) is the enabler.** The job is not "mine all 40 i+1
-sentences" — it's "surface the 10–15 highest-value and curate ruthlessly." Quality bar:
+**Low volume (~10 new cards/day) is the enabler.** The job is not "mine all 40 i+1
+sentences" — it's "surface the ~10 highest-value and curate ruthlessly." Quality bar:
 - complete merged sentence (drop fragments/trail-offs),
 - clean audio, dialogue not drowned by BGM/SFX,
 - target word transcribed correctly and in the card's intended sense/reading,
-- prefer the canonical collocation.
+- prefer the canonical collocation,
+- strict i+1: the target is the sentence's *only* unknown (other_unknown_count == 0),
+- above the frequency/recurrence floor: not both rare (freq_rank null) and a one-off.
 
 Curation may relax on *incidental surrounding-word* ASR errors (the card's audio is the
 real native line regardless of text) but stays strict on the **target word** and the
-**audio**. Rank survivors by *leverage × audio-quality*, keep the top ~15.
+**audio**. Rank survivors by *leverage × audio-quality*, keep the top ~10. A short pool
+under the cap is the expected result of these bars, not a shortfall.
 
 **Consequence for the ledger:** with few cards but fast immersion learning, cards cover
 only ~10% of knowledge growth. The **exposure/tap pathways are the primary record** of

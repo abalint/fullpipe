@@ -11,8 +11,8 @@ feedback deterministically:
     cap                   → deck.new_cards_per_day
 
 High-interest lemmas *outside* the pool are rescued from coverage candidates
-when a sane sentence exists (other_unknown_count ≤ 1, clip 1.5–15s) — those
-carry no curated english (flagged "rescued": true).
+when a true i+1 sentence exists (other_unknown_count == 0, clip 1.5–15s) —
+those carry no curated english (flagged "rescued": true).
 
 Writes <episode_dir>/feedback.json (the raw taps, audit trail) and
 <episode_dir>/final_picks.json (what deck pushes at mark-watched).
@@ -64,7 +64,7 @@ def select_picks(pool, coverage, taps, cap, standing_interest=()):
         if not c:
             continue
         b = c["best"]
-        if b["other_unknown_count"] > 1:
+        if b["other_unknown_count"] > 0:  # strict i+1: rescue only true i+1 sentences
             continue
         if not (MIN_CLIP <= b["end"] - b["start"] <= MAX_CLIP):
             continue
