@@ -74,6 +74,37 @@ class CoverageAnalyzeTest(unittest.TestCase):
         cov = self.analyze(already_carded={"縄張り"})
         self.assertNotIn("縄張り", [c["lemma"] for c in cov["candidates"]])
 
+    def test_token_times_from_asr_words(self):
+        # One ASR segment per sentence (the GPU/Kotoba granularity): tokens
+        # get "t" interpolated inside each segment, monotonic across the run.
+        words = [
+            {"text": "犬が公園を走る", "start": 0.0, "end": 1.4},
+            {"text": "犬が縄張りを走る", "start": 2.0, "end": 3.6},
+            {"text": "毎日設計を見る", "start": 4.0, "end": 5.4},
+            {"text": "頑丈な縄張りへ行く", "start": 6.0, "end": 7.8},
+        ]
+        cov = self.analyze(words=words)
+        s0 = cov["sentences"][0]["tokens"]
+        self.assertEqual(s0[0]["t"], 0.0)              # 犬 opens the segment
+        self.assertNotIn("t", s0[-1])                  # 。 has no content chars
+        s1 = cov["sentences"][1]["tokens"]
+        self.assertEqual(s1[0]["t"], 2.0)              # second segment's clock
+        timed = [t["t"] for s in cov["sentences"] for t in s["tokens"] if "t" in t]
+        self.assertEqual(timed, sorted(timed))
+        # 縄張り starts 2 content chars into its segment: 2.0 + 1.6 * 2/8
+        nawabari = next(t for t in s1 if t["l"] == "縄張り")
+        self.assertAlmostEqual(nawabari["t"], 2.4, places=2)
+
+    def test_token_times_omitted_without_or_with_bogus_words(self):
+        cov = self.analyze()
+        self.assertTrue(all("t" not in t
+                            for s in cov["sentences"] for t in s["tokens"]))
+        # stale sidecar from some other audio → aligner refuses, no "t"
+        cov = self.analyze(words=[{"text": "全然違う音声の内容ですよ",
+                                   "start": 0.0, "end": 3.0}])
+        self.assertTrue(all("t" not in t
+                            for s in cov["sentences"] for t in s["tokens"]))
+
     def test_exposure_payload_shape(self):
         cov = self.analyze()
         exp = cov["exposures"]

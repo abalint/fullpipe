@@ -24,9 +24,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from engine import lemma as L  # noqa: E402
+from engine import word_align as WA  # noqa: E402
 from lib_config import load_config  # noqa: E402
 from ledger import ledgerctl as lc  # noqa: E402
-from tools._staging import episode_dir, load_transcript, write_json  # noqa: E402
+from tools._staging import episode_dir, load_transcript, read_json, write_json  # noqa: E402
 
 CANDIDATE_CAP = 50
 
@@ -38,11 +39,14 @@ def lemma_reading(lemma):
     return "".join(L.kata_to_hira(t.reading) or t.surface for t in L.tokenize(lemma))
 
 
-def analyze(transcript, known_bundle, freq=None, already_carded=frozenset()):
+def analyze(transcript, known_bundle, freq=None, already_carded=frozenset(),
+            words=None):
     """Pure coverage analysis. Returns the coverage.json payload (unrecorded).
 
     known_bundle: dict from ledgerctl.materialize_known (known / learning /
-    norm_known / known_stems). freq: {lemma: rank}.
+    norm_known / known_stems). freq: {lemma: rank}. words: the episode's raw
+    ASR timed words (words.json), used to attach a per-token start time "t"
+    that paces the player's subtitle roll-up; None/misaligned → no "t".
     """
     freq = freq or {}
     ks = L.KnownSet(known_bundle["known"], known_bundle.get("norm_known", ()),
@@ -52,17 +56,31 @@ def analyze(transcript, known_bundle, freq=None, already_carded=frozenset()):
     sentences = [(s["start"], s["end"], s["text"]) for s in transcript["sentences"]]
     result = L.analyze_transcript(sentences, ks, learning)
 
+    char_times = WA.sentence_char_times(
+        [s["text"] for s in transcript["sentences"]], WA.char_timeline(words),
+    ) if words else None
+
     out_sentences = []
     recurrence = {}
     best = {}  # unknown lemma -> best sentence info
     for d in result["sentences"]:
-        toks = [{
-            "s": t.surface,
-            "l": t.lemma,
-            "r": L.kata_to_hira(t.reading),
-            "c": L.is_content_word(t.pos) and L.is_card_worthy(t.lemma),
-            "k": t in ks,
-        } for t in L.tokenize(d["text"])]
+        times = char_times[d["index"]] if char_times else None
+        pos = 0  # cursor over the sentence's content chars
+        toks = []
+        for t in L.tokenize(d["text"]):
+            tok = {
+                "s": t.surface,
+                "l": t.lemma,
+                "r": L.kata_to_hira(t.reading),
+                "c": L.is_content_word(t.pos) and L.is_card_worthy(t.lemma),
+                "k": t in ks,
+            }
+            if times is not None:
+                n = sum(1 for ch in t.surface if WA.is_content_char(ch))
+                if n and pos < len(times):
+                    tok["t"] = round(times[pos], 2)
+                pos += n
+            toks.append(tok)
         out_sentences.append({
             "idx": d["index"], "start": d["start"], "end": d["end"],
             "text": d["text"],
@@ -142,7 +160,10 @@ def run_coverage(cfg, episode_id, refresh_known=False, record=True, conn=None):
     carded = {r[0] for r in conn.execute(
         "SELECT lemma FROM cards WHERE deleted_at IS NULL")}
 
-    cov = analyze(transcript, known_bundle, freq, carded)
+    words_path = episode_dir(cfg, episode_id) / "words.json"
+    words = read_json(words_path).get("words") if words_path.exists() else None
+
+    cov = analyze(transcript, known_bundle, freq, carded, words=words)
     cov["known_sources"] = known_bundle["sources"]
 
     if record:

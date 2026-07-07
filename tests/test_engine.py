@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from engine import lemma as L
 from engine import srt_parser as SP
+from engine import word_align as WA
 from engine.punctuation import (_extract_punct_insertions, _realign_to_blocks,
                                 get_language_config)
 
@@ -27,6 +28,7 @@ class ImportTest(unittest.TestCase):
         import engine.srt_parser  # noqa: F401
         import engine.transcriber  # noqa: F401
         import engine.tts  # noqa: F401
+        import engine.word_align  # noqa: F401
 
 
 class AudioLoudnessTest(unittest.TestCase):
@@ -170,6 +172,56 @@ class LemmaTest(unittest.TestCase):
         # is also unknown there, so its exposure carries other unknowns.
         self.assertIn("縄張り", exp)
         self.assertEqual(exp["縄張り"]["other_unknown_count"], 1)
+
+
+class WordAlignTest(unittest.TestCase):
+    def test_char_timeline_interpolates_within_word_spans(self):
+        tl = WA.char_timeline([
+            {"text": "こんにちは", "start": 1.0, "end": 2.0},
+            {"text": "、元気？", "start": 3.0, "end": 3.6},  # punct skipped
+        ])
+        self.assertEqual("".join(ch for ch, _ in tl), "こんにちは元気")
+        self.assertAlmostEqual(tl[0][1], 1.0)
+        self.assertAlmostEqual(tl[1][1], 1.2)  # 5 chars over 1s
+        self.assertAlmostEqual(tl[5][1], 3.0)  # 元 opens the second word
+
+    def test_alignment_survives_punctuation_restoration(self):
+        # ASR emitted no punctuation; sentences got 。 inserted and were split
+        # differently — alignment is content-chars only, so times still land.
+        timeline = WA.char_timeline([
+            {"text": "今日は天気がいいですね散歩に行きましょう",
+             "start": 0.0, "end": 4.0},
+        ])
+        times = WA.sentence_char_times(
+            ["今日は天気がいいですね。", "散歩に行きましょう。"], timeline)
+        self.assertIsNotNone(times)
+        self.assertEqual(len(times[0]), 11)  # content chars only
+        self.assertAlmostEqual(times[0][0], 0.0)
+        # 散 is char 11 of 20 → 4.0 * 11/20
+        self.assertAlmostEqual(times[1][0], 2.2)
+
+    def test_alignment_bridges_dropped_blocks_and_stays_monotonic(self):
+        # A cleaned-out block (♪♪ annotation) leaves a hole in the sentence
+        # stream; surrounding matches must still align and never go backward.
+        timeline = WA.char_timeline([
+            {"text": "犬が走る", "start": 0.0, "end": 1.0},
+            {"text": "ラララ", "start": 1.0, "end": 2.0},   # dropped downstream
+            {"text": "公園へ行く", "start": 5.0, "end": 6.0},
+        ])
+        times = WA.sentence_char_times(["犬が走る。", "公園へ行く。"], timeline)
+        self.assertIsNotNone(times)
+        self.assertAlmostEqual(times[0][0], 0.0)
+        self.assertAlmostEqual(times[1][0], 5.0)
+        flat = [t for s in times for t in s]
+        self.assertEqual(flat, sorted(flat))
+
+    def test_mismatched_streams_refuse_to_guess(self):
+        # e.g. a stale words sidecar from a different transcription
+        timeline = WA.char_timeline([{"text": "全然違う音声の内容です",
+                                      "start": 0.0, "end": 3.0}])
+        self.assertIsNone(WA.sentence_char_times(
+            ["犬が公園を走る。", "毎日設計を見る。"], timeline))
+        self.assertIsNone(WA.sentence_char_times(["犬が走る。"], []))
 
 
 if __name__ == "__main__":

@@ -19,6 +19,25 @@ class TranscriptionError(Exception):
     pass
 
 
+def words_sidecar_path(srt_path: Path) -> Path:
+    """The timed-words sidecar cached next to an ASR-produced SRT."""
+    return Path(srt_path).with_suffix(".words.json")
+
+
+def _write_words_sidecar(words: list[dict], srt_path: Path, engine: str) -> None:
+    """Persist the raw timed words the SRT conversion is about to flatten.
+
+    words_to_srt collapses per-word timing into ≤5s blocks; this sidecar keeps
+    the original [{text, start, end}] list so coverage can align token-level
+    start times later (engine/word_align.py). Cached in the downloads dir next
+    to the SRT, so it survives re-acquires exactly as long as the SRT does.
+    """
+    path = words_sidecar_path(srt_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"engine": engine, "words": words},
+                               ensure_ascii=False), encoding="utf-8")
+
+
 # Map audioPrime language codes to ElevenLabs ISO-639-3 codes
 LANGUAGE_CODE_MAP = {
     "ar": "ara",      # Arabic
@@ -338,6 +357,7 @@ def transcribe_audio_to_srt(
     # Write to file
     output_srt_path.parent.mkdir(parents=True, exist_ok=True)
     output_srt_path.write_text(srt_content, encoding="utf-8")
+    _write_words_sidecar(words, output_srt_path, "elevenlabs")
 
     if progress_callback:
         progress_callback(f"Transcription saved to {output_srt_path.name}")
@@ -809,6 +829,7 @@ def gpu_transcribe_to_srt(
 
     output_srt_path.parent.mkdir(parents=True, exist_ok=True)
     output_srt_path.write_text(srt_content, encoding="utf-8")
+    _write_words_sidecar(words, output_srt_path, "gpu")
 
     if progress_callback:
         progress_callback(f"Transcription saved to {output_srt_path.name}")
@@ -845,6 +866,7 @@ def reazonspeech_transcribe_to_srt(
 
     output_srt_path.parent.mkdir(parents=True, exist_ok=True)
     output_srt_path.write_text(srt_content, encoding="utf-8")
+    _write_words_sidecar(words, output_srt_path, "reazonspeech")
 
     if progress_callback:
         progress_callback(f"Transcription saved to {output_srt_path.name}")

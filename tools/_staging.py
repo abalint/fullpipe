@@ -3,6 +3,10 @@
 Everything an episode produces lives under <work_dir>/episodes/<episode_id>/:
     transcript.json   acquire  — sentence-segmented transcript + episode meta
     sentences.srt     acquire  — same sentences as SRT (subtitle sidecar)
+    words.json        acquire  — timed words {engine, words:[{text,start,end}]}
+                                 (raw ASR words, or the sub cues for hand-sub
+                                 episodes); coverage aligns per-token times
+                                 from it (engine/word_align.py)
     coverage.json     coverage — classification, ranked candidates, exposures
     curate.json       /immerse — synopsis, {word,gloss,note} keywords, focal
                                  points, exclude junk-filter, rationales, and the

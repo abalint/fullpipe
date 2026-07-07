@@ -14,6 +14,7 @@ CLI:
 
 import argparse
 import os
+import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from engine import srt_parser as SP  # noqa: E402
 from engine.downloader import download_youtube  # noqa: E402
+from engine.transcriber import words_sidecar_path  # noqa: E402
 from engine.local_file import (generate_local_file_id, get_local_file_metadata,  # noqa: E402
                                is_local_file, prepare_local_file)
 from engine.punctuation import get_language_config, punctuate_subs  # noqa: E402
@@ -124,6 +126,20 @@ def acquire(source, cfg, force_transcription=False, restore_punct=True, log=prin
     )
 
     SP.write_srt(sentences, ep_dir / "sentences.srt")
+
+    # Stage timed words so coverage can align per-token start times
+    # (engine/word_align.py). ASR runs leave a sidecar next to the raw SRT at
+    # the engine's granularity; hand-crafted subs have no sidecar, but their
+    # cue spans are real timing too — stage the cleaned blocks instead.
+    sidecar = words_sidecar_path(srt_path)
+    if sidecar.exists():
+        shutil.copyfile(sidecar, ep_dir / "words.json")
+    else:
+        write_json(ep_dir / "words.json", {"engine": "subs", "words": [
+            {"text": t, "start": round(s, 3), "end": round(e, 3)}
+            for s, e, t in subs
+        ]})
+
     episode = {
         "id": episode_id,
         "title": title,
