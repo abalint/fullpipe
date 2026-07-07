@@ -12,7 +12,9 @@ ledger (mined_card evidence + cards row), then `promote` runs.
 
 Input picks.json — the /immerse curate output:
     [{"lemma": "縄張り", "sentence_idx": 9, "reading": "なわばり",
-      "english": "optional gloss/translation"}, ...]
+      "english": "optional gloss/translation",
+      "notes": "optional English usage/nuance notes on the target word",
+      "context": "optional English note on what the video was discussing"}, ...]
 
 By default cards use the built-in "fullPipe Sentence Mining" model (created
 on demand). To mint onto the user's own note type instead, set in config:
@@ -22,8 +24,8 @@ on demand). To mint onto the user's own note type instead, set in config:
              "field_map": {"sentence": "Sentence", "audio": "Audio",
                            "english": "English"}}
 
-field_map keys: sentence · audio · english · image · lemma · reading ·
-source · sequence — map only the fields the note type has; a custom
+field_map keys: sentence · audio · english · image · notes · context ·
+lemma · reading · source · sequence — map only the fields the note type has; a custom
 note_type must already exist in Anki (only the built-in model is
 auto-created). The --apkg fallback always uses the built-in model (an
 offline .apkg can't reuse a collection's note type).
@@ -54,22 +56,26 @@ CLIP_PAD = 0.5
 CLIP_TARGET_LUFS = -16.0
 
 MODEL_NAME = "fullPipe Sentence Mining"
-# Image is appended last so the field indices of the original six stay put —
-# the .apkg guid keys off Sequence (index 5), which must not shift.
+# New fields are only ever appended so the field indices of the original six
+# stay put — the .apkg guid keys off Sequence (index 5), which must not shift.
 MODEL_FIELDS = ["Expression", "Audio", "Lemma", "Reading", "Source",
-                "Sequence", "Image"]
+                "Sequence", "Image", "Notes", "Context"]
 MODEL_CSS = """.card {
   font-family: "Hiragino Sans", "Noto Sans JP", sans-serif;
   font-size: 26px; text-align: center; }
 .card img { max-width: 100%; max-height: 320px; border-radius: 6px;
   margin-bottom: 0.5em; }
 .lemma { color: #4a90d9; font-size: 30px; }
+.notes, .context { font-size: 16px; text-align: left; margin-top: 0.8em; }
+.context { color: #666; font-style: italic; }
 .meta { font-size: 14px; color: #888; margin-top: 1em; }"""
 MODEL_TEMPLATES = [{
     "Name": "Card 1",
     "Front": "{{#Image}}{{Image}}<br>{{/Image}}{{Expression}}<br>{{Audio}}",
     "Back": ("{{FrontSide}}<hr id=answer>"
              "<div class=lemma>{{Lemma}}【{{Reading}}】</div>"
+             "{{#Notes}}<div class=notes>{{Notes}}</div>{{/Notes}}"
+             "{{#Context}}<div class=context>{{Context}}</div>{{/Context}}"
              "<div class=meta>{{Source}}</div>"),
 }]
 
@@ -80,7 +86,7 @@ _GENANKI_MODEL_ID = 1998244353  # distinct from engine.anki's subs2srs model
 DEFAULT_FIELD_MAP = {
     "sentence": "Expression", "audio": "Audio", "lemma": "Lemma",
     "reading": "Reading", "source": "Source", "sequence": "Sequence",
-    "image": "Image",
+    "image": "Image", "notes": "Notes", "context": "Context",
 }
 
 
@@ -90,6 +96,8 @@ def _note_fields(field_map, p, title):
         "audio": f"[sound:{p['clip_name']}]",
         "english": p.get("english", ""),
         "image": p.get("image", ""),
+        "notes": p.get("notes", ""),
+        "context": p.get("context", ""),
         "lemma": p["lemma"],
         "reading": p.get("reading", ""),
         "source": title,
@@ -207,12 +215,15 @@ def _ensure_model(anki_call):
                   css=MODEL_CSS,
                   cardTemplates=MODEL_TEMPLATES)
         return
-    # Migrate copies of the built-in model minted before the Image field: add
-    # the field and refresh the template/styling so old decks show frames too.
+    # Migrate copies of the built-in model minted before newer fields (Image,
+    # Notes, Context): append the missing fields and refresh the
+    # template/styling so old decks pick them up too.
     existing = anki_call("modelFieldNames", modelName=MODEL_NAME) or []
-    if "Image" not in existing:
-        anki_call("modelFieldAdd", modelName=MODEL_NAME,
-                  fieldName="Image", index=len(existing))
+    missing = [f for f in MODEL_FIELDS if f not in existing]
+    if missing:
+        for i, field in enumerate(missing):
+            anki_call("modelFieldAdd", modelName=MODEL_NAME,
+                      fieldName=field, index=len(existing) + i)
         t = MODEL_TEMPLATES[0]
         anki_call("updateModelTemplates", model={
             "name": MODEL_NAME,
@@ -306,6 +317,7 @@ def build_apkg(cfg, episode_id, picks, conn=None, log=print):
         note = _Note(model=model, fields=[
             p["sentence"], f"[sound:{p['clip_name']}]", p["lemma"],
             p["reading"], title, str(p["sentence_idx"]), p.get("image", ""),
+            p.get("notes", ""), p.get("context", ""),
         ])
         deck.add_note(note)
         media.append(p["clip_path"])

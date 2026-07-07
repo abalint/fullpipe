@@ -279,7 +279,9 @@ And in `<episode_dir>/picks.json`, the card **pool** (workflow decided
 
 ```json
 [{"lemma": "縄張り", "sentence_idx": 9, "reading": "なわばり",
-  "english": "That dog was guarding its own territory."}, ...]
+  "english": "That dog was guarding its own territory.",
+  "notes": "縄張り(なわばり) — literally a 'roped-off area'; here the animal-behavior sense, a territory an animal defends. Colloquially also a person's/gang's turf. Takes を張る/を守る as its natural verbs.",
+  "context": "The host is explaining why the shrine's stray dog barks at delivery workers but ignores regulars."}, ...]
 ```
 
 The pool is **ordered by your preference** — after feedback, `tools.select`
@@ -294,6 +296,23 @@ Include `english` (a natural full-sentence translation) on **every** pool
 entry whenever config's `deck.field_map` maps an `english` field — you're
 reading the sentences anyway, and it becomes the card back. Skip it if the
 map has no english key.
+
+Likewise include `notes` and `context` (both **English**) on every pool entry
+whenever the field_map maps them — you have the full transcript in front of
+you now; nothing downstream can reconstruct this:
+
+- `notes` — a mini usage note on the **target word as used in this sentence**.
+  Isolate the target word first (write it with its reading), then explain the
+  nuance that matters here: which sense is in play, slang/colloquial register,
+  the grammar pattern it sits in (conjugation, particle it takes, set
+  collocation), politeness level, or how it differs from the near-synonym a
+  learner would reach for. 1–3 sentences; say something the dictionary gloss
+  doesn't. If the line uses notable slang or a grammar point beyond the target
+  word itself, mention that too.
+- `context` — 1–2 sentences of situational grounding: what the video was
+  talking about when this line came up (who's speaking, about what, in what
+  scene). Enough that the card makes sense months later without rewatching —
+  but don't just restate the sentence's own content.
 
 **Selection bar** (DESIGN.md — Card philosophy; curate ruthlessly, fewer good
 cards beats hitting the cap):

@@ -200,9 +200,10 @@ class DeckAndRenderTest(unittest.TestCase):
         deck._ensure_model(fake)
         actions = {a for a, _ in calls}
         self.assertNotIn("createModel", actions)   # already exists
-        self.assertIn("modelFieldAdd", actions)
-        add = next(p for a, p in calls if a == "modelFieldAdd")
-        self.assertEqual(add["fieldName"], "Image")
+        adds = [p for a, p in calls if a == "modelFieldAdd"]
+        self.assertEqual([p["fieldName"] for p in adds],
+                         ["Image", "Notes", "Context"])
+        self.assertEqual([p["index"] for p in adds], [6, 7, 8])  # appended
         self.assertIn("updateModelTemplates", actions)
         self.assertIn("updateModelStyling", actions)
 
@@ -223,7 +224,9 @@ class DeckAndRenderTest(unittest.TestCase):
                "deck": {"name": "MinePrime", "note_type": "Sentence Cards",
                         "field_map": {"sentence": ["Sentence", "Japanese"],
                                       "audio": "Audio",
-                                      "english": "English"}}}
+                                      "english": "English",
+                                      "notes": "Notes",
+                                      "context": "Context"}}}
         calls = []
 
         def fake(action, **params):
@@ -235,17 +238,25 @@ class DeckAndRenderTest(unittest.TestCase):
             return None
 
         picks = [{"lemma": "縄張り", "sentence_idx": 1, "reading": "なわばり",
-                  "english": "The dog runs its territory."}]
+                  "english": "The dog runs its territory.",
+                  "notes": "縄張り(なわばり): an animal's defended territory.",
+                  "context": "The host is describing the stray dog's routine."}]
         result = deck.push_cards(cfg, "test_ep", picks, anki_call=fake,
                                  conn=self.conn, log=lambda m: None)
         self.assertEqual(result["pushed"], 1)
         self.assertNotIn("createModel", [a for a, _ in calls])  # user model reused
         note = next(p for a, p in calls if a == "addNote")["note"]
         self.assertEqual(note["modelName"], "Sentence Cards")
-        self.assertEqual(set(note["fields"]), {"Sentence", "Japanese", "Audio", "English"})
+        self.assertEqual(set(note["fields"]),
+                         {"Sentence", "Japanese", "Audio", "English",
+                          "Notes", "Context"})
         self.assertEqual(note["fields"]["Sentence"], "犬が縄張りを走る。")
         self.assertEqual(note["fields"]["Japanese"], "犬が縄張りを走る。")
         self.assertEqual(note["fields"]["English"], "The dog runs its territory.")
+        self.assertEqual(note["fields"]["Notes"],
+                         "縄張り(なわばり): an animal's defended territory.")
+        self.assertEqual(note["fields"]["Context"],
+                         "The host is describing the stray dog's routine.")
         self.assertTrue(note["fields"]["Audio"].startswith("[sound:"))
 
     def test_push_unknown_note_type_fails_loudly(self):

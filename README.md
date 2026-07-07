@@ -133,7 +133,7 @@ $P -m tools.acquire "https://youtu.be/..."     # → episode_id
 $P -m tools.coverage EPISODE_ID                # analyze + record exposures
 # the /immerse curate pass writes curate.json (synopsis, {word,gloss,note}
 # keywords, focal points, exclude junk-filter) + picks.json
-# ([{lemma, sentence_idx, reading, english}]), then:
+# ([{lemma, sentence_idx, reading, english, notes, context}]), then:
 $P -m tools.render EPISODE_ID                  # → prep.html (phone)
 $P -m tools.deck EPISODE_ID picks.json         # clips + AnkiConnect push
 # after watching: apply-taps / mark-watched, then promote
