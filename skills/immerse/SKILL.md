@@ -279,6 +279,7 @@ And in `<episode_dir>/picks.json`, the card **pool** (workflow decided
 
 ```json
 [{"lemma": "縄張り", "sentence_idx": 9, "reading": "なわばり",
+  "sentence_furigana": "あの 犬[いぬ]は 自分[じぶん]の 縄張[なわば]りを 守[まも]っていた。",
   "english": "That dog was guarding its own territory.",
   "notes": "縄張り(なわばり) — literally a 'roped-off area'; here the animal-behavior sense, a territory an animal defends. Colloquially also a person's/gang's turf. Takes を張る/を守る as its natural verbs.",
   "context": "The host is explaining why the shrine's stray dog barks at delivery workers but ignores regulars."}, ...]
@@ -313,6 +314,28 @@ you now; nothing downstream can reconstruct this:
   talking about when this line came up (who's speaking, about what, in what
   scene). Enough that the card makes sense months later without rewatching —
   but don't just restate the sentence's own content.
+
+Include `sentence_furigana` on **every** pool entry: the full card sentence
+with readings **you write yourself** from your reading of the line in context
+— never a dictionary, lookup tool, or the Japanese-support addon. You heard
+the transcript's context; a dictionary hasn't. Format (Anki furigana syntax,
+rendered as ruby by the card template; hidden behind a reveal toggle at
+review time):
+
+- Reading in square brackets immediately after each kanji run, an ASCII space
+  *before* the run: `あの 犬[いぬ]は 縄張[なわば]りを 守[まも]っていた。`
+  (no space needed at sentence start). Bracket only the kanji run — okurigana
+  stays outside (`守[まも]っていた`, not `守っていた[まもっていた]`).
+- Hiragana readings. Kana-only stretches, ASCII, digits, and punctuation are
+  left untouched.
+- Readings must be the ones **spoken in the audio** — resolve context-sensitive
+  readings yourself (方 かた/ほう, 行った いった/おこなった, counters, names as
+  the speaker says them). When genuinely unsure, listen again or leave that
+  run un-annotated rather than guess.
+- Everything outside the brackets must reproduce the transcript sentence
+  character-for-character — `tools.deck` verifies this (strips brackets and
+  spaces, compares) and silently falls back to the bare sentence on mismatch,
+  so a typo costs the furigana, not the card.
 
 **Selection bar** (DESIGN.md — Card philosophy; curate ruthlessly, fewer good
 cards beats hitting the cap):

@@ -13,6 +13,10 @@ ledger (mined_card evidence + cards row), then `promote` runs.
 Input picks.json — the /immerse curate output:
     [{"lemma": "縄張り", "sentence_idx": 9, "reading": "なわばり",
       "english": "optional gloss/translation",
+      "sentence_furigana": "optional full sentence in Anki furigana format,
+          readings written by the curating LLM (never a dictionary):
+          " 縄張[なわば]りを 守[まも]る。" — used as the sentence field when
+          it strips back to the transcript sentence, else dropped with a log",
       "notes": "optional English usage/nuance notes on the target word",
       "context": "optional English note on what the video was discussing"}, ...]
 
@@ -35,6 +39,7 @@ CLI:
 """
 
 import argparse
+import re
 import sys
 from functools import partial
 from pathlib import Path
@@ -68,11 +73,21 @@ MODEL_CSS = """.card {
 .lemma { color: #4a90d9; font-size: 30px; }
 .notes, .context { font-size: 16px; text-align: left; margin-top: 0.8em; }
 .context { color: #666; font-style: italic; }
-.meta { font-size: 14px; color: #888; margin-top: 1em; }"""
+.meta { font-size: 14px; color: #888; margin-top: 1em; }
+/* Furigana stays hidden until the reveal toggle — reading recall first. */
+.expression ruby rt { opacity: 0; }
+.expression.show-furi ruby rt { opacity: 1; }
+.furi-toggle { font-size: 14px; color: #4a90d9; text-decoration: none; }"""
 MODEL_TEMPLATES = [{
     "Name": "Card 1",
-    "Front": "{{#Image}}{{Image}}<br>{{/Image}}{{Expression}}<br>{{Audio}}",
-    "Back": ("{{FrontSide}}<hr id=answer>"
+    "Front": ("{{#Image}}{{Image}}<br>{{/Image}}"
+              "<span class=expression>{{kanji:Expression}}</span><br>{{Audio}}"),
+    "Back": ("{{#Image}}{{Image}}<br>{{/Image}}"
+             "<span class=expression id=expr>{{furigana:Expression}}</span> "
+             "<a class=furi-toggle href=# onclick=\""
+             "document.getElementById('expr').classList.toggle('show-furi');"
+             "return false;\">ふりがな</a><br>{{Audio}}"
+             "<hr id=answer>"
              "<div class=lemma>{{Lemma}}【{{Reading}}】</div>"
              "{{#Notes}}<div class=notes>{{Notes}}</div>{{/Notes}}"
              "{{#Context}}<div class=context>{{Context}}</div>{{/Context}}"
@@ -90,9 +105,26 @@ DEFAULT_FIELD_MAP = {
 }
 
 
+_FURIGANA_BRACKETS = re.compile(r"\[[^\]]*\]")
+
+
+def furigana_matches(annotated, raw):
+    """True when the annotated sentence strips back to the raw one.
+
+    Anki furigana format: readings in brackets after each kanji run, an ASCII
+    space delimiting the run ("犬[いぬ]が 縄張[なわば]り"). Stripping brackets
+    and spaces (both are rendering artifacts) must reproduce the transcript
+    sentence exactly — the guard against the curating LLM drifting from the
+    audio's actual line.
+    """
+    strip = lambda s: (_FURIGANA_BRACKETS.sub("", s)  # noqa: E731
+                       .replace(" ", "").replace("　", ""))
+    return strip(annotated) == strip(raw)
+
+
 def _note_fields(field_map, p, title):
     values = {
-        "sentence": p["sentence"],
+        "sentence": p.get("sentence_furigana") or p["sentence"],
         "audio": f"[sound:{p['clip_name']}]",
         "english": p.get("english", ""),
         "image": p.get("image", ""),
@@ -194,9 +226,17 @@ def _prepare_clips(cfg, episode_id, transcript, picks, log=print,
             except RuntimeError as e:
                 log(f"  no frame for {p['lemma']}: {e}")
 
+        furigana = p.get("sentence_furigana")
+        if furigana and not furigana_matches(furigana, sent["text"]):
+            log(f"  furigana mismatch for {p['lemma']}: dropped "
+                f"(strips to {_FURIGANA_BRACKETS.sub('', furigana)!r}, "
+                f"transcript has {sent['text']!r})")
+            furigana = None
+
         prepared.append({
             **p,
             "sentence": sent["text"],
+            "sentence_furigana": furigana,
             "reading": p.get("reading", ""),
             "clip_name": clip_name,
             "clip_path": str(clips_dir / clip_name),
@@ -315,7 +355,8 @@ def build_apkg(cfg, episode_id, picks, conn=None, log=print):
     media, minted = [], []
     for p in prepared:
         note = _Note(model=model, fields=[
-            p["sentence"], f"[sound:{p['clip_name']}]", p["lemma"],
+            p.get("sentence_furigana") or p["sentence"],
+            f"[sound:{p['clip_name']}]", p["lemma"],
             p["reading"], title, str(p["sentence_idx"]), p.get("image", ""),
             p.get("notes", ""), p.get("context", ""),
         ])

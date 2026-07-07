@@ -259,6 +259,61 @@ class DeckAndRenderTest(unittest.TestCase):
                          "The host is describing the stray dog's routine.")
         self.assertTrue(note["fields"]["Audio"].startswith("[sound:"))
 
+    def test_furigana_used_when_it_strips_to_transcript(self):
+        cfg = {**self.cfg,
+               "deck": {"name": "MinePrime", "note_type": "Sentence Cards",
+                        "field_map": {"sentence": ["Sentence", "Japanese"],
+                                      "audio": "Audio"}}}
+        calls = []
+
+        def fake(action, **params):
+            calls.append((action, params))
+            if action == "modelNames":
+                return ["Sentence Cards"]
+            if action == "addNote":
+                return 2001
+            return None
+
+        picks = [{"lemma": "縄張り", "sentence_idx": 1,
+                  "sentence_furigana": "犬[いぬ]が 縄張[なわば]りを 走[はし]る。"}]
+        result = deck.push_cards(cfg, "test_ep", picks, anki_call=fake,
+                                 conn=self.conn, log=lambda m: None)
+        self.assertEqual(result["pushed"], 1)
+        note = next(p for a, p in calls if a == "addNote")["note"]
+        self.assertEqual(note["fields"]["Sentence"],
+                         "犬[いぬ]が 縄張[なわば]りを 走[はし]る。")
+        self.assertEqual(note["fields"]["Japanese"],
+                         "犬[いぬ]が 縄張[なわば]りを 走[はし]る。")
+        # Ledger keeps the bare sentence, not the annotated one.
+        self.assertEqual(self.conn.execute(
+            "SELECT sentence FROM cards WHERE lemma='縄張り'").fetchone()[0],
+            "犬が縄張りを走る。")
+
+    def test_furigana_mismatch_falls_back_to_bare_sentence(self):
+        cfg = {**self.cfg,
+               "deck": {"name": "MinePrime", "note_type": "Sentence Cards",
+                        "field_map": {"sentence": "Sentence",
+                                      "audio": "Audio"}}}
+        calls, logs = [], []
+
+        def fake(action, **params):
+            calls.append((action, params))
+            if action == "modelNames":
+                return ["Sentence Cards"]
+            if action == "addNote":
+                return 2002
+            return None
+
+        # Annotated text drifts from the transcript (公園 vs 縄張り) → dropped.
+        picks = [{"lemma": "縄張り", "sentence_idx": 1,
+                  "sentence_furigana": "犬[いぬ]が 公園[こうえん]を 走[はし]る。"}]
+        result = deck.push_cards(cfg, "test_ep", picks, anki_call=fake,
+                                 conn=self.conn, log=logs.append)
+        self.assertEqual(result["pushed"], 1)
+        note = next(p for a, p in calls if a == "addNote")["note"]
+        self.assertEqual(note["fields"]["Sentence"], "犬が縄張りを走る。")
+        self.assertTrue(any("furigana mismatch" in m for m in logs))
+
     def test_push_unknown_note_type_fails_loudly(self):
         cfg = {**self.cfg, "deck": {"name": "X", "note_type": "Nope"}}
         with self.assertRaisesRegex(RuntimeError, "note type 'Nope' not found"):
