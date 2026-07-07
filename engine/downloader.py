@@ -132,7 +132,7 @@ def fetch_video_metadata(url, cookie_browser=None, logger=None, process_tracker=
 
 
 def download_youtube(url, output_dir, progress_callback=None, cookie_browser=None, sub_lang="ja",
-                     force_transcription=False, batch_mode=False, logger=None,
+                     force_transcription=False, logger=None,
                      process_tracker=None, transcribe_fallback=True,
                      engine_pref="auto", elevenlabs_api_key=None):
     """Download audio (mp3) and subtitles (srt) from a media URL.
@@ -196,13 +196,10 @@ def download_youtube(url, output_dir, progress_callback=None, cookie_browser=Non
     if cookie_browser:
         cmd.extend(["--cookies-from-browser", cookie_browser])
 
-    if batch_mode:
-        cmd.extend([
-            "--sleep-subtitles", "5",
-            "--sleep-requests", "0.75",
-            "--sleep-interval", "10",
-            "--max-sleep-interval", "20",
-        ])
+    # Throttle to stay under YouTube's rate limiter. `-t sleep` is yt-dlp's
+    # official preset for this: --sleep-subtitles 5 --sleep-requests 0.75
+    # --sleep-interval 10 --max-sleep-interval 20 (tracks upstream tuning).
+    cmd.extend(["-t", "sleep"])
 
     cmd.append(url)
 
@@ -323,7 +320,7 @@ def download_youtube(url, output_dir, progress_callback=None, cookie_browser=Non
     return mp3_path, srt_path
 
 
-def download_video(url, output_dir, progress_callback=None, cookie_browser=None, batch_mode=False, logger=None, resolution="", process_tracker=None):
+def download_video(url, output_dir, progress_callback=None, cookie_browser=None, logger=None, resolution="", process_tracker=None):
     """Download video (mp4) from a media URL using yt-dlp.
 
     This downloads the full video (not just audio) for video output mode.
@@ -386,13 +383,8 @@ def download_video(url, output_dir, progress_callback=None, cookie_browser=None,
     if cookie_browser:
         cmd.extend(["--cookies-from-browser", cookie_browser])
 
-    if batch_mode:
-        cmd.extend([
-            "--sleep-subtitles", "5",
-            "--sleep-requests", "0.75",
-            "--sleep-interval", "10",
-            "--max-sleep-interval", "20",
-        ])
+    # Throttle to stay under YouTube's rate limiter (see download_youtube).
+    cmd.extend(["-t", "sleep"])
 
     cmd.append(url)
 
