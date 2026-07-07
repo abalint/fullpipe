@@ -187,6 +187,16 @@ highlight tiers (off / focus / learn / all), i+1 line badge + target
 underline, and an `Aa` panel with subtitle size + height prefs (see
 mobile/README.md — Player).
 
+**Offline-first client (2026-07-06):** downloaded episodes are fully usable
+with the server down or the phone off-grid. The client's `⬇` bundle now
+includes the prep doc (alongside video/subs/transcript/definitions), prep docs
+auto-cache for every staged episode on queue load, and the queue screen falls
+back to the last `GET /jobs` snapshot offline. Every client write — tap
+batches, mark-watched, ratings, enqueues — rides a typed FIFO outbox flushed
+when the server is back (MOBILE.md — Sync semantics); ratings carry a
+client-minted `review_id` that `record_rating` now dedupes, so replays never
+double-append to the taste log.
+
 **Local Stage 1 (2026-07-05): `/prepare` skill** (`skills/prepare/SKILL.md`,
 symlinked like `/immerse`) runs Stage 1 without the app or server —
 `python -m server.worker [SOURCE ...]` enqueues the sources and drains the

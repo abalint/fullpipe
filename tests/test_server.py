@@ -423,6 +423,22 @@ class TestRoutes(ServerTestBase):
         self.assertIsNone(self.client.get(f"/jobs/{EP}", headers=self.auth)
                           .json()["rating"])
 
+    def test_rating_review_id_replay_is_idempotent(self):
+        """The offline outbox re-flushes with the same review_id — one review."""
+        self.stage_episode()
+        self._enqueue_at("watched")
+        payload = {"rating": 5, "tags": ["loved_format"], "review_id": "rev1"}
+        first = self.client.post(f"/episodes/{EP}/rating", json=payload,
+                                 headers=self.auth).json()
+        self.assertNotIn("duplicate", first)
+        replay = self.client.post(f"/episodes/{EP}/rating", json=payload,
+                                  headers=self.auth).json()
+        self.assertTrue(replay["duplicate"])
+        lconn = lc.open_db(self.cfg["ledger_db"])
+        self.assertEqual(lconn.execute(
+            "SELECT COUNT(*) FROM taste_events WHERE episode_id=? AND kind='rating'",
+            (EP,)).fetchone()[0], 1)
+
     def test_rating_rejects_bad_input(self):
         self.stage_episode()
         for bad in (0, 6, "great"):

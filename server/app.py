@@ -444,10 +444,13 @@ def create_app(cfg, start_worker=True):
         """1-5 star rating + optional taste tags (null rating clears) — appended
         to the append-only taste_events log (DESIGN.md — Taste metadata). Body:
         {"rating": 1-5|null, "tags": ["over_my_head", ...]}. Re-POST appends a
-        new review; the on-read verdict takes the latest."""
+        new review; the on-read verdict takes the latest. An optional client
+        "review_id" makes the POST idempotent (offline-outbox replays dedupe
+        instead of double-appending)."""
         try:
             return lc.record_rating(ledger_conn(), episode_id,
-                                    body.get("rating"), body.get("tags"))
+                                    body.get("rating"), body.get("tags"),
+                                    review_id=body.get("review_id"))
         except ValueError as e:
             raise HTTPException(422, str(e))
         except KeyError as e:

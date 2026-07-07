@@ -226,8 +226,21 @@ if best-in-class furigana/tap typography is worth a separate codebase.
 
 ## Sync semantics
 
-- **Idempotent taps.** `batch_id` on every tap POST; the server dedupes replays. Exposure rows are
-  already deduped by the DESIGN.md partial unique index.
+- **One outbox for every write** *(built 2026-07-06)*. All client-side mutations — tap batches,
+  mark-watched, ratings, enqueues — are typed actions in a FIFO outbox, flushed opportunistically
+  (submit / app-foreground / network-return). FIFO preserves the workflow order: an episode's
+  feedback flushes before its close-out. Downloaded episodes are therefore fully usable offline:
+  watch, tap, mark watched, rate — the server catches up at the next sync.
+- **Idempotent replays.** `batch_id` on every tap POST and a client-minted `review_id` on every
+  rating POST; the server dedupes both. `POST /watched` and `POST /jobs` are idempotent by
+  construction. So a double-flush after a flaky connection is harmless. A permanently rejected
+  action (404/409/410/422 — e.g. the episode was deleted on the PC) is dropped instead of
+  poisoning the queue.
+- **Offline queue.** The client caches the last `GET /jobs` snapshot and rebuilds the queue screen
+  from it when unreachable, overlaying pending outbox actions (a queued mark-watched reads as
+  watched with a `⇪ pending sync` chip). Prep docs auto-cache for staged episodes on every online
+  queue load, and the `⬇` download bundle includes the prep doc alongside video / subs /
+  transcript / definitions.
 - **Per-artifact readiness.** "Ready" is per artifact class, not per job: video ready at `prepared`,
   prep+cards ready at `staged`. The decoupled-pull default relies on this.
 - **Reconcile.** `POST /taps` *is* the `/reconcile` round-trip — no copy-paste blob on the online

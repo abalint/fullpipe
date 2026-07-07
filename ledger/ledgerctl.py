@@ -282,7 +282,7 @@ def mark_watched(conn, episode_id):
     return {"episode_id": episode_id, "watched": True}
 
 
-def record_rating(conn, episode_id, rating, tags=None):
+def record_rating(conn, episode_id, rating, tags=None, review_id=None):
     """Append a taste-review event batch (DESIGN.md — Taste metadata).
 
     One review = a 'rating' row + one 'tag' row per selected tag, sharing a
@@ -290,6 +290,10 @@ def record_rating(conn, episode_id, rating, tags=None):
     nothing overwritten); the enjoyment verdict is computed on read
     (query_enjoyment). rating: int 1–5, or None to clear (records a 'clear'
     event; tags ignored). tags: subset of RATING_TAGS.
+
+    review_id: normally minted here, but an offline client may supply its own
+    so an outbox re-flush after a flaky connection doesn't append the same
+    review twice — a replayed review_id is a no-op ({"duplicate": True}).
 
     episodes.rating/rated_at are kept as a denormalized latest-rating cache for
     cheap reads (server /jobs) — the append-only taste_events log is the truth.
@@ -303,9 +307,13 @@ def record_rating(conn, episode_id, rating, tags=None):
         raise ValueError(f"unknown taste tag(s): {bad}; allowed: {sorted(RATING_TAGS)}")
     if not conn.execute("SELECT 1 FROM episodes WHERE id = ?", (episode_id,)).fetchone():
         raise KeyError(f"episode not found in ledger: {episode_id}")
+    if review_id and conn.execute(
+            "SELECT 1 FROM taste_events WHERE review_id = ?", (review_id,)).fetchone():
+        return {"episode_id": episode_id, "review_id": review_id, "rating": rating,
+                "tags": tags if rating is not None else [], "duplicate": True}
 
     ts = now_iso()
-    review_id = uuid.uuid4().hex
+    review_id = review_id or uuid.uuid4().hex
     conn.execute(
         "INSERT INTO taste_events (episode_id, review_id, kind, value, ts) "
         "VALUES (?, ?, 'rating', ?, ?)",

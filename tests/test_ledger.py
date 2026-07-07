@@ -377,6 +377,24 @@ class LedgerTest(unittest.TestCase):
             "SELECT COUNT(*) FROM taste_events WHERE kind='rating' AND episode_id='er'"
         ).fetchone()[0], 2)
 
+    def test_rating_client_review_id_dedupes_replay(self):
+        # Offline outbox replay: the same client review_id must not append a
+        # second review batch (flaky-connection re-flush safety).
+        self._episode()
+        r1 = lc.record_rating(self.conn, "er", 4, ["fascinating"],
+                              review_id="client123")
+        self.assertEqual(r1["review_id"], "client123")
+        self.assertNotIn("duplicate", r1)
+        r2 = lc.record_rating(self.conn, "er", 4, ["fascinating"],
+                              review_id="client123")
+        self.assertTrue(r2["duplicate"])
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM taste_events WHERE episode_id='er'"
+        ).fetchone()[0], 2)  # one rating + one tag row, not four
+        # a different review_id is a genuine re-rate and appends as before
+        lc.record_rating(self.conn, "er", 2, review_id="client456")
+        self.assertEqual(lc.query_enjoyment(self.conn, "er")["rating"], 2)
+
     def test_rating_rejects_unknown_tag(self):
         self._episode()
         with self.assertRaises(ValueError):
