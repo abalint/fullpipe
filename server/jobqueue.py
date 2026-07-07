@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     source       TEXT NOT NULL,
     title        TEXT,
     state        TEXT NOT NULL DEFAULT 'queued',
+    passive      INTEGER NOT NULL DEFAULT 0, -- in the passive-listening collection
     progress_msg TEXT,
     error        TEXT,
     created_at   TEXT NOT NULL,
@@ -49,6 +50,11 @@ def open_queue(db_path):
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    # pre-passive databases: CREATE IF NOT EXISTS won't touch them
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(jobs)")}
+    if "passive" not in cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN passive INTEGER NOT NULL DEFAULT 0")
+        conn.commit()
     return conn
 
 
@@ -70,6 +76,7 @@ def job_dict(row):
     # The phone keys everything on episode_id; before acquire runs the job id
     # is the best identifier we have, so present it as such.
     d["episode_id"] = d["episode_id"] or d["id"]
+    d["passive"] = bool(d.get("passive"))
     return d
 
 
@@ -127,6 +134,14 @@ def set_state(conn, job_id, state, *, episode_id=None, title=None,
 def set_progress(conn, job_id, msg):
     conn.execute("UPDATE jobs SET progress_msg=?, updated_at=? WHERE id=?",
                  (msg, now_iso(), job_id))
+    conn.commit()
+
+
+def set_passive(conn, job_id, passive):
+    """Flip a job in/out of the passive-listening collection. Pure shelving:
+    state and artifacts are untouched, only which phone list shows it."""
+    conn.execute("UPDATE jobs SET passive=?, updated_at=? WHERE id=?",
+                 (1 if passive else 0, now_iso(), job_id))
     conn.commit()
 
 

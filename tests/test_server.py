@@ -146,6 +146,31 @@ class TestQueue(unittest.TestCase):
         self.assertIsNone(q.get_job(self.conn, job["id"]))
         self.assertFalse(q.delete_job(self.conn, job["id"]))  # already gone
 
+    def test_passive_flag_roundtrip(self):
+        job, _ = q.enqueue(self.conn, "https://youtu.be/abcDEF12345")
+        self.assertIs(job["passive"], False)  # default, as a real bool
+        q.set_passive(self.conn, job["id"], True)
+        self.assertIs(q.get_job(self.conn, job["id"])["passive"], True)
+        q.set_passive(self.conn, job["id"], False)
+        self.assertIs(q.get_job(self.conn, job["id"])["passive"], False)
+
+    def test_passive_column_migrates_old_db(self):
+        # a queue.db from before the passive column: open_queue must ALTER it in
+        import sqlite3
+        db = Path(self.tmp.name) / "old.db"
+        conn = sqlite3.connect(db)
+        conn.executescript(
+            "CREATE TABLE jobs (id TEXT PRIMARY KEY, episode_id TEXT, "
+            "source TEXT NOT NULL, title TEXT, state TEXT NOT NULL DEFAULT 'queued', "
+            "progress_msg TEXT, error TEXT, created_at TEXT NOT NULL, "
+            "updated_at TEXT NOT NULL);")
+        conn.execute("INSERT INTO jobs (id, source, created_at, updated_at) "
+                     "VALUES ('yt_x', 's', 't', 't')")
+        conn.commit()
+        conn.close()
+        migrated = q.open_queue(db)
+        self.assertIs(q.get_job(migrated, "yt_x")["passive"], False)
+
     def test_episode_id_falls_back_to_job_id(self):
         job, _ = q.enqueue(self.conn, "https://example.com/some/episode")
         self.assertTrue(job["id"].startswith("src_"))
@@ -182,6 +207,24 @@ class TestRoutes(ServerTestBase):
         q.set_state(conn, job_id, "prepared", episode_id=EP)
         r = self.client.post(f"/jobs/{job_id}/curate", headers=self.auth)
         self.assertEqual(r.json()["state"], "curating")
+
+    def test_passive_requires_watched(self):
+        r = self.client.post("/jobs", json={"source": "https://youtu.be/abcDEF12345"},
+                             headers=self.auth)
+        job_id = r.json()["id"]
+        # not watched yet → refused
+        self.assertEqual(self.client.post(f"/jobs/{job_id}/passive", json={},
+                                          headers=self.auth).status_code, 409)
+        conn = q.open_queue(queue_db_path(self.cfg))
+        q.set_state(conn, job_id, "watched")
+        r = self.client.post(f"/jobs/{job_id}/passive", json={}, headers=self.auth)
+        self.assertIs(r.json()["passive"], True)
+        self.assertIs(self.client.get("/jobs", headers=self.auth)
+                      .json()[0]["passive"], True)
+        # un-shelving is always allowed
+        r = self.client.post(f"/jobs/{job_id}/passive", json={"passive": False},
+                             headers=self.auth)
+        self.assertIs(r.json()["passive"], False)
 
     def test_jobs_annotated_with_duration(self):
         # before Stage 1 there is nothing to measure

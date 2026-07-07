@@ -100,6 +100,23 @@ download/ASR/tokenize it used to do up front is exactly the batch that already r
 | `watched` | — | close-out thread | terminal: cards pushed to Anki (skipped for the disliked-it branch, body `{cards:false}`); a failed push lands on the row's `error` — re-POST `/watched` retries; **delete local files** |
 | `failed` | any | worker | surface error + retry action |
 
+Orthogonal to state: a `passive` flag (`POST /jobs/{id}/passive`) shelves a
+`watched` episode into the phone's **Listen** tab — the passive-listening
+collection. The row leaves the queue screen but keeps its state and artifacts;
+the phone loops the **already-downloaded episode mp4s** as background audio —
+the native player reads the same on-device file the in-app watch/rewatch uses
+(`setDataSource(file://…)`), so passive listening never re-downloads media the
+phone already has. Un-shelving flips the flag back; delete from the Listen tab
+is the same `DELETE /jobs/{id}`.
+
+Shelving therefore **pins the video**: the phone's normal auto-delete-at-watched
+is skipped for passive episodes so the file survives for the Listen loop. The
+decision is offered at the close-out — the prep view's **"🎧 Watched + listen"**
+button marks watched, shelves passive, and keeps the mp4 in one tap (vs. plain
+"Mark watched", which deletes it). Shelving *after* the fact from the queue's
+watched row still works, but the file was already reclaimed, so the Listen tab
+re-pulls it on demand (the `⬇` fallback).
+
 *(Revised 2026-07-05: taps are pre-watch feedback — known-taps correct the
 ledger, ★ high-interest taps steer card selection — so `reconciled` now
 precedes `watched`, and the Anki push happens at `watched`, after the user
@@ -169,6 +186,7 @@ Thin HTTP over `ledgerctl` verbs + the queue. (Verbs: `materialize-known`, `comp
 | `POST /jobs` | enqueue | `{source: url\|file\|topic}` → `episode_id`; idempotent |
 | `GET /jobs` · `GET /jobs/{id}` | queue read | lifecycle state + progress; annotated with `duration` (seconds) and `comprehensibility` (coverage's token_comprehensibility, 0..1) for the queue's sort/display |
 | `POST /jobs/{id}/curate` | launch Stage 2 | kicks the live `/immerse` curate over one/many `prepared` jobs |
+| `POST /jobs/{id}/passive` | shelve to Listen tab | `{passive: bool}` — flags a `watched` episode as passive-listening material (409 otherwise; un-shelving always allowed). Pure flag flip: state/artifacts/ledger untouched; `passive` rides back on `GET /jobs` |
 | `GET /video/{id}` | staged file | **resumable** (HTTP range) — available at `prepared` |
 | `GET /video/{id}/subs` | staged file | subtitle sidecar |
 | `GET /prep/{id}` | prep-doc JSON | available at `staged`; pre-tokenized sentences w/ readings + glosses |
@@ -192,8 +210,9 @@ Thin HTTP over `ledgerctl` verbs + the queue. (Verbs: `materialize-known`, `comp
 - **Retention — both sides** (video maintenance is a first-class concern):
   - *PC:* a staged video may be purged once the phone confirms pull **and** the episode is
     `reconciled`.
-  - *Phone:* auto-delete after `watched` **and** `reconciled`; a **"pin to keep"** override; a
-    visible storage-used readout; a size cap so a large queue can't fill the device.
+  - *Phone:* auto-delete after `watched` **and** `reconciled`; **shelving to passive listening pins
+    the file** (that *is* the "pin to keep" override — the Listen loop plays it directly); a visible
+    storage-used readout; a size cap so a large queue can't fill the device.
 
 ---
 

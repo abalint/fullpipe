@@ -174,6 +174,20 @@ def create_app(cfg, start_worker=True):
                     episode_id=job["episode_id"], title=job.get("title"))
         return q.get_job(conn, job["id"])
 
+    @app.post("/jobs/{id_}/passive", dependencies=[Depends(auth)])
+    def post_passive(id_: str, body: dict):
+        """Move a watched episode into (or back out of) the passive-listening
+        collection. Shelving only — state, artifacts and ledger are untouched;
+        the flag just decides which phone list shows the row."""
+        job = get_job_or_404(id_)
+        passive = bool(body.get("passive", True))
+        if passive and job["state"] != "watched":
+            raise HTTPException(
+                409, f"job is {job['state']} — only watched episodes go passive")
+        conn = queue_conn()
+        q.set_passive(conn, job["id"], passive)
+        return q.get_job(conn, job["id"])
+
     @app.delete("/jobs/{id_}", dependencies=[Depends(auth)])
     def delete_job(id_: str):
         """Remove a job and all its artifacts: episode dir (video, transcript,
