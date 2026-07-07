@@ -150,6 +150,45 @@ the list, edit `discover.format_blocklist` then `harvest refilter`.)
 Comprehensibility / coverage is **not** computed here — it's the on-ramp in
 `/immerse`, lazily, once a pick is committed. Selection is pure metadata.
 
+## Step 4.5 — speech gate (mandatory, before you present)
+
+A pick is worthless if there's nothing to hear: **every recommendation must
+contain Japanese speech to mine.** Wordless / music-only / ambient footage — a
+整地 (land-leveling) work video, a ジオラマ build, a pure-ambient 4K walk with no
+narration — can score perfectly on taste and still be a non-starter. Metadata
+alone can't tell (titles don't say "silent"), so this is a deterministic probe,
+not a judgment call. Run it on your **ranked shortlist** (a few more than the
+target, so drops don't leave you short) before writing the block:
+
+```sh
+$PY -m tools.harvest gate-speech <id> <id> <id> ...
+```
+
+It probes each via yt-dlp and returns a `verdict` per id, moving the speechless
+ones to `status='no_speech'` (cached in `meta.speech`, so re-runs are free):
+
+- `ja` — Japanese speech present → **keep, present it.**
+- `silent` — no speech at all (music/ambient) → **dropped; do not present.**
+- `non_ja` — speech, but not Japanese → **dropped** (also fails the JP filter).
+- `unknown` — probe failed (private/geo/removed) → left `new`; mention the
+  uncertainty in the pick's line rather than vouching for it.
+
+Only present `ja` picks. If drops leave you under the count, pull the next
+candidates from the ranked pool and gate those too. (The signal: YouTube's ASR
+emits a `ja-orig` caption track / sets `language=ja` only when it actually hears
+Japanese — a plain `ja` auto-caption is just a translation, and manual `ja` subs
+can be uploader text on a silent video, so neither is trusted. Rare miss: a
+Japanese video whose uploader disabled auto-captions reads as `silent`; if a pick
+you're confident is spoken comes back `silent`, `gate-speech --recheck` it or
+trust your judgment and note it.)
+
+> **Future work:** this gate proxies "has speech" via YouTube captions, which is
+> only valid while the pipeline *needs* those captions. When the no-subtitle
+> acquisition route ships (we transcribe caption-less videos ourselves by
+> default), this gate must switch to an **audio-based** speech signal or it will
+> wrongly drop the wider breadth of caption-less-but-spoken videos. See
+> `DESIGN.md → The speech gate` for the full note.
+
 ## Step 5 — present + hand off
 
 Present the ranked picks as one compact block — per pick: **title · channel**, a
@@ -213,4 +252,5 @@ the data; don't invent preferences the ratings don't show.
 | `harvest run` → `0 new` on every edge | pool exhausted / all already seen or in ledger | widen the JP queries (new clusters), or re-run `--related` (additive); or rank what's already in `list` |
 | `related` returns nothing for a seed | InnerTube `/next` shape changed or bot-checked | fine — search + rss still carry the run; if persistent, bump `INNERTUBE_CLIENT_VERSION` in `tools/harvest.py` |
 | `search` empty for a query | yt-dlp bot-check or too-narrow query | broaden the query; if all queries fail, the IP may be flagged — try later |
+| `gate-speech` → most picks `silent`/`unknown` | yt-dlp bot-check / IP flagged (extraction failing), not genuinely silent | verify one by hand; if extraction is broken, gate can't vouch — say so and lean on judgment, don't drop everything |
 | a pick fails in `/immerse` later | source gone / region-locked / needs cookies | that's `/immerse`'s failure path, not this one — `set-status <id> dismissed` and move on |

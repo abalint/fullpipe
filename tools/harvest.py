@@ -20,6 +20,7 @@ CLI (run from $FULLPIPE with .venv/bin/python):
     python -m tools.harvest seeds
     python -m tools.harvest run [--related VID ...] [--search Q ...] [--rss CID ...]
     python -m tools.harvest list [--status new]
+    python -m tools.harvest gate-speech VIDEO_ID ...   (drop speechless picks)
     python -m tools.harvest set-status VIDEO_ID {new|queued|dismissed|picked}
 """
 
@@ -44,7 +45,7 @@ from lib_config import load_config  # noqa: E402
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 INNERTUBE_CLIENT_VERSION = "2.20250620.01.00"
-STATUSES = ("new", "queued", "dismissed", "picked", "filtered")
+STATUSES = ("new", "queued", "dismissed", "picked", "filtered", "no_speech")
 
 # Synthetic-TTS-narrator formats to exclude by default (a personal taste filter —
 # override/extend via config `discover.format_blocklist`). Matched case-insensitively
@@ -350,6 +351,97 @@ def store_candidates(conn, cands, exclude_ids, blocklist=None):
     return new_rows, n_filtered
 
 
+def probe_speech(video_id, timeout=90):
+    """Ask yt-dlp what the video's spoken language is — the deterministic speech
+    gate under /recommend. A pick is only useful for immersion if it contains
+    *Japanese speech* to mine; wordless / music-only / ambient footage (a 整地
+    work video, a ジオラマ build) yields nothing, however well it fits the taste.
+
+    Signal (validated 2026-07 against silent vs. speech samples): YouTube's ASR
+    emits an automatic-caption track suffixed `-orig` only for the language it
+    actually *heard*, and sets the `language` field from it. So Japanese speech
+    ⇔ `language == 'ja'` or a `ja-orig` auto-caption exists. Two traps this
+    deliberately avoids: a plain `ja` auto-caption is often just an auto-*trans-
+    lation* of foreign narration (false positive), and manual `ja` subtitles can
+    be uploader-added text on a silent video (also false positive) — so neither
+    counts. Never raises; returns a verdict dict.
+
+    verdict ∈ {"ja", "non_ja", "silent", "unknown"}:
+      ja      — Japanese speech present                         → keep
+      non_ja  — speech detected but not Japanese                → drop
+      silent  — no speech detected at all (music/ambient)       → drop
+      unknown — probe failed (private/geo/removed/network)      → don't drop
+    """
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    # `-t sleep` throttles to stay under YouTube's rate limiter — gate_speech
+    # calls this once per candidate, so the per-request sleep matters at volume.
+    cmd = [ytdlp_path(), *ytdlp_extra_args(), "-t", "sleep", "-j", "--skip-download",
+           "--no-warnings", url]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True,
+                           timeout=timeout, **_NOWWIN)
+    except (subprocess.TimeoutExpired, OSError):
+        return {"video_id": video_id, "verdict": "unknown", "language": None}
+    line = next((ln for ln in r.stdout.splitlines() if ln.strip().startswith("{")),
+                None)
+    if not line:
+        return {"video_id": video_id, "verdict": "unknown", "language": None}
+    try:
+        info = json.loads(line)
+    except json.JSONDecodeError:
+        return {"video_id": video_id, "verdict": "unknown", "language": None}
+    auto = info.get("automatic_captions") or {}
+    lang = (info.get("language") or "").lower()
+    if lang == "ja" or "ja-orig" in auto:
+        verdict = "ja"
+    elif auto or lang:            # ASR heard speech, just not Japanese
+        verdict = "non_ja"
+    else:                          # no ASR track at all → nothing was said
+        verdict = "silent"
+    return {"video_id": video_id, "verdict": verdict, "language": lang or None}
+
+
+def gate_speech(conn, video_ids, recheck=False):
+    """Probe each candidate for Japanese speech and move the speechless ones
+    (`silent`/`non_ja`) to status 'no_speech' so they can't be recommended.
+    Verdicts are cached in meta.speech, so re-running is cheap and idempotent;
+    pass recheck=True to re-probe. 'unknown' (probe failed) is left 'new' — never
+    silently dropped. Returns the list of per-video verdict dicts."""
+    out = []
+    ts = now_iso()
+    for vid in video_ids:
+        row = conn.execute("SELECT status, meta FROM candidates WHERE video_id=?",
+                           (vid,)).fetchone()
+        if row is None:
+            out.append({"video_id": vid, "verdict": "unknown",
+                        "note": "not in pool"})
+            continue
+        try:
+            meta = json.loads(row["meta"]) if row["meta"] else {}
+        except json.JSONDecodeError:
+            meta = {}
+        cached = meta.get("speech")
+        if cached and not recheck:
+            out.append({"video_id": vid, "status": row["status"], **cached,
+                        "cached": True})
+            continue
+        v = probe_speech(vid)
+        meta["speech"] = {"verdict": v["verdict"], "language": v["language"],
+                          "checked": ts}
+        # A failed probe stays 'new'; a real speech verdict decides the status.
+        if v["verdict"] in ("silent", "non_ja") and row["status"] != "dismissed":
+            new_status = "no_speech"
+        elif v["verdict"] == "ja" and row["status"] == "no_speech":
+            new_status = "new"          # recheck rescued a mis-gated one
+        else:
+            new_status = row["status"]
+        conn.execute("UPDATE candidates SET status=?, meta=? WHERE video_id=?",
+                     (new_status, json.dumps(meta, ensure_ascii=False), vid))
+        out.append({"video_id": vid, "status": new_status, **meta["speech"]})
+    conn.commit()
+    return out
+
+
 def refilter(conn, blocklist):
     """Re-apply the blocklist to the existing pool: any 'new' candidate that now
     matches gets moved to 'filtered'. Use after editing discover.format_blocklist.
@@ -410,6 +502,13 @@ def main(argv=None):
     sub.add_parser("refilter", help="re-apply discover.format_blocklist to the "
                    "existing pool (move newly-matching 'new' rows to 'filtered')")
 
+    p = sub.add_parser("gate-speech", help="probe candidates for Japanese speech "
+                       "(via yt-dlp); move silent / non-Japanese ones to 'no_speech'")
+    p.add_argument("video_id", nargs="+", metavar="VIDEO_ID",
+                   help="candidate ids to check (run on your ranked shortlist)")
+    p.add_argument("--recheck", action="store_true",
+                   help="re-probe even if a cached verdict exists")
+
     p = sub.add_parser("set-status", help="move a candidate's status")
     p.add_argument("video_id")
     p.add_argument("status", choices=STATUSES)
@@ -443,6 +542,14 @@ def main(argv=None):
         moved = refilter(conn, load_blocklist(cfg))
         print(f"moved {moved} candidate(s) new → filtered", file=sys.stderr)
         print(json.dumps({"filtered": moved}, ensure_ascii=False))
+
+    elif args.verb == "gate-speech":
+        verdicts = gate_speech(conn, args.video_id, recheck=args.recheck)
+        kept = sum(1 for v in verdicts if v.get("verdict") == "ja")
+        dropped = sum(1 for v in verdicts if v.get("status") == "no_speech")
+        print(f"speech-gated {len(verdicts)} · {kept} ja · {dropped} → no_speech",
+              file=sys.stderr)
+        print(json.dumps(verdicts, ensure_ascii=False, indent=2))
 
     elif args.verb == "list":
         print(json.dumps(list_candidates(conn, args.status), ensure_ascii=False, indent=2))

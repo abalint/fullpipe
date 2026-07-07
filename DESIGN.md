@@ -518,7 +518,7 @@ session**, not an API (the user prefers CLI/agent over cloud; precedent: the
   `ytsearchN:` — where the skill's JP query-expansion lands), `rss`
   (`feeds/videos.xml` fresh uploads from known channels). Dedupes against the
   ledger + the store, writes to `discover.db`. Verbs: `seeds · run · list ·
-  set-status · refilter`.
+  set-status · refilter · gate-speech`.
 - **`/recommend`** (smart) — reads `harvest seeds` (rated history + channels +
   liked ids) and `taste.md`, **expands taste into ~15–20 native JP queries**
   (the single highest-leverage AI step — the genre vocabulary is cultural, not
@@ -538,6 +538,34 @@ surfaced, à la "log what you prune"). Match the *format compounds* (`ゆっく�
 `【ゆっくり`) **not** bare `ゆっくり` (= "leisurely" — a `ゆっくり散歩` walking vlog is
 exactly the loved content). **(2) judgment** — `/recommend` drops any unlabeled
 TTS it recognizes. Edit the list, then `harvest refilter` to re-clean the pool.
+
+### The speech gate (and why it's tied to the subtitle path)
+
+A recommendation is worthless if there's no Japanese speech to mine — a wordless
+整地 work video or a ジオラマ build can score perfectly on taste and yield zero
+cards. Titles never say "silent," so `/recommend` Step 4.5 runs a deterministic
+probe (`harvest gate-speech`) on the ranked shortlist and moves the speechless
+picks to `status='no_speech'` before presenting. The signal is **YouTube caption
+presence**: Japanese speech ⇔ `language=='ja'` or a `ja-orig` ASR caption track
+(a plain `ja` auto-caption is a translation; manual `ja` subs can be uploader
+text on a silent video — neither counts).
+
+> **⚠️ When we build the no-subtitle acquisition route, this gate must widen.**
+> The gate uses *YouTube's own captions* as the proxy for "has speech." That is
+> only correct while the pipeline itself depends on those captions. Today the ASR
+> path (ElevenLabs Scribe / ReazonSpeech, see the acquire table) is opt-in
+> (`--force-transcribe`, or a key/offline-model requirement) — so a video with
+> Japanese speech but **no YouTube captions** is genuinely unusable *right now*
+> and the gate correctly drops it as `silent`. Once no-subtitle videos become
+> first-class (we transcribe them ourselves by default), that same drop becomes a
+> **false negative**: those videos are exactly the wider breadth the discovery
+> engine should reach, and caption-presence can no longer distinguish "no
+> captions but spoken" from "genuinely silent." At that point the gate needs an
+> **audio-based** speech signal instead of a caption-based one — e.g. a
+> lightweight VAD / short ASR probe on a sampled clip, or reusing the acquire
+> transcriber's own speech/no-speech verdict — and `probe_speech()` in
+> `tools/harvest.py` + Step 4.5 in `skills/recommend/SKILL.md` should be updated
+> together. Keep this note in sync with whichever route ships.
 
 ### Account risk & the (deferred) keep-warm layer
 
