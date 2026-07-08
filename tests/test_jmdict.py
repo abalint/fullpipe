@@ -41,6 +41,12 @@ MINI_JMDICT = """<?xml version="1.0" encoding="UTF-8"?>
 <r_ele><reb>ほね</reb></r_ele>
 <sense></sense>
 </entry>
+<entry>
+<ent_seq>5</ent_seq>
+<k_ele><keb>許す</keb></k_ele>
+<r_ele><reb>ゆるす</reb></r_ele>
+<sense><pos>&vs;</pos><gloss>to permit</gloss><gloss>to allow</gloss></sense>
+</entry>
 </JMdict>
 """
 
@@ -52,7 +58,7 @@ class TestJmdict(unittest.TestCase):
             self.conn, jmdict.parse_entries(io.BytesIO(MINI_JMDICT.encode())))
 
     def test_build_skips_glossless_entries(self):
-        self.assertEqual(self.count, 3)  # entry 4 has no glosses
+        self.assertEqual(self.count, 4)  # entry 4 (骨) has no glosses, dropped
 
     def test_lookup_by_kanji_and_kana(self):
         out = jmdict.lookup_many(self.conn, ["公園", "する", "ない"])
@@ -64,6 +70,14 @@ class TestJmdict(unittest.TestCase):
     def test_pos_entities_shortened(self):
         out = jmdict.lookup_many(self.conn, ["公園"])
         self.assertEqual(out["公園"][0]["s"][0]["pos"], ["noun"])
+
+    def test_lookup_falls_back_to_normalized_form(self):
+        # 許せる (potential) isn't a headword; its Sudachi normalized form 許す is
+        out = jmdict.lookup_many(self.conn, ["許せる"])
+        self.assertIn("許せる", out)
+        self.assertEqual(out["許せる"][0]["s"][0]["g"][0], "to permit")
+        # a genuinely unknown word still returns nothing
+        self.assertNotIn("存在しない語", jmdict.lookup_many(self.conn, ["存在しない語"]))
 
     def test_shared_reading_orders_common_first(self):
         out = jmdict.lookup_many(self.conn, ["こうえん"])

@@ -101,15 +101,36 @@ def build_db(conn, entries):
 
 
 def lookup_many(conn, lemmas, max_entries=DEFAULT_MAX_ENTRIES):
-    """{lemma: [entry, …]} common-first; lemmas with no entry are absent."""
-    out = {}
-    for lemma in set(lemmas):
-        rows = conn.execute(
+    """{lemma: [entry, …]} common-first; lemmas with no entry are absent.
+
+    A lemma that isn't a JMdict headword falls back to its Sudachi
+    *normalized* form: lexicalized inflections carry a lemma JMdict lacks but a
+    normalized form it has (許せる → 許す, い抜き させる/passive, spelling variants
+    like 繋ぐ→繫ぐ). This is the light deinflection the module's original
+    "lemma is enough" assumption missed for potential/variant forms."""
+    def _rows(key):
+        return conn.execute(
             "SELECT e.data FROM keys k JOIN entries e ON e.id = k.id"
             " WHERE k.key = ? ORDER BY e.pri DESC, e.id LIMIT ?",
-            (lemma, max_entries)).fetchall()
+            (key, max_entries)).fetchall()
+
+    out, misses = {}, []
+    for lemma in set(lemmas):
+        rows = _rows(lemma)
         if rows:
             out[lemma] = [json.loads(r[0]) for r in rows]
+        else:
+            misses.append(lemma)
+    if misses:
+        from engine.lemma import tokenize
+        for lemma in misses:
+            toks = tokenize(lemma)
+            norm = toks[0].normalized if len(toks) == 1 else None
+            if not norm or norm == lemma:
+                continue  # multi-token or no better key — genuinely absent
+            rows = _rows(norm)
+            if rows:
+                out[lemma] = [json.loads(r[0]) for r in rows]
     return out
 
 
