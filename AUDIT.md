@@ -21,6 +21,14 @@ most common corpus lemmas, how many are known) built from the `freq` table ∩
 known lemmas. New **Progress** tab in the app (`mobile/src/views/stats.ts`) with
 a nav entry, offline-cached like the queue snapshot.
 
+*Follow-on (confirm-known):* the known count no longer grows silently. A fuzzy
+exposure count can't assert knowledge, so `promote` routes exposure-qualified
+lemmas to a `confirm_candidate` queue instead of auto-flipping them to `known`.
+A **Confirm words** surface (banner on Progress → `#/confirm`) lets the user
+answer "yes, I know it" (→ known) or "not yet" (stays learning, snoozed).
+`GET/POST /confirm`, `ledgerctl confirm/defer`. Re-promoting the live ledger
+moved 85 exposure-only knowns into the queue; taps + import untouched.
+
 ### 2. Failed jobs were a dead end — and could wedge permanently — **FIXED 2026-07-08**
 Two halves of the same gap:
 - *App:* a `failed` job showed its error but offered no retry — you had to

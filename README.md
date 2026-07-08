@@ -92,7 +92,8 @@ them when PRIME mode is built.
 | `apply-taps payload.json` | tap batch → implies mark-watched + lapse poll + promote |
 | `import-known list.csv` | bulk-seed knowns from an external list (AnkiMorphs export etc.) + promote |
 | `promote` | recompute the projection (retunes thresholds for free) |
-| `query summary\|needs-review\|why LEMMA\|unwatched` | read the ledger |
+| `confirm LEMMA` / `defer LEMMA` | answer the exposure prompt: known ('yes') / snooze ('not yet') |
+| `query summary\|needs-review\|confirm-queue\|why LEMMA\|unwatched` | read the ledger |
 
 Bootstrap order: `init` → `build_freq` → `compute-anki-known`, plus
 `import-known` if you have an external known list (e.g. an AnkiMorphs
@@ -238,6 +239,18 @@ distinct words encountered, and **frequency-band coverage** (of the top
 stranded `pushing` → `watched` with a re-submit-to-retry error, so a wedged row
 is neither un-runnable nor un-deletable. `POST /jobs/{id}/retry` re-queues a
 failed job (the app's `↻ retry` button). See `AUDIT.md` for the full gap list.
+
+**Confirm-known replaces silent exposure promotion (2026-07-08):** a fuzzy
+"met it N times across k episodes" count can't *assert* you know a word, so
+`promote` no longer auto-flips exposure-qualified lemmas to `known`. They stay
+`learning` with a `confirm_candidate` flag and surface in a confirmation queue —
+`GET /confirm` (candidates + JMdict senses + the watched episodes they appeared
+in), `POST /confirm {lemma, known}`, `ledgerctl confirm/defer`, `query
+confirm-queue`. Answering "yes" appends `confirm_known` (→ known); "not yet"
+appends `confirm_defer` (stays learning, snoozed until a fresh qualifying
+exposure lands). The app grows a **Confirm words** queue reached from a banner on
+the Progress tab. Re-promoting the live ledger moved 85 exposure-only knowns into
+the queue (deliberate taps + the AnkiMorphs import are unaffected).
 
 Next: `/reconcile` skill for the offline-blob path (the online path is now
 `POST /taps`), `/setup` config interview, teach `/immerse` to consume

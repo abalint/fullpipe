@@ -23,8 +23,8 @@ class LedgerTest(unittest.TestCase):
     def setUp(self):
         self.conn = lc.open_db(":memory:")
 
-    def _expose_watched(self, lemma, n_episodes, other_unknown=0):
-        for i in range(n_episodes):
+    def _expose_watched(self, lemma, n_episodes, other_unknown=0, start_idx=0):
+        for i in range(start_idx, start_idx + n_episodes):
             ep, exp = _exposure_payload(f"ep{i}", [lemma], other_unknown)
             lc.record_exposure(self.conn, ep, exp)
             lc.mark_watched(self.conn, f"ep{i}")
@@ -55,15 +55,26 @@ class LedgerTest(unittest.TestCase):
         self.assertEqual(status["status"], "unknown")
         self.assertEqual(status["exposure_count"], 0)
 
-        # Watch them: rare-tier θ=6/spread 4 is met → known.
+        # Watch them: rare-tier θ=6/spread 4 is met → surfaced for confirmation
+        # (NOT auto-known — a fuzzy count can't assert knowledge).
         for i in range(6):
             lc.mark_watched(self.conn, f"e{i}")
         lc.promote(self.conn)
         row = self.conn.execute(
-            "SELECT status, exposure_count, episode_spread FROM lemmas WHERE lemma='猫'").fetchone()
-        self.assertEqual(row["status"], "known")
+            "SELECT status, exposure_count, episode_spread, confirm_candidate "
+            "FROM lemmas WHERE lemma='猫'").fetchone()
+        self.assertEqual(row["status"], "learning")
+        self.assertEqual(row["confirm_candidate"], 1)
         self.assertEqual(row["exposure_count"], 6)
         self.assertEqual(row["episode_spread"], 6)
+
+        # Confirming it ("yes, I know it") promotes to known and clears the flag.
+        lc.confirm_known_lemma(self.conn, "猫")
+        lc.promote(self.conn)
+        row = self.conn.execute(
+            "SELECT status, confirm_candidate FROM lemmas WHERE lemma='猫'").fetchone()
+        self.assertEqual(row["status"], "known")
+        self.assertEqual(row["confirm_candidate"], 0)
 
     def test_rating_set_clear_and_query(self):
         ep, exp = _exposure_payload("er", ["犬"])
@@ -110,8 +121,11 @@ class LedgerTest(unittest.TestCase):
             "INSERT INTO freq (lemma, rank, penetration, source) VALUES ('食べる', 100, 5000, 'show_graph')")
         self._expose_watched("食べる", 2)
         lc.promote(self.conn)
-        row = self.conn.execute("SELECT status, freq_rank FROM lemmas WHERE lemma='食べる'").fetchone()
-        self.assertEqual(row["status"], "known")
+        row = self.conn.execute(
+            "SELECT status, freq_rank, confirm_candidate FROM lemmas WHERE lemma='食べる'").fetchone()
+        # crosses the top-2k bar → confirmation candidate, not auto-known
+        self.assertEqual(row["status"], "learning")
+        self.assertEqual(row["confirm_candidate"], 1)
         self.assertEqual(row["freq_rank"], 100)
 
         # A rare lemma with the same 2 watched exposures stays unknown.
@@ -119,6 +133,34 @@ class LedgerTest(unittest.TestCase):
         lc.promote(self.conn)
         self.assertEqual(self.conn.execute(
             "SELECT status FROM lemmas WHERE lemma='薔薇'").fetchone()["status"], "unknown")
+
+    def test_confirm_queue_and_defer_snooze(self):
+        # rare-tier θ=6/spread 4: six watched exposures surface a candidate
+        self._expose_watched("蝶", 6)
+        lc.promote(self.conn)
+        queue = lc.query_confirm_queue(self.conn)
+        self.assertEqual([c["lemma"] for c in queue], ["蝶"])
+        self.assertIn("episodes", queue[0])  # carries watched-episode context
+
+        # "not yet" snoozes it: no longer a candidate, still learning
+        lc.defer_known_lemma(self.conn, "蝶")
+        lc.promote(self.conn)
+        self.assertEqual(lc.query_confirm_queue(self.conn), [])
+        self.assertEqual(self.conn.execute(
+            "SELECT status FROM lemmas WHERE lemma='蝶'").fetchone()["status"], "learning")
+
+        # a fresh qualifying exposure AFTER the defer re-surfaces it
+        time.sleep(1.1)  # ts resolution is seconds — land the exposure past the defer
+        self._expose_watched("蝶", 1, start_idx=6)
+        lc.promote(self.conn)
+        self.assertEqual([c["lemma"] for c in lc.query_confirm_queue(self.conn)], ["蝶"])
+
+        # confirming clears it from the queue and marks known
+        lc.confirm_known_lemma(self.conn, "蝶")
+        lc.promote(self.conn)
+        self.assertEqual(lc.query_confirm_queue(self.conn), [])
+        self.assertEqual(self.conn.execute(
+            "SELECT status FROM lemmas WHERE lemma='蝶'").fetchone()["status"], "known")
 
     def test_exposure_comprehension_bar(self):
         # Q1: exposures with other unknowns in the sentence don't qualify.
@@ -282,6 +324,7 @@ class LedgerTest(unittest.TestCase):
     def test_card_lapse_demotes(self):
         # Diagram: known → learning via card_lapse (fresh negative).
         self._expose_watched("勝負", 6)
+        lc.confirm_known_lemma(self.conn, "勝負")  # exposures now only surface; confirm makes it known
         lc.promote(self.conn)
         self.assertEqual(self.conn.execute(
             "SELECT status FROM lemmas WHERE lemma='勝負'").fetchone()["status"], "known")

@@ -638,6 +638,49 @@ class TestRoutes(ServerTestBase):
         self.assertEqual(self.client.post("/jobs/ghost/retry", headers=self.auth)
                          .status_code, 404)
 
+    def test_confirm_queue_and_answer(self):
+        # six watched exposures of a rare lemma → a confirmation candidate
+        conn = lc.open_db(self.cfg["ledger_db"])
+        for i in range(6):
+            ep = {"id": f"c{i}", "title": f"Ep {i}", "source": "t", "kind": "local"}
+            lc.record_exposure(conn, ep, {"蝶": {"sentence_idx": 0, "known_ratio": 1.0,
+                                                "other_unknown_count": 0}})
+            lc.mark_watched(conn, f"c{i}")
+        lc.promote(conn)
+        conn.close()
+
+        cands = self.client.get("/confirm", headers=self.auth).json()["candidates"]
+        self.assertEqual([c["lemma"] for c in cands], ["蝶"])
+        self.assertIn("episodes", cands[0])  # watched-episode context rides along
+        self.assertEqual(self.client.get("/stats", headers=self.auth)
+                         .json()["confirm_candidates"], 1)
+
+        # "yes" → known, queue empties; "?" body without a lemma is a 422
+        r = self.client.post("/confirm", headers=self.auth,
+                             json={"lemma": "蝶", "known": True})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["status"], "known")
+        self.assertEqual(self.client.get("/confirm", headers=self.auth)
+                         .json()["candidates"], [])
+        self.assertEqual(self.client.post("/confirm", headers=self.auth, json={})
+                         .status_code, 422)
+
+    def test_confirm_defer_snoozes(self):
+        conn = lc.open_db(self.cfg["ledger_db"])
+        for i in range(6):
+            ep = {"id": f"d{i}", "title": f"Ep {i}", "source": "t", "kind": "local"}
+            lc.record_exposure(conn, ep, {"鯨": {"sentence_idx": 0, "known_ratio": 1.0,
+                                                "other_unknown_count": 0}})
+            lc.mark_watched(conn, f"d{i}")
+        lc.promote(conn)
+        conn.close()
+        # "not yet" keeps it learning and pulls it from the queue
+        r = self.client.post("/confirm", headers=self.auth,
+                             json={"lemma": "鯨", "known": False})
+        self.assertEqual(r.json()["status"], "learning")
+        self.assertEqual(self.client.get("/confirm", headers=self.auth)
+                         .json()["candidates"], [])
+
     def test_stats_endpoint(self):
         # seed the ledger: a known lemma in-corpus, plus an exposure + freq row
         self.stage_episode()

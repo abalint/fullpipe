@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS lemmas (
     exposure_count INTEGER NOT NULL DEFAULT 0,         -- activated (watched) exposures
     episode_spread INTEGER NOT NULL DEFAULT 0,         -- distinct watched episodes
     needs_review   INTEGER NOT NULL DEFAULT 0,         -- conflict → /reconcile queue
+    confirm_candidate INTEGER NOT NULL DEFAULT 0,      -- exposures crossed θ → ask the user (not auto-known)
     first_seen TEXT, last_seen TEXT, updated_at TEXT NOT NULL
 );
 

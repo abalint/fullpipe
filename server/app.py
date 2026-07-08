@@ -520,11 +520,51 @@ def create_app(cfg, start_worker=True):
             "episodes_total": summary["episodes"]["total"],
             "cards_minted": summary["cards_minted"],
             "needs_review": summary["needs_review"],
+            "confirm_candidates": summary["confirm_candidates"],
             "words_encountered": distinct_exposed,
             "want_to_learn": len(lc.active_interest(conn)),
             "freq_bands": bands,
             "evidence_by_source": by_source,
         }
+
+    @app.get("/confirm", dependencies=[Depends(auth)])
+    def get_confirm():
+        """The exposure-confirmation queue: lemmas whose watched exposures
+        cleared the frequency-scaled bar, surfaced for a human "do you know
+        this?" instead of being auto-promoted. Enriched with JMdict senses
+        (when jmdict.db exists) so the card is answerable at a glance."""
+        conn = ledger_conn()
+        candidates = lc.query_confirm_queue(conn)
+        path = jmdict.db_path(cfg)
+        if candidates and path.exists():
+            jconn = jmdict.open_db(path)  # per-request: sqlite handles are thread-bound
+            try:
+                defs = jmdict.lookup_many(jconn, {c["lemma"] for c in candidates})
+            finally:
+                jconn.close()
+            for c in candidates:
+                c["senses"] = defs.get(c["lemma"], [])
+        return {"candidates": candidates}
+
+    @app.post("/confirm", dependencies=[Depends(auth)])
+    def post_confirm(body: dict):
+        """Answer one confirmation. {"lemma", "known": true} promotes it
+        (confirm_known → known); {"known": false} is "not yet" (confirm_defer →
+        stays learning, snoozed until a fresh qualifying exposure)."""
+        lemma = (body.get("lemma") or "").strip()
+        if not lemma:
+            raise HTTPException(422, "missing lemma")
+        known = bool(body.get("known", True))
+        conn = ledger_conn()
+        if known:
+            lc.confirm_known_lemma(conn, lemma)
+        else:
+            lc.defer_known_lemma(conn, lemma)
+        lc.promote(conn)
+        row = conn.execute(
+            "SELECT status FROM lemmas WHERE lemma = ?", (lemma,)).fetchone()
+        return {"lemma": lemma, "known": known,
+                "status": row["status"] if row else None}
 
     @app.get("/coverage", dependencies=[Depends(auth)])
     def get_coverage():

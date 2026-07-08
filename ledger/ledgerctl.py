@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ledgerctl — the ledger's seven verbs (DESIGN.md — The Ledger).
+"""ledgerctl — the ledger's verbs (DESIGN.md — The Ledger).
 
     materialize-known    → live-Anki-known ∪ ledger-promoted; the set every mode reads
     compute-anki-known   → live recompute via AnkiConnect (cached ~6h)
@@ -7,6 +7,7 @@
     mark-watched         ← flips episodes.watched=1 (P5)
     apply-taps           ← phone corrections; implies mark-watched; polls lapses (P6)
     promote              → recompute projection from evidence (the state machine)
+    confirm / defer      ← answer the exposure prompt (known 'yes' / snooze 'not yet')
     rate                 ← 1-5 star rating + taste tags → append-only taste_events
     record-curation      ← /immerse curation block (genre/format/topics/difficulty)
     query                → coverage %, needs_review queue, evidence audits, ratings
@@ -38,10 +39,16 @@ SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
 # polarity/weight 0 so `promote` never reads it as known/learning. It persists
 # across episodes and is retired only when the lemma becomes known (see
 # active_interest).
+# confirm_known is a deliberate "yes, I know it" answer to the exposure-triggered
+# prompt — a knowledge claim as strong as a tap. confirm_defer ("not yet") is a
+# scheduling signal, not knowledge: neutral polarity/weight, it only snoozes the
+# re-prompt (see promote — the candidate rule).
 POLARITY = {"exposure": 1, "tap_known": 1, "tap_unknown": -1, "tap_interest": 0,
-            "mined_card": 0, "card_lapse": -1, "import": 1}
+            "mined_card": 0, "card_lapse": -1, "import": 1,
+            "confirm_known": 1, "confirm_defer": 0}
 WEIGHT = {"exposure": 1.0, "tap_known": 3.0, "tap_unknown": 3.0, "tap_interest": 0.0,
-          "mined_card": 1.0, "card_lapse": 2.0, "import": 2.0}  # import: strong, but below a deliberate tap
+          "mined_card": 1.0, "card_lapse": 2.0, "import": 2.0,  # import: strong, but below a deliberate tap
+          "confirm_known": 3.0, "confirm_defer": 0.0}
 
 # Taste metadata (DESIGN.md — Taste metadata). Scalar columns the recommender
 # filters/groups/correlates on; bulky embed-only payload goes to metadata JSON.
@@ -107,6 +114,9 @@ def _migrate(conn):
     card_cols = {r["name"] for r in conn.execute("PRAGMA table_info(cards)")}
     if "deleted_at" not in card_cols:
         conn.execute("ALTER TABLE cards ADD COLUMN deleted_at TEXT")
+    lemma_cols = {r["name"] for r in conn.execute("PRAGMA table_info(lemmas)")}
+    if "confirm_candidate" not in lemma_cols:
+        conn.execute("ALTER TABLE lemmas ADD COLUMN confirm_candidate INTEGER NOT NULL DEFAULT 0")
     conn.commit()
 
 
@@ -492,20 +502,50 @@ def apply_taps(conn, payload, anki_call=None, watched=True):
     return result
 
 
+def _record_confirm(conn, lemma, source):
+    """Append one confirm_known / confirm_defer evidence row for a lemma the
+    exposure heuristic surfaced. Caller should `promote` after."""
+    ts = now_iso()
+    _touch_lemma(conn, lemma, ts=ts)
+    conn.execute(
+        """INSERT INTO evidence (lemma, source, polarity, weight, episode_id, context, ts)
+           VALUES (?, ?, ?, ?, NULL, NULL, ?)""",
+        (lemma, source, POLARITY[source], WEIGHT[source], ts))
+    conn.commit()
+
+
+def confirm_known_lemma(conn, lemma):
+    """User answered "yes, I know it" to the exposure prompt — a deliberate
+    knowledge claim (confirm_known) that promotes the lemma to known."""
+    _record_confirm(conn, lemma, "confirm_known")
+
+
+def defer_known_lemma(conn, lemma):
+    """User answered "not yet" — record confirm_defer, which keeps the lemma in
+    learning and snoozes the prompt until a fresh qualifying exposure lands."""
+    _record_confirm(conn, lemma, "confirm_defer")
+
+
 # --- promote (the state machine) ----------------------------------------------
 
 def promote(conn, anki_known=None):
     """Recompute the lemmas projection from evidence. First match wins:
 
     1. Fresh negative (tap_unknown / card_lapse newer than any positive)
-       → learning. needs_review when a strong positive (tap_known) also
-       exists, or when the lemma is live-Anki-known — there the demotion is a
+       → learning. needs_review when a strong positive (tap_known / confirm_known)
+       also exists, or when the lemma is live-Anki-known — there the demotion is a
        union no-op and the tap means *the card isn't doing its job* (Q2):
        route to REPLACE via the needs_review queue.
-    2. tap_known / import (bulk-seeded external list) → known. An import is
-       weaker than a tap: a fresh negative demotes it without needs_review.
-    3. Qualifying exposures ≥ θ(freq_rank) and spread ≥ k → known. An exposure
-       qualifies when its episode is watched and other_unknown_count = 0 (Q1).
+    2. tap_known / confirm_known / import (bulk-seeded external list) → known.
+       An import is weaker than a tap: a fresh negative demotes it without
+       needs_review.
+    3. Qualifying exposures ≥ θ(freq_rank) and spread ≥ k → NOT auto-known.
+       A fuzzy interaction count can't assert knowledge, so the lemma stays
+       `learning` and is flagged `confirm_candidate` — surfaced for the user to
+       confirm ("do you know this?"). Confirming appends confirm_known (rule 2);
+       "not yet" appends confirm_defer, which snoozes re-surfacing until a
+       qualifying exposure lands *after* the defer. An exposure qualifies when
+       its episode is watched and other_unknown_count = 0 (Q1).
     4. mined_card, no stronger positive → learning.
     5. else → unknown.
     """
@@ -528,6 +568,8 @@ def promote(conn, anki_known=None):
     for lemma, evs in by_lemma.items():
         taps_known = [e for e in evs if e["source"] == "tap_known"]
         imports = [e for e in evs if e["source"] == "import"]
+        confirms = [e for e in evs if e["source"] == "confirm_known"]
+        defers = [e for e in evs if e["source"] == "confirm_defer"]
         negatives = [e for e in evs if e["source"] in ("tap_unknown", "card_lapse")]
         mined = [e for e in evs if e["source"] == "mined_card"]
         active_exposures = [e for e in evs if e["source"] == "exposure" and e["watched"]]
@@ -543,7 +585,7 @@ def promote(conn, anki_known=None):
         q_count = len(qualifying)
         q_spread = len({e["episode_id"] for e in qualifying})
 
-        positives = taps_known + imports + active_exposures
+        positives = taps_known + imports + confirms + active_exposures
         last_negative = max((e["ts"] for e in negatives), default=None)
         last_positive = max((e["ts"] for e in positives), default=None)
 
@@ -551,17 +593,26 @@ def promote(conn, anki_known=None):
         theta, spread_needed = theta_for(freq_rank)
 
         needs_review = 0
+        confirm_candidate = 0
         # Ties go to the negative: taps are deliberate strong evidence, and a
         # same-second exposure/tap pair only happens when they were written
         # by the same run.
         if last_negative and (last_positive is None or last_negative >= last_positive):
             status = "learning"
-            if taps_known or lemma in anki_known:
+            if taps_known or confirms or lemma in anki_known:
                 needs_review = 1
-        elif taps_known or imports:
+        elif taps_known or imports or confirms:
             status = "known"
         elif q_count >= theta and q_spread >= spread_needed:
-            status = "known"
+            # Exposures cleared the bar, but a fuzzy count can't *assert*
+            # knowledge — surface it for confirmation instead of promoting.
+            # Snooze after a "not yet": re-surface only once a qualifying
+            # exposure lands after the latest defer.
+            status = "learning"
+            last_defer = max((e["ts"] for e in defers), default=None)
+            newest_qualifying = max((e["ts"] for e in qualifying), default=None)
+            if last_defer is None or (newest_qualifying and newest_qualifying > last_defer):
+                confirm_candidate = 1
         elif mined:
             status = "learning"
         else:
@@ -569,7 +620,7 @@ def promote(conn, anki_known=None):
 
         # Coarse roll-up: orders the reconcile queue, nothing more.
         signed = sum(POLARITY[e["source"]] * WEIGHT[e["source"]]
-                     for e in taps_known + imports + negatives + mined + active_exposures)
+                     for e in taps_known + imports + confirms + negatives + mined + active_exposures)
         confidence = max(-1.0, min(1.0, signed / 6.0))
 
         exposure_count = len(active_exposures)
@@ -579,8 +630,9 @@ def promote(conn, anki_known=None):
 
         cur = conn.execute(
             """INSERT INTO lemmas (lemma, freq_rank, status, confidence, exposure_count,
-                                   episode_spread, needs_review, first_seen, last_seen, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                   episode_spread, needs_review, confirm_candidate,
+                                   first_seen, last_seen, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(lemma) DO UPDATE SET
                    freq_rank = excluded.freq_rank,
                    status = excluded.status,
@@ -588,12 +640,14 @@ def promote(conn, anki_known=None):
                    exposure_count = excluded.exposure_count,
                    episode_spread = excluded.episode_spread,
                    needs_review = excluded.needs_review,
+                   confirm_candidate = excluded.confirm_candidate,
                    first_seen = COALESCE(lemmas.first_seen, excluded.first_seen),
                    last_seen = excluded.last_seen,
                    updated_at = excluded.updated_at
                """,
             (lemma, freq_rank, status, confidence, exposure_count,
-             episode_spread, needs_review, first_seen, last_seen, ts_now),
+             episode_spread, needs_review, confirm_candidate,
+             first_seen, last_seen, ts_now),
         )
         changed += cur.rowcount
     conn.commit()
@@ -674,11 +728,14 @@ def query_summary(conn):
         "SELECT COUNT(*), SUM(watched) FROM episodes").fetchone()
     needs_review = conn.execute(
         "SELECT COUNT(*) FROM lemmas WHERE needs_review = 1").fetchone()[0]
+    confirm_candidates = conn.execute(
+        "SELECT COUNT(*) FROM lemmas WHERE confirm_candidate = 1").fetchone()[0]
     return {
         "lemmas_by_status": status_counts,
         "evidence_by_source": evidence_counts,
         "episodes": {"total": episodes[0] or 0, "watched": episodes[1] or 0},
         "needs_review": needs_review,
+        "confirm_candidates": confirm_candidates,
         "cards_minted": conn.execute("SELECT COUNT(*) FROM cards").fetchone()[0],
     }
 
@@ -688,6 +745,31 @@ def query_needs_review(conn):
         """SELECT lemma, status, confidence, exposure_count, episode_spread, last_seen
            FROM lemmas WHERE needs_review = 1 ORDER BY confidence""").fetchall()
     return [dict(r) for r in rows]
+
+
+def query_confirm_queue(conn):
+    """Lemmas the exposure heuristic flagged for confirmation (confirm_candidate
+    = 1) — "we think you know this; do you?". Common words first (most likely a
+    quick yes). Each carries the watched episodes it turned up in as context."""
+    rows = conn.execute(
+        """SELECT lemma, reading, pos, freq_rank, exposure_count, episode_spread, last_seen
+           FROM lemmas WHERE confirm_candidate = 1
+           ORDER BY freq_rank IS NULL, freq_rank, exposure_count DESC""").fetchall()
+    if not rows:
+        return []
+    lemmas = [r["lemma"] for r in rows]
+    qmarks = ",".join("?" * len(lemmas))
+    titles = {}
+    for r in conn.execute(
+            f"""SELECT e.lemma, ep.title FROM evidence e
+                JOIN episodes ep ON ep.id = e.episode_id
+                WHERE e.source = 'exposure' AND ep.watched = 1
+                      AND e.lemma IN ({qmarks})
+                ORDER BY ep.processed_at""", lemmas):
+        seen = titles.setdefault(r["lemma"], [])
+        if r["title"] and r["title"] not in seen:
+            seen.append(r["title"])
+    return [{**dict(r), "episodes": titles.get(r["lemma"], [])} for r in rows]
 
 
 def query_why(conn, lemma):
@@ -803,6 +885,10 @@ def main(argv=None):
     p.add_argument("--origin", default=None,
                    help="label recorded in the evidence context (default: file name)")
     sub.add_parser("promote", help="recompute the projection from evidence")
+    p = sub.add_parser("confirm", help="confirm a candidate lemma as known ('yes')")
+    p.add_argument("lemma")
+    p = sub.add_parser("defer", help="snooze a candidate lemma ('not yet')")
+    p.add_argument("lemma")
     p = sub.add_parser("rate", help="rate an episode 1-5 stars + optional taste tags")
     p.add_argument("episode_id")
     p.add_argument("rating", help="1-5, or 'clear' to unrate")
@@ -815,7 +901,8 @@ def main(argv=None):
     p.add_argument("episode_id")
     p.add_argument("curate_json", help="path to the episode's curate.json")
     p = sub.add_parser("query", help="read the ledger")
-    p.add_argument("what", choices=["summary", "needs-review", "why", "unwatched", "ratings"])
+    p.add_argument("what", choices=["summary", "needs-review", "confirm-queue",
+                                    "why", "unwatched", "ratings"])
     p.add_argument("lemma", nargs="?")
 
     args = ap.parse_args(argv)
@@ -864,6 +951,12 @@ def main(argv=None):
         _json_out(result)
     elif args.verb == "promote":
         _json_out(promote(conn))
+    elif args.verb == "confirm":
+        confirm_known_lemma(conn, args.lemma)
+        _json_out({"lemma": args.lemma, "confirmed": True, "promote": promote(conn)})
+    elif args.verb == "defer":
+        defer_known_lemma(conn, args.lemma)
+        _json_out({"lemma": args.lemma, "deferred": True, "promote": promote(conn)})
     elif args.verb == "rate":
         rating = None if args.rating == "clear" else int(args.rating)
         _json_out(record_rating(conn, args.episode_id, rating, args.tag))
@@ -875,6 +968,8 @@ def main(argv=None):
             _json_out(query_summary(conn))
         elif args.what == "needs-review":
             _json_out(query_needs_review(conn))
+        elif args.what == "confirm-queue":
+            _json_out(query_confirm_queue(conn))
         elif args.what == "why":
             if not args.lemma:
                 ap.error("query why requires a lemma")
