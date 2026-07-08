@@ -295,8 +295,9 @@ def create_app(cfg, start_worker=True):
             conn.close()
 
     def media_auth(request: Request, token_q: str | None):
-        """External players (VLC) can't send headers — media endpoints also
-        accept ?token=. Tailnet-only traffic, so a query token is fine."""
+        """The app's Filesystem.downloadFile can't always send headers —
+        media endpoints also accept ?t=. Tailnet-only traffic, so a query
+        token is fine."""
         if not token:
             return
         if request.headers.get("Authorization") == f"Bearer {token}":

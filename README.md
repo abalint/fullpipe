@@ -221,6 +221,13 @@ topics, difficulty_felt}` from `/immerse` curation, and a coverage-at-watch
 snapshot. App (`anki/mobile/`): stars + the six grouped tag buttons on watched
 queue rows and the post-watch prep bar (append-on-tap, multi-select).
 
+**VLC + streaming removed (2026-07-07):** the app is download-then-play only.
+Gone: the VLC handoff (ExternalPlayer plugin + queue/player buttons), the
+player's stream-from-server fallback, and the queue's "▶ stream" link —
+streaming never worked reliably and the whole flow assumes local files on the
+phone. Server media endpoints stay (they serve the downloads; ?t= query auth
+kept for Filesystem.downloadFile).
+
 Next: `/reconcile` skill for the offline-blob path (the online path is now
 `POST /taps`), `/setup` config interview, teach `/immerse` to consume
 `prepared` jobs (skip re-acquire), WorkManager video pull + retention on the

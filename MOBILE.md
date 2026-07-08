@@ -231,13 +231,13 @@ if best-in-class furigana/tap typography is worth a separate codebase.
   batch carries a client-generated `batch_id` so a re-flush after reconnect is **idempotent**.
 - Offline cache of pulled prep docs + videos; background sync via **WorkManager** constrained to
   *unmetered network + charging*.
-- In-app learning player: WebView `<video>` (local file when downloaded, else
-  server stream) under a subtitle overlay built from the tokenized transcript —
+- In-app learning player: WebView `<video>` over the downloaded local file
+  under a subtitle overlay built from the tokenized transcript —
   watch-time word taps land in the same tap store/outbox as prep-doc taps.
   Prep-doc keywords highlight orange and pop gloss + curate notes on tap;
   subtitle modes on / keyword-only / off; cues linger to the next line so ASR
   end-times don't cut subs early. Replay-line / prev / next / speed /
-  furigana / fullscreen; resume position; VLC handoff kept as a fallback.
+  furigana / fullscreen; resume position.
 - Queue screen: per-item lifecycle state, download progress, storage used, pin/delete.
 - **Not a card reviewer** — AnkiDroid owns review (cards arrive via AnkiConnect → AnkiWeb →
   AnkiDroid). The client may deep-link into AnkiDroid.
@@ -306,8 +306,8 @@ reimplement them.*
    queue-aware: reviews the queue (`server.jobqueue` CLI), asks what to curate, skips
    acquire/coverage when Stage-1 artifacts exist, and closes jobs to `staged` itself.
 3. ~~Scaffold the Capacitor client~~ **Done 2026-07-05 → `anki/mobile/`.** Remaining from this
-   item: WorkManager background video pull (the client currently *streams* video from the
-   server) and the retention/pin/storage-cap controls.
+   item: WorkManager background video pull (downloads are manual-tap for now)
+   and the retention/pin/storage-cap controls.
 4. ~~Wire the Android share-sheet enqueue target.~~ **Done** (ShareTargetPlugin → queue screen).
 5. Prove the overnight flow end-to-end on one batch: queue at night → videos local by morning →
    curate → cards + prep sync in seconds.
