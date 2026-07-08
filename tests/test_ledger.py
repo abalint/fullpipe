@@ -138,8 +138,10 @@ class LedgerTest(unittest.TestCase):
         # rare-tier θ=6/spread 4: six watched exposures surface a candidate
         self._expose_watched("蝶", 6)
         lc.promote(self.conn)
+        self.conn.execute("UPDATE lemmas SET reading='チョウ' WHERE lemma='蝶'")
         queue = lc.query_confirm_queue(self.conn)
         self.assertEqual([c["lemma"] for c in queue], ["蝶"])
+        self.assertEqual(queue[0]["reading"], "ちょう")  # furigana normalized to hiragana
         self.assertIn("episodes", queue[0])  # carries watched-episode context
 
         # "not yet" snoozes it: no longer a candidate, still learning

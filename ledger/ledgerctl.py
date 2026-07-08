@@ -769,7 +769,17 @@ def query_confirm_queue(conn):
         seen = titles.setdefault(r["lemma"], [])
         if r["title"] and r["title"] not in seen:
             seen.append(r["title"])
-    return [{**dict(r), "episodes": titles.get(r["lemma"], [])} for r in rows]
+    # lemmas.reading is Sudachi reading_form (katakana); furigana wants hiragana,
+    # matching the reading normalization coverage already does on the wire.
+    from engine.lemma import kata_to_hira
+    out = []
+    for r in rows:
+        d = dict(r)
+        if d.get("reading"):
+            d["reading"] = kata_to_hira(d["reading"])
+        d["episodes"] = titles.get(r["lemma"], [])
+        out.append(d)
+    return out
 
 
 def query_why(conn, lemma):
