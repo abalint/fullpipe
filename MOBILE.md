@@ -7,8 +7,9 @@ Android client, all over a private Tailscale mesh.
 
 It supersedes DESIGN.md's v1 phone round-trip (static prep-doc HTML + copy-paste "corrections"
 blob). That flow was chosen for *zero infra*; a private mesh makes reachability free, so the
-online path is now server-backed. The copy-blob **remains the offline fallback** (see
-PROPOSALS.md P9), but it is no longer the primary loop.
+online path is now server-backed. The copy-blob fallback (PROPOSALS.md P9) was retired from
+the UI on 2026-07-07 — the offline outbox covers unreachability, so taps queue and sync
+instead of round-tripping through the clipboard.
 
 ---
 
@@ -111,9 +112,9 @@ is the same `DELETE /jobs/{id}`.
 
 Shelving therefore **pins the video**: the phone's normal auto-delete-at-watched
 is skipped for passive episodes so the file survives for the Listen loop. The
-decision is offered at the close-out — the prep view's **"🎧 Watched + listen"**
-button marks watched, shelves passive, and keeps the mp4 in one tap (vs. plain
-"Mark watched", which deletes it). Shelving *after* the fact from the queue's
+decision is offered at the close-out — the prep view's **"🎧 + listen"** button
+(in the after-watching row) marks watched, shelves passive, and keeps the mp4
+in one tap (vs. plain "Mark watched", which deletes it). Shelving *after* the fact from the queue's
 watched row still works, but the file was already reclaimed, so the Listen tab
 re-pulls it on demand (the `⬇` fallback).
 
@@ -262,8 +263,8 @@ if best-in-class furigana/tap typography is worth a separate codebase.
   transcript / definitions.
 - **Per-artifact readiness.** "Ready" is per artifact class, not per job: video ready at `prepared`,
   prep+cards ready at `staged`. The decoupled-pull default relies on this.
-- **Reconcile.** `POST /taps` *is* the `/reconcile` round-trip — no copy-paste blob on the online
-  path. The blob survives only as the offline fallback (P9).
+- **Reconcile.** `POST /taps` *is* the `/reconcile` round-trip — no copy-paste blob; offline
+  taps wait in the outbox and sync when reachable (the P9 blob button was retired 2026-07-07).
 
 ---
 
