@@ -8,8 +8,13 @@
 PRAGMA journal_mode = WAL;
 
 -- Cached projection of the NON-Anki verdict. Fast reads for materialize-known.
+-- Holds two item kinds sharing one key space (GRAMMAR.md — one ledger, three
+-- item kinds): kind='word' (SudachiPy dictionary form) and kind='phrase'
+-- (JMdict multi-token headword, e.g. 気を付ける). Grammar has its own
+-- projection table (grammar_points) — its key is the pattern string.
 CREATE TABLE IF NOT EXISTS lemmas (
-    lemma          TEXT PRIMARY KEY,      -- SudachiPy dictionary form = join key
+    lemma          TEXT PRIMARY KEY,      -- SudachiPy dictionary form / JMdict phrase headword = join key
+    kind           TEXT NOT NULL DEFAULT 'word',  -- word|phrase
     reading        TEXT,                  -- homograph disambiguation aid
     pos            TEXT,
     freq_rank      INTEGER,               -- from freq table; NULL if absent
@@ -23,9 +28,13 @@ CREATE TABLE IF NOT EXISTS lemmas (
 );
 
 -- Append-only. THE truth. lemmas.status above is a projection of this.
+-- The item key ALWAYS lives in `lemma` (word lemma / phrase headword / grammar
+-- pattern); `kind` selects which projection table the row feeds (GRAMMAR.md
+-- — Schema & idempotency).
 CREATE TABLE IF NOT EXISTS evidence (
     id         INTEGER PRIMARY KEY,
-    lemma      TEXT NOT NULL,
+    lemma      TEXT NOT NULL, -- the item key: word lemma | phrase headword | grammar pattern
+    kind       TEXT NOT NULL DEFAULT 'word', -- word|phrase|grammar
     source     TEXT NOT NULL, -- exposure|tap_known|tap_unknown|tap_interest|mined_card|card_lapse|import
     polarity   INTEGER NOT NULL,-- +1 / -1 / 0(=learning)
     weight     REAL NOT NULL DEFAULT 1.0,
@@ -35,10 +44,41 @@ CREATE TABLE IF NOT EXISTS evidence (
 );
 CREATE INDEX IF NOT EXISTS idx_evidence_lemma   ON evidence(lemma);
 CREATE INDEX IF NOT EXISTS idx_evidence_episode ON evidence(episode_id);
--- Idempotent /immerse re-runs: at most one exposure row per lemma per episode (P4).
--- Also caps a talky episode at one exposure — spread does the multi-episode work.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_exposure_once ON evidence(lemma, episode_id, source)
+-- Idempotent /immerse re-runs: at most one exposure row per item per episode
+-- (P4). `kind` is part of the key so a word and a grammar pattern sharing a
+-- string can't collide. Also caps a talky episode at one exposure — spread
+-- does the multi-episode work.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_exposure_once ON evidence(kind, lemma, episode_id, source)
     WHERE source = 'exposure';
+
+-- Grammar projection (GRAMMAR.md): the taxonomy spine + promote's cached
+-- verdict, keyed by the canonical pattern string (= evidence.lemma for
+-- kind='grammar'). Seeded once from ledger/grammar_taxonomy.json
+-- (`ledgerctl grammar-seed`); per-episode curation only matches into it or
+-- proposes into grammar_proposed — nothing becomes a tracked key silently.
+CREATE TABLE IF NOT EXISTS grammar_points (
+    pattern TEXT PRIMARY KEY,          -- 〜てしまう (the join key)
+    level INTEGER,                     -- JLPT tier 5=N5 … 1=N1; NULL = unplaced (strictest θ)
+    gloss TEXT,
+    status TEXT NOT NULL DEFAULT 'unknown',   -- unknown|learning|known
+    confidence REAL NOT NULL DEFAULT 0,
+    exposure_count INTEGER NOT NULL DEFAULT 0,
+    episode_spread INTEGER NOT NULL DEFAULT 0,
+    needs_review INTEGER NOT NULL DEFAULT 0,
+    confirm_candidate INTEGER NOT NULL DEFAULT 0,
+    first_seen TEXT, last_seen TEXT, updated_at TEXT NOT NULL
+);
+
+-- Patterns curation met that aren't in the taxonomy (colloquial/dialectal) —
+-- the deliberate-growth gate. Approving one (`ledgerctl grammar-approve`)
+-- moves it into grammar_points; until then it is NOT a tracked key.
+CREATE TABLE IF NOT EXISTS grammar_proposed (
+    pattern TEXT PRIMARY KEY,
+    example TEXT,                      -- one sentence it was seen in
+    gloss TEXT,                        -- the proposer's one-line description
+    seen INTEGER NOT NULL DEFAULT 1,   -- distinct sightings (bumped on re-propose)
+    first_seen TEXT
+);
 
 -- Episodes: enables spread, idempotent exposure, and the watched-gate.
 -- The metadata columns below are the enjoyment metric's attribution features

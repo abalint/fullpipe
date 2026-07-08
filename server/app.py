@@ -260,11 +260,35 @@ def create_app(cfg, start_worker=True):
         doc the ranked candidate lemmas (`candidates`, coverage order = the
         episode's high-value words), and `interest` — the standing "want to
         learn" lemmas (persist across shows until known) that appear here, so
-        the player highlights them wherever they surface."""
+        the player highlights them wherever they surface.
+
+        Curated sentences additionally carry the curate pass's `grammar`
+        (pattern + form note, GRAMMAR.md — proposals flagged) and `phrases`
+        (canonical + surface), so the player's word popup can show the line's
+        grammatical context; absent before curation and on untagged lines."""
         try:
             coverage = load_coverage(cfg, episode_id)
         except FileNotFoundError as e:
             raise HTTPException(404, str(e))
+        curate_path = episode_dir(cfg, episode_id) / "curate.json"
+        curate = read_json(curate_path) if curate_path.exists() else {}
+        grammar_at: dict[int, list] = {}
+        for g in curate.get("grammar", []):
+            idx, pattern = g.get("sentence_idx"), g.get("pattern")
+            if idx is None or not (pattern or g.get("proposed_pattern")):
+                continue
+            note = {"pattern": pattern or g["proposed_pattern"],
+                    "note": g.get("form_note") or g.get("gloss") or ""}
+            if not pattern:
+                note["proposed"] = True
+            grammar_at.setdefault(idx, []).append(note)
+        phrases_at: dict[int, list] = {}
+        for p in curate.get("phrases", []):
+            idx = p.get("sentence_idx")
+            if idx is None or not p.get("canonical"):
+                continue
+            phrases_at.setdefault(idx, []).append(
+                {"canonical": p["canonical"], "surface": p.get("surface", "")})
         interest = lc.active_interest(ledger_conn())
         here = {t.get("l") for s in coverage["sentences"] for t in s["tokens"]}
         # ~300k rows, ~0.5s to load — cache it; freq only changes when
@@ -278,13 +302,20 @@ def create_app(cfg, start_worker=True):
             rank = freq.get(t.get("l"))
             return {**t, "f": rank} if rank is not None else t
 
+        def sent(s):
+            d = {"idx": s["idx"], "start": s["start"],
+                 "end": s["end"], "cls": s.get("classification"),
+                 "tokens": [tok(t) for t in s["tokens"]]}
+            if s["idx"] in grammar_at:
+                d["grammar"] = grammar_at[s["idx"]]
+            if s["idx"] in phrases_at:
+                d["phrases"] = phrases_at[s["idx"]]
+            return d
+
         return {"episode_id": episode_id,
                 "candidates": [c["lemma"] for c in coverage.get("candidates", [])],
                 "interest": sorted(interest & here),
-                "sentences": [{"idx": s["idx"], "start": s["start"],
-                               "end": s["end"], "cls": s.get("classification"),
-                               "tokens": [tok(t) for t in s["tokens"]]}
-                              for s in coverage["sentences"]]}
+                "sentences": [sent(s) for s in coverage["sentences"]]}
 
     @app.get("/definitions/{episode_id}", dependencies=[Depends(auth)])
     def get_definitions(episode_id: str):
@@ -496,14 +527,15 @@ def create_app(cfg, start_worker=True):
         AnkiConnect), so it stays fast and works with Anki closed."""
         conn = ledger_conn()
         summary = lc.query_summary(conn)
-        by_status = summary["lemmas_by_status"]
+        by_status = summary["lemmas_by_status"]  # words only (GRAMMAR.md §5)
         by_source = summary["evidence_by_source"]
 
-        # frequency-band coverage: known lemmas ∩ corpus ranks, bucketed.
+        # frequency-band coverage: known WORDS ∩ corpus ranks, bucketed —
+        # phrases/grammar have no corpus rank and must not dilute the join.
         # Join known (~few k rows) against freq — cheap despite freq's ~300k.
         known_ranks = [r[0] for r in conn.execute(
             "SELECT f.rank FROM lemmas l JOIN freq f ON f.lemma = l.lemma "
-            "WHERE l.status = 'known' AND f.rank IS NOT NULL")]
+            "WHERE l.status = 'known' AND l.kind = 'word' AND f.rank IS NOT NULL")]
         bands = [{"band": b,
                   "known": sum(1 for r in known_ranks if r <= b),
                   "total": b}
@@ -511,59 +543,86 @@ def create_app(cfg, start_worker=True):
 
         distinct_exposed = conn.execute(
             "SELECT COUNT(DISTINCT lemma) FROM evidence "
-            "WHERE source = 'exposure'").fetchone()[0]
+            "WHERE source = 'exposure' AND kind = 'word'").fetchone()[0]
 
+        phrases = summary["phrases"]
+        grammar = summary["grammar"]
         return {
-            "known": by_status.get("known", 0),
+            "known": by_status.get("known", 0),  # words only, meaning unchanged
             "learning": by_status.get("learning", 0),
             "episodes_watched": summary["episodes"]["watched"],
             "episodes_total": summary["episodes"]["total"],
             "cards_minted": summary["cards_minted"],
             "needs_review": summary["needs_review"],
-            "confirm_candidates": summary["confirm_candidates"],
+            "confirm_candidates": summary["confirm_candidates"],  # all kinds
             "words_encountered": distinct_exposed,
             "want_to_learn": len(lc.active_interest(conn)),
             "freq_bands": bands,
             "evidence_by_source": by_source,
+            # sibling axes (GRAMMAR.md): tracked phrases + grammar points
+            "phrases_known": phrases["by_status"].get("known", 0),
+            "phrases_learning": phrases["by_status"].get("learning", 0),
+            "phrases_confirm_candidates": phrases["confirm_candidates"],
+            "grammar_known": grammar["by_status"].get("known", 0),
+            "grammar_learning": grammar["by_status"].get("learning", 0),
+            "grammar_confirm_candidates": grammar["confirm_candidates"],
+            "grammar_proposed": grammar["proposed"],
         }
 
     @app.get("/confirm", dependencies=[Depends(auth)])
     def get_confirm():
-        """The exposure-confirmation queue: lemmas whose watched exposures
-        cleared the frequency-scaled bar, surfaced for a human "do you know
-        this?" instead of being auto-promoted. Enriched with JMdict senses
-        (when jmdict.db exists) so the card is answerable at a glance."""
+        """The exposure-confirmation queue: items whose watched exposures
+        cleared their bar, surfaced for a human "do you know this?" instead of
+        being auto-promoted. Typed — every candidate carries `kind`
+        (word|phrase|grammar). Words and phrases are enriched with JMdict
+        senses (when jmdict.db exists; phrase headwords are JMdict keys too);
+        grammar rows carry pattern/level/gloss from the taxonomy."""
         conn = ledger_conn()
         candidates = lc.query_confirm_queue(conn)
+        lookup = {c["lemma"] for c in candidates if c.get("kind") != "grammar"}
         path = jmdict.db_path(cfg)
-        if candidates and path.exists():
+        if lookup and path.exists():
             jconn = jmdict.open_db(path)  # per-request: sqlite handles are thread-bound
             try:
-                defs = jmdict.lookup_many(jconn, {c["lemma"] for c in candidates})
+                defs = jmdict.lookup_many(jconn, lookup)
             finally:
                 jconn.close()
             for c in candidates:
-                c["senses"] = defs.get(c["lemma"], [])
+                if c.get("kind") != "grammar":
+                    c["senses"] = defs.get(c["lemma"], [])
         return {"candidates": candidates}
 
     @app.post("/confirm", dependencies=[Depends(auth)])
     def post_confirm(body: dict):
-        """Answer one confirmation. {"lemma", "known": true} promotes it
-        (confirm_known → known); {"known": false} is "not yet" (confirm_defer →
-        stays learning, snoozed until a fresh qualifying exposure)."""
-        lemma = (body.get("lemma") or "").strip()
-        if not lemma:
-            raise HTTPException(422, "missing lemma")
-        known = bool(body.get("known", True))
+        """Answer one confirmation. {"kind", "key", "known": true} promotes the
+        item (confirm_known → known); {"known": false} is "not yet"
+        (confirm_defer → stays learning, snoozed until a fresh qualifying
+        exposure). Bare {"lemma", "known"} is accepted as kind='word' for
+        older clients."""
+        kind = (body.get("kind") or "word").strip()
+        key = (body.get("key") or body.get("lemma") or "").strip()
+        if not key:
+            raise HTTPException(422, "missing key")
+        if kind not in ("word", "phrase", "grammar"):
+            raise HTTPException(422, f"unknown kind: {kind}")
         conn = ledger_conn()
+        if kind == "grammar":
+            # Only taxonomy patterns are confirmable — a typo'd pattern must
+            # not mint a tracked key via the confirm path.
+            if not conn.execute("SELECT 1 FROM grammar_points WHERE pattern = ?",
+                                (key,)).fetchone():
+                raise HTTPException(404, f"not a grammar point: {key}")
+        known = bool(body.get("known", True))
         if known:
-            lc.confirm_known_lemma(conn, lemma)
+            lc.confirm_known_lemma(conn, key, kind=kind)
         else:
-            lc.defer_known_lemma(conn, lemma)
+            lc.defer_known_lemma(conn, key, kind=kind)
         lc.promote(conn)
+        table, col = (("grammar_points", "pattern") if kind == "grammar"
+                      else ("lemmas", "lemma"))
         row = conn.execute(
-            "SELECT status FROM lemmas WHERE lemma = ?", (lemma,)).fetchone()
-        return {"lemma": lemma, "known": known,
+            f"SELECT status FROM {table} WHERE {col} = ?", (key,)).fetchone()
+        return {"kind": kind, "key": key, "lemma": key, "known": known,
                 "status": row["status"] if row else None}
 
     @app.get("/coverage", dependencies=[Depends(auth)])

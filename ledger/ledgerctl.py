@@ -80,6 +80,30 @@ def theta_for(freq_rank):
     return THETA_TABLE[-1][1], THETA_TABLE[-1][2]
 
 
+# Grammar difficulty prior (GRAMMAR.md): θ exposures + episode spread from the
+# JLPT tier — the difficulty analogue of THETA_TABLE, since grammar points have
+# no corpus freq rank. Keys are levels 5=N5 (easiest) … 1=N1; a pattern with no
+# tier (an approved proposal that was never placed) gets the strictest bar.
+GRAMMAR_THETA = {5: (2, 2), 4: (2, 2), 3: (3, 3), 2: (4, 3), 1: (5, 4)}
+
+
+def grammar_theta_for(level):
+    return GRAMMAR_THETA.get(level, GRAMMAR_THETA[1])
+
+
+# An exposure "qualifies" toward θ when the learner could parse the sentence
+# around the item. Words carry other_unknown_count == 0 (Q1); phrase/grammar
+# exposures carry the sentence's coverage classification instead — anything
+# short of too_hard parses.
+QUALIFYING_CLASSIFICATIONS = frozenset(("comprehensible", "i_plus_1", "reinforcement"))
+
+
+def _exposure_qualifies(ctx):
+    if ctx.get("other_unknown_count", 99) == 0:
+        return True
+    return ctx.get("classification") in QUALIFYING_CLASSIFICATIONS
+
+
 def now_iso():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -117,22 +141,41 @@ def _migrate(conn):
     lemma_cols = {r["name"] for r in conn.execute("PRAGMA table_info(lemmas)")}
     if "confirm_candidate" not in lemma_cols:
         conn.execute("ALTER TABLE lemmas ADD COLUMN confirm_candidate INTEGER NOT NULL DEFAULT 0")
+    if "kind" not in lemma_cols:
+        conn.execute("ALTER TABLE lemmas ADD COLUMN kind TEXT NOT NULL DEFAULT 'word'")
+    ev_cols = {r["name"] for r in conn.execute("PRAGMA table_info(evidence)")}
+    if "kind" not in ev_cols:
+        conn.execute("ALTER TABLE evidence ADD COLUMN kind TEXT NOT NULL DEFAULT 'word'")
+    # idx_exposure_once gained `kind` (GRAMMAR.md). schema.sql's CREATE INDEX
+    # IF NOT EXISTS silently no-ops on the pre-kind shape (same name), so
+    # detect the old shape here and recreate — after the ALTERs above.
+    idx = [r["name"] for r in conn.execute("PRAGMA index_info(idx_exposure_once)")]
+    if idx and idx[0] != "kind":
+        conn.execute("DROP INDEX idx_exposure_once")
+        conn.execute(
+            """CREATE UNIQUE INDEX idx_exposure_once
+               ON evidence(kind, lemma, episode_id, source) WHERE source = 'exposure'""")
     conn.commit()
 
 
 # --- write verbs -------------------------------------------------------------
 
-def _touch_lemma(conn, lemma, reading=None, pos=None, ts=None):
-    """Ensure a lemmas row exists; fill reading/pos if newly learned."""
+def _touch_lemma(conn, lemma, reading=None, pos=None, ts=None, kind="word"):
+    """Ensure a lemmas row exists; fill reading/pos if newly learned.
+
+    kind is set on creation only — an existing row keeps its kind (first
+    writer wins; phrase rows are only ever created by the deliberate phrase
+    paths, so a later default-'word' touch of the same key must not demote
+    it)."""
     ts = ts or now_iso()
     conn.execute(
-        """INSERT INTO lemmas (lemma, reading, pos, first_seen, last_seen, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?)
+        """INSERT INTO lemmas (lemma, kind, reading, pos, first_seen, last_seen, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(lemma) DO UPDATE SET
                reading = COALESCE(lemmas.reading, excluded.reading),
                pos     = COALESCE(lemmas.pos, excluded.pos),
                last_seen = excluded.last_seen""",
-        (lemma, reading, pos, ts, ts, ts),
+        (lemma, kind, reading, pos, ts, ts, ts),
     )
 
 
@@ -197,14 +240,19 @@ def record_exposure(conn, episode, exposures):
     )
     written = 0
     for lemma, ctx in exposures.items():
-        _touch_lemma(conn, lemma, ctx.get("reading"), ctx.get("pos"), ts)
-        context = {k: ctx[k] for k in ("sentence_idx", "known_ratio", "other_unknown_count")
+        # kind rides in the context dict ('phrase' for tracked-phrase units
+        # coverage detected; default 'word'). Only pre-existing phrase keys
+        # ever arrive here — new phrase keys are created by record_curate_items.
+        kind = ctx.get("kind", "word")
+        _touch_lemma(conn, lemma, ctx.get("reading"), ctx.get("pos"), ts, kind=kind)
+        context = {k: ctx[k] for k in ("sentence_idx", "known_ratio",
+                                       "other_unknown_count", "classification")
                    if k in ctx}
         cur = conn.execute(
             """INSERT OR IGNORE INTO evidence
-               (lemma, source, polarity, weight, episode_id, context, ts)
-               VALUES (?, 'exposure', ?, ?, ?, ?, ?)""",
-            (lemma, POLARITY["exposure"], WEIGHT["exposure"],
+               (lemma, kind, source, polarity, weight, episode_id, context, ts)
+               VALUES (?, ?, 'exposure', ?, ?, ?, ?, ?)""",
+            (lemma, kind, POLARITY["exposure"], WEIGHT["exposure"],
              episode["id"], json.dumps(context, ensure_ascii=False), ts),
         )
         written += cur.rowcount
@@ -221,17 +269,19 @@ def record_exposure(conn, episode, exposures):
 def record_mined_cards(conn, episode_id, cards):
     """Register minted cards: mined_card evidence + a cards row each.
 
-    cards: [{"lemma", "sentence", "anki_guid", "anki_note_id"}]
+    cards: [{"lemma", "sentence", "anki_guid", "anki_note_id", "kind"?}]
     (Called by the deck tool after pushing; kept here so every evidence
-    source has exactly one writer in the ledger layer.)
+    source has exactly one writer in the ledger layer. kind defaults to
+    'word' — a minted phrase card passes kind='phrase'.)
     """
     ts = now_iso()
     for c in cards:
-        _touch_lemma(conn, c["lemma"], ts=ts)
+        kind = c.get("kind", "word")
+        _touch_lemma(conn, c["lemma"], ts=ts, kind=kind)
         conn.execute(
-            """INSERT INTO evidence (lemma, source, polarity, weight, episode_id, context, ts)
-               VALUES (?, 'mined_card', ?, ?, ?, ?, ?)""",
-            (c["lemma"], POLARITY["mined_card"], WEIGHT["mined_card"], episode_id,
+            """INSERT INTO evidence (lemma, kind, source, polarity, weight, episode_id, context, ts)
+               VALUES (?, ?, 'mined_card', ?, ?, ?, ?, ?)""",
+            (c["lemma"], kind, POLARITY["mined_card"], WEIGHT["mined_card"], episode_id,
              json.dumps({"sentence": c.get("sentence", "")[:200]}, ensure_ascii=False), ts),
         )
         conn.execute(
@@ -356,6 +406,149 @@ def record_curation(conn, episode_id, curation):
     return update_episode_meta(conn, episode_id, columns=columns, metadata=metadata)
 
 
+def record_curate_items(conn, episode_id, curation, jmdict_conn=None):
+    """Land /immerse curate's phrase + grammar emissions as (inert) exposure
+    evidence (GRAMMAR.md — Production path). Detection is LLM-emits,
+    server-validates: the LLM proposes, this function decides what may become
+    a tracked key — nothing is key-minted silently.
+
+    curation["phrases"]: [{sentence_idx, surface, canonical, classification}]
+      canonical must be a JMdict headword (deinflection sidestepped: the LLM
+      returns the dictionary form, we only check it's a real key) AND must
+      itself tokenize to ≥2 Sudachi tokens — the canonical form, NOT the
+      surface span, because inflected single words split on their auxiliaries
+      (食べて → 食べ|て would qualify every te-form verb). Failures are
+      returned in `rejected`, never written.
+
+    curation["grammar"]: [{sentence_idx, pattern, classification, form_note}]
+      pattern must already be a grammar_points key. An unrecognized pattern
+      (or an explicit proposed_pattern + gloss/example) goes to
+      grammar_proposed — the deliberate-growth gate (`ledgerctl
+      grammar-approve`) — not to evidence.
+
+    Exposures stay inert until the episode is watched, exactly like word
+    exposures; context carries the sentence classification, which is the
+    qualifying signal for phrase/grammar θ (_exposure_qualifies). Caller
+    should `promote` after. Idempotent via idx_exposure_once.
+    """
+    from engine.lemma import tokenize
+    ts = now_iso()
+    conn.execute("INSERT INTO episodes (id, processed_at) VALUES (?, ?) "
+                 "ON CONFLICT(id) DO NOTHING", (episode_id, ts))
+
+    phrases_written, rejected = 0, []
+    for p in curation.get("phrases") or []:
+        canonical = (p.get("canonical") or "").strip()
+        if not canonical:
+            continue
+        if jmdict_conn is None:
+            rejected.append({"canonical": canonical, "reason": "jmdict_unavailable"})
+            continue
+        from tools import jmdict as J
+        if not J.is_headword(jmdict_conn, canonical):
+            rejected.append({"canonical": canonical, "reason": "not_a_jmdict_headword"})
+            continue
+        if len(tokenize(canonical)) < 2:
+            rejected.append({"canonical": canonical, "reason": "single_token"})
+            continue
+        entries = J.lookup_many(jmdict_conn, [canonical], max_entries=1)
+        readings = (entries.get(canonical) or [{}])[0].get("r") or []
+        _touch_lemma(conn, canonical, reading=readings[0] if readings else None,
+                     pos="expression", ts=ts, kind="phrase")
+        context = {k: p[k] for k in ("sentence_idx", "classification") if k in p}
+        cur = conn.execute(
+            """INSERT OR IGNORE INTO evidence
+               (lemma, kind, source, polarity, weight, episode_id, context, ts)
+               VALUES (?, 'phrase', 'exposure', ?, ?, ?, ?, ?)""",
+            (canonical, POLARITY["exposure"], WEIGHT["exposure"], episode_id,
+             json.dumps(context, ensure_ascii=False), ts))
+        phrases_written += cur.rowcount
+
+    grammar_written, proposed = 0, []
+    known_patterns = {r[0] for r in conn.execute("SELECT pattern FROM grammar_points")}
+    for g in curation.get("grammar") or []:
+        pattern = (g.get("pattern") or g.get("proposed_pattern") or "").strip()
+        if not pattern:
+            continue
+        if pattern not in known_patterns or "proposed_pattern" in g:
+            conn.execute(
+                """INSERT INTO grammar_proposed (pattern, example, gloss, seen, first_seen)
+                   VALUES (?, ?, ?, 1, ?)
+                   ON CONFLICT(pattern) DO UPDATE SET
+                       seen = grammar_proposed.seen + 1,
+                       example = COALESCE(grammar_proposed.example, excluded.example),
+                       gloss = COALESCE(grammar_proposed.gloss, excluded.gloss)""",
+                (pattern, g.get("example"), g.get("gloss"), ts))
+            proposed.append(pattern)
+            continue
+        context = {k: g[k] for k in ("sentence_idx", "classification", "form_note")
+                   if k in g}
+        cur = conn.execute(
+            """INSERT OR IGNORE INTO evidence
+               (lemma, kind, source, polarity, weight, episode_id, context, ts)
+               VALUES (?, 'grammar', 'exposure', ?, ?, ?, ?, ?)""",
+            (pattern, POLARITY["exposure"], WEIGHT["exposure"], episode_id,
+             json.dumps(context, ensure_ascii=False), ts))
+        grammar_written += cur.rowcount
+
+    conn.commit()
+    return {"episode_id": episode_id,
+            "phrases": {"recorded": phrases_written, "rejected": rejected},
+            "grammar": {"recorded": grammar_written,
+                        "proposed": sorted(set(proposed))}}
+
+
+def seed_grammar_points(conn, rows):
+    """Load the once-authored taxonomy (ledger/grammar_taxonomy.json) into
+    grammar_points. Upserts level/gloss; never touches promote's verdict
+    columns, so re-seeding a revised taxonomy is safe."""
+    ts = now_iso()
+    for r in rows:
+        conn.execute(
+            """INSERT INTO grammar_points (pattern, level, gloss, updated_at)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(pattern) DO UPDATE SET
+                   level = excluded.level, gloss = excluded.gloss,
+                   updated_at = excluded.updated_at""",
+            (r["pattern"].strip(), r.get("level"), r.get("gloss"), ts))
+    conn.commit()
+    n = conn.execute("SELECT COUNT(*) FROM grammar_points").fetchone()[0]
+    return {"seeded": len(rows), "grammar_points": n}
+
+
+def approve_grammar_proposal(conn, pattern, level=None, gloss=None):
+    """Deliberately grow the taxonomy: move a grammar_proposed row into
+    grammar_points (GRAMMAR.md — nothing becomes a tracked key silently).
+    level/gloss override the proposal's stored ones."""
+    row = conn.execute("SELECT * FROM grammar_proposed WHERE pattern = ?",
+                       (pattern,)).fetchone()
+    if row is None:
+        raise KeyError(f"no proposed grammar pattern: {pattern}")
+    conn.execute(
+        """INSERT INTO grammar_points (pattern, level, gloss, updated_at)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(pattern) DO UPDATE SET
+               level = COALESCE(excluded.level, grammar_points.level),
+               gloss = COALESCE(excluded.gloss, grammar_points.gloss)""",
+        (pattern, level, gloss or row["gloss"], now_iso()))
+    conn.execute("DELETE FROM grammar_proposed WHERE pattern = ?", (pattern,))
+    conn.commit()
+    return {"pattern": pattern, "approved": True, "level": level,
+            "gloss": gloss or row["gloss"]}
+
+
+def add_phrase(conn, canonical, reading=None):
+    """Deliberately track a non-JMdict phrase (the reviewed path for idioms
+    record_curate_items rejected). Still refuses single-token keys — that
+    guard protects the key space, reviewer or not."""
+    from engine.lemma import tokenize
+    if len(tokenize(canonical)) < 2:
+        raise ValueError(f"not a multi-token phrase: {canonical}")
+    _touch_lemma(conn, canonical, reading=reading, pos="expression", kind="phrase")
+    conn.commit()
+    return {"phrase": canonical, "tracked": True}
+
+
 def purge_episode(conn, episode_id):
     """Unwind an episode's ledger footprint: evidence (inert exposures,
     pre-watch taps), minted-card records, tap batches, the episodes row —
@@ -385,9 +578,13 @@ def purge_episode(conn, episode_id):
         # No taste data to keep — drop the review log and the row together.
         conn.execute("DELETE FROM taste_events WHERE episode_id = ?", (episode_id,))
         conn.execute("DELETE FROM episodes WHERE id = ?", (episode_id,))
-    # lemmas is a projection of evidence — rows whose truth is now gone go too
+    # lemmas is a projection of evidence — rows whose truth is now gone go too.
+    # Phrase keys are exempt: they can be deliberately tracked before any
+    # evidence exists (add_phrase), and a stale unknown-status phrase key is
+    # harmless — detection just re-matches it later.
     orphaned = conn.execute(
-        "DELETE FROM lemmas WHERE lemma NOT IN (SELECT DISTINCT lemma FROM evidence)"
+        "DELETE FROM lemmas WHERE kind = 'word' AND "
+        "lemma NOT IN (SELECT DISTINCT lemma FROM evidence)"
     ).rowcount
     conn.commit()
     promote(conn)  # heal counts/statuses that leaned on the purged evidence
@@ -502,34 +699,107 @@ def apply_taps(conn, payload, anki_call=None, watched=True):
     return result
 
 
-def _record_confirm(conn, lemma, source):
-    """Append one confirm_known / confirm_defer evidence row for a lemma the
-    exposure heuristic surfaced. Caller should `promote` after."""
+def _record_confirm(conn, key, source, kind="word"):
+    """Append one confirm_known / confirm_defer evidence row for an item the
+    exposure heuristic surfaced. The key is the word lemma, phrase headword,
+    or grammar pattern; kind routes it to the right projection at promote.
+    Caller should `promote` after."""
     ts = now_iso()
-    _touch_lemma(conn, lemma, ts=ts)
+    if kind != "grammar":
+        _touch_lemma(conn, key, ts=ts, kind=kind)
     conn.execute(
-        """INSERT INTO evidence (lemma, source, polarity, weight, episode_id, context, ts)
-           VALUES (?, ?, ?, ?, NULL, NULL, ?)""",
-        (lemma, source, POLARITY[source], WEIGHT[source], ts))
+        """INSERT INTO evidence (lemma, kind, source, polarity, weight, episode_id, context, ts)
+           VALUES (?, ?, ?, ?, ?, NULL, NULL, ?)""",
+        (key, kind, source, POLARITY[source], WEIGHT[source], ts))
     conn.commit()
 
 
-def confirm_known_lemma(conn, lemma):
+def confirm_known_lemma(conn, key, kind="word"):
     """User answered "yes, I know it" to the exposure prompt — a deliberate
-    knowledge claim (confirm_known) that promotes the lemma to known."""
-    _record_confirm(conn, lemma, "confirm_known")
+    knowledge claim (confirm_known) that promotes the item to known."""
+    _record_confirm(conn, key, "confirm_known", kind=kind)
 
 
-def defer_known_lemma(conn, lemma):
-    """User answered "not yet" — record confirm_defer, which keeps the lemma in
+def defer_known_lemma(conn, key, kind="word"):
+    """User answered "not yet" — record confirm_defer, which keeps the item in
     learning and snoozes the prompt until a fresh qualifying exposure lands."""
-    _record_confirm(conn, lemma, "confirm_defer")
+    _record_confirm(conn, key, "confirm_defer", kind=kind)
 
 
 # --- promote (the state machine) ----------------------------------------------
 
+def _judge(evs, theta, spread_needed, in_anki_known=False):
+    """Apply promote's rule order to one item's evidence rows (any kind —
+    word, phrase, or grammar; sources an item never receives simply yield
+    empty lists). Returns the projection fields."""
+    taps_known = [e for e in evs if e["source"] == "tap_known"]
+    imports = [e for e in evs if e["source"] == "import"]
+    confirms = [e for e in evs if e["source"] == "confirm_known"]
+    defers = [e for e in evs if e["source"] == "confirm_defer"]
+    negatives = [e for e in evs if e["source"] in ("tap_unknown", "card_lapse")]
+    mined = [e for e in evs if e["source"] == "mined_card"]
+    active_exposures = [e for e in evs if e["source"] == "exposure" and e["watched"]]
+
+    qualifying = []
+    for e in active_exposures:
+        try:
+            ctx = json.loads(e["context"] or "{}")
+        except ValueError:
+            ctx = {}
+        if _exposure_qualifies(ctx):
+            qualifying.append(e)
+    q_count = len(qualifying)
+    q_spread = len({e["episode_id"] for e in qualifying})
+
+    positives = taps_known + imports + confirms + active_exposures
+    last_negative = max((e["ts"] for e in negatives), default=None)
+    last_positive = max((e["ts"] for e in positives), default=None)
+
+    needs_review = 0
+    confirm_candidate = 0
+    # Ties go to the negative: taps are deliberate strong evidence, and a
+    # same-second exposure/tap pair only happens when they were written
+    # by the same run.
+    if last_negative and (last_positive is None or last_negative >= last_positive):
+        status = "learning"
+        if taps_known or confirms or in_anki_known:
+            needs_review = 1
+    elif taps_known or imports or confirms:
+        status = "known"
+    elif q_count >= theta and q_spread >= spread_needed:
+        # Exposures cleared the bar, but a fuzzy count can't *assert*
+        # knowledge — surface it for confirmation instead of promoting.
+        # Snooze after a "not yet": re-surface only once a qualifying
+        # exposure lands after the latest defer.
+        status = "learning"
+        last_defer = max((e["ts"] for e in defers), default=None)
+        newest_qualifying = max((e["ts"] for e in qualifying), default=None)
+        if last_defer is None or (newest_qualifying and newest_qualifying > last_defer):
+            confirm_candidate = 1
+    elif mined:
+        status = "learning"
+    else:
+        status = "unknown"
+
+    # Coarse roll-up: orders the reconcile queue, nothing more.
+    signed = sum(POLARITY[e["source"]] * WEIGHT[e["source"]]
+                 for e in taps_known + imports + confirms + negatives + mined + active_exposures)
+    return {
+        "status": status,
+        "needs_review": needs_review,
+        "confirm_candidate": confirm_candidate,
+        "confidence": max(-1.0, min(1.0, signed / 6.0)),
+        "exposure_count": len(active_exposures),
+        "episode_spread": len({e["episode_id"] for e in active_exposures}),
+        "first_seen": min(e["ts"] for e in evs),
+        "last_seen": max(e["ts"] for e in evs),
+    }
+
+
 def promote(conn, anki_known=None):
-    """Recompute the lemmas projection from evidence. First match wins:
+    """Recompute the projections (lemmas for word/phrase evidence,
+    grammar_points for grammar evidence) from the append-only evidence log.
+    One rule order for every item kind — first match wins:
 
     1. Fresh negative (tap_unknown / card_lapse newer than any positive)
        → learning. needs_review when a strong positive (tap_known / confirm_known)
@@ -539,100 +809,76 @@ def promote(conn, anki_known=None):
     2. tap_known / confirm_known / import (bulk-seeded external list) → known.
        An import is weaker than a tap: a fresh negative demotes it without
        needs_review.
-    3. Qualifying exposures ≥ θ(freq_rank) and spread ≥ k → NOT auto-known.
-       A fuzzy interaction count can't assert knowledge, so the lemma stays
+    3. Qualifying exposures ≥ θ and spread ≥ k → NOT auto-known.
+       A fuzzy interaction count can't assert knowledge, so the item stays
        `learning` and is flagged `confirm_candidate` — surfaced for the user to
        confirm ("do you know this?"). Confirming appends confirm_known (rule 2);
        "not yet" appends confirm_defer, which snoozes re-surfacing until a
        qualifying exposure lands *after* the defer. An exposure qualifies when
-       its episode is watched and other_unknown_count = 0 (Q1).
+       its episode is watched and the learner could parse the sentence around
+       the item: other_unknown_count = 0 for words (Q1), a non-too_hard
+       coverage classification for phrases/grammar (_exposure_qualifies).
+       θ comes from freq rank for words (theta_for), from the JLPT tier for
+       grammar (grammar_theta_for); phrases have no corpus rank yet and get
+       the rare-word bar.
     4. mined_card, no stronger positive → learning.
     5. else → unknown.
     """
     anki_known = anki_known or set()
     rows = conn.execute(
-        """SELECT e.lemma, e.source, e.ts, e.context, e.episode_id,
+        """SELECT e.lemma, e.kind, e.source, e.ts, e.context, e.episode_id,
                   COALESCE(ep.watched, 0) AS watched
            FROM evidence e LEFT JOIN episodes ep ON ep.id = e.episode_id
            ORDER BY e.lemma, e.ts"""
     ).fetchall()
 
     freq = dict(conn.execute("SELECT lemma, rank FROM freq").fetchall())
+    grammar_levels = dict(conn.execute(
+        "SELECT pattern, level FROM grammar_points").fetchall())
 
-    by_lemma = {}
+    # kind is part of the group key so a word and a grammar pattern that
+    # happen to share a string can't merge their evidence.
+    by_key = {}
     for r in rows:
-        by_lemma.setdefault(r["lemma"], []).append(r)
+        by_key.setdefault((r["kind"], r["lemma"]), []).append(r)
 
     ts_now = now_iso()
-    changed = 0
-    for lemma, evs in by_lemma.items():
-        taps_known = [e for e in evs if e["source"] == "tap_known"]
-        imports = [e for e in evs if e["source"] == "import"]
-        confirms = [e for e in evs if e["source"] == "confirm_known"]
-        defers = [e for e in evs if e["source"] == "confirm_defer"]
-        negatives = [e for e in evs if e["source"] in ("tap_unknown", "card_lapse")]
-        mined = [e for e in evs if e["source"] == "mined_card"]
-        active_exposures = [e for e in evs if e["source"] == "exposure" and e["watched"]]
+    grammar_seen = 0
+    for (kind, lemma), evs in by_key.items():
+        if kind == "grammar":
+            theta, spread_needed = grammar_theta_for(grammar_levels.get(lemma))
+            v = _judge(evs, theta, spread_needed)
+            conn.execute(
+                """INSERT INTO grammar_points (pattern, status, confidence,
+                       exposure_count, episode_spread, needs_review,
+                       confirm_candidate, first_seen, last_seen, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(pattern) DO UPDATE SET
+                       status = excluded.status,
+                       confidence = excluded.confidence,
+                       exposure_count = excluded.exposure_count,
+                       episode_spread = excluded.episode_spread,
+                       needs_review = excluded.needs_review,
+                       confirm_candidate = excluded.confirm_candidate,
+                       first_seen = COALESCE(grammar_points.first_seen, excluded.first_seen),
+                       last_seen = excluded.last_seen,
+                       updated_at = excluded.updated_at""",
+                (lemma, v["status"], v["confidence"], v["exposure_count"],
+                 v["episode_spread"], v["needs_review"], v["confirm_candidate"],
+                 v["first_seen"], v["last_seen"], ts_now))
+            grammar_seen += 1
+            continue
 
-        qualifying = []
-        for e in active_exposures:
-            try:
-                ctx = json.loads(e["context"] or "{}")
-            except ValueError:
-                ctx = {}
-            if ctx.get("other_unknown_count", 99) == 0:
-                qualifying.append(e)
-        q_count = len(qualifying)
-        q_spread = len({e["episode_id"] for e in qualifying})
-
-        positives = taps_known + imports + confirms + active_exposures
-        last_negative = max((e["ts"] for e in negatives), default=None)
-        last_positive = max((e["ts"] for e in positives), default=None)
-
+        # freq only ever keys single Sudachi lemmas, so a phrase headword
+        # misses → rare-word θ, per the docstring.
         freq_rank = freq.get(lemma)
         theta, spread_needed = theta_for(freq_rank)
-
-        needs_review = 0
-        confirm_candidate = 0
-        # Ties go to the negative: taps are deliberate strong evidence, and a
-        # same-second exposure/tap pair only happens when they were written
-        # by the same run.
-        if last_negative and (last_positive is None or last_negative >= last_positive):
-            status = "learning"
-            if taps_known or confirms or lemma in anki_known:
-                needs_review = 1
-        elif taps_known or imports or confirms:
-            status = "known"
-        elif q_count >= theta and q_spread >= spread_needed:
-            # Exposures cleared the bar, but a fuzzy count can't *assert*
-            # knowledge — surface it for confirmation instead of promoting.
-            # Snooze after a "not yet": re-surface only once a qualifying
-            # exposure lands after the latest defer.
-            status = "learning"
-            last_defer = max((e["ts"] for e in defers), default=None)
-            newest_qualifying = max((e["ts"] for e in qualifying), default=None)
-            if last_defer is None or (newest_qualifying and newest_qualifying > last_defer):
-                confirm_candidate = 1
-        elif mined:
-            status = "learning"
-        else:
-            status = "unknown"
-
-        # Coarse roll-up: orders the reconcile queue, nothing more.
-        signed = sum(POLARITY[e["source"]] * WEIGHT[e["source"]]
-                     for e in taps_known + imports + confirms + negatives + mined + active_exposures)
-        confidence = max(-1.0, min(1.0, signed / 6.0))
-
-        exposure_count = len(active_exposures)
-        episode_spread = len({e["episode_id"] for e in active_exposures})
-        first_seen = min(e["ts"] for e in evs)
-        last_seen = max(e["ts"] for e in evs)
-
-        cur = conn.execute(
-            """INSERT INTO lemmas (lemma, freq_rank, status, confidence, exposure_count,
-                                   episode_spread, needs_review, confirm_candidate,
-                                   first_seen, last_seen, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        v = _judge(evs, theta, spread_needed, in_anki_known=lemma in anki_known)
+        conn.execute(
+            """INSERT INTO lemmas (lemma, kind, freq_rank, status, confidence,
+                                   exposure_count, episode_spread, needs_review,
+                                   confirm_candidate, first_seen, last_seen, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(lemma) DO UPDATE SET
                    freq_rank = excluded.freq_rank,
                    status = excluded.status,
@@ -645,16 +891,31 @@ def promote(conn, anki_known=None):
                    last_seen = excluded.last_seen,
                    updated_at = excluded.updated_at
                """,
-            (lemma, freq_rank, status, confidence, exposure_count,
-             episode_spread, needs_review, confirm_candidate,
-             first_seen, last_seen, ts_now),
+            (lemma, kind, freq_rank, v["status"], v["confidence"],
+             v["exposure_count"], v["episode_spread"], v["needs_review"],
+             v["confirm_candidate"], v["first_seen"], v["last_seen"], ts_now),
         )
-        changed += cur.rowcount
+
+    # Heal grammar rows whose evidence vanished (episode purge): back to the
+    # seeded baseline. Guarded so untouched taxonomy rows aren't rewritten
+    # every promote.
+    evidenced_patterns = [k for (kind, k) in by_key if kind == "grammar"]
+    qmarks = ",".join("?" * len(evidenced_patterns)) or "''"
+    conn.execute(
+        f"""UPDATE grammar_points
+            SET status='unknown', confidence=0, exposure_count=0,
+                episode_spread=0, needs_review=0, confirm_candidate=0
+            WHERE pattern NOT IN ({qmarks})
+              AND (status != 'unknown' OR exposure_count != 0
+                   OR confirm_candidate != 0 OR needs_review != 0)""",
+        evidenced_patterns)
     conn.commit()
 
     counts = dict(conn.execute(
         "SELECT status, COUNT(*) FROM lemmas GROUP BY status").fetchall())
-    return {"lemmas_recomputed": len(by_lemma), "status_counts": counts}
+    return {"lemmas_recomputed": len(by_key) - grammar_seen,
+            "grammar_recomputed": grammar_seen,
+            "status_counts": counts}
 
 
 # --- read verbs ----------------------------------------------------------------
@@ -668,10 +929,15 @@ def materialize_known(conn, cfg, force_refresh=False):
     from ledger.anki_known import compute_anki_known
     anki_set, norm_known, stems = compute_anki_known(cfg, force_refresh=force_refresh)
 
+    # Words only: phrase keys must not leak into the token-level known set —
+    # their kanji stems would contaminate stem-matching (気を付ける → stem 気).
+    # Phrases travel separately as {headword: status} for KnownSet's unit pass.
     ledger_known = {r[0] for r in conn.execute(
-        "SELECT lemma FROM lemmas WHERE status = 'known'")}
+        "SELECT lemma FROM lemmas WHERE status = 'known' AND kind = 'word'")}
     learning = {r[0] for r in conn.execute(
-        "SELECT lemma FROM lemmas WHERE status = 'learning'")}
+        "SELECT lemma FROM lemmas WHERE status = 'learning' AND kind = 'word'")}
+    phrases = dict(conn.execute(
+        "SELECT lemma, status FROM lemmas WHERE kind = 'phrase'").fetchall())
 
     known = anki_set | ledger_known
 
@@ -696,6 +962,7 @@ def materialize_known(conn, cfg, force_refresh=False):
         "learning": learning - known,
         "norm_known": norm_known,
         "known_stems": stems,
+        "phrases": phrases,
         "sources": {"anki": len(anki_set), "ledger": len(ledger_known),
                     "union": len(known)},
     }
@@ -720,22 +987,44 @@ def active_interest(conn, known=()):
 
 
 def query_summary(conn):
+    """Headline counts. lemmas_by_status stays WORDS-ONLY so its meaning (and
+    the corpus-rank join in /stats) is unchanged by phrase/grammar tracking;
+    the sibling `phrases` / `grammar` blocks carry the other two kinds.
+    confirm_candidates is the all-kinds total — it feeds the app's confirm
+    banner, which fronts one queue for all three."""
     status_counts = dict(conn.execute(
-        "SELECT status, COUNT(*) FROM lemmas GROUP BY status").fetchall())
+        "SELECT status, COUNT(*) FROM lemmas WHERE kind = 'word' "
+        "GROUP BY status").fetchall())
+    phrase_counts = dict(conn.execute(
+        "SELECT status, COUNT(*) FROM lemmas WHERE kind = 'phrase' "
+        "GROUP BY status").fetchall())
+    grammar_counts = dict(conn.execute(
+        "SELECT status, COUNT(*) FROM grammar_points GROUP BY status").fetchall())
     evidence_counts = dict(conn.execute(
         "SELECT source, COUNT(*) FROM evidence GROUP BY source").fetchall())
     episodes = conn.execute(
         "SELECT COUNT(*), SUM(watched) FROM episodes").fetchone()
     needs_review = conn.execute(
         "SELECT COUNT(*) FROM lemmas WHERE needs_review = 1").fetchone()[0]
-    confirm_candidates = conn.execute(
-        "SELECT COUNT(*) FROM lemmas WHERE confirm_candidate = 1").fetchone()[0]
+    cc_lemmas = dict(conn.execute(
+        "SELECT kind, COUNT(*) FROM lemmas WHERE confirm_candidate = 1 "
+        "GROUP BY kind").fetchall())
+    cc_grammar = conn.execute(
+        "SELECT COUNT(*) FROM grammar_points WHERE confirm_candidate = 1"
+    ).fetchone()[0]
     return {
         "lemmas_by_status": status_counts,
+        "phrases": {"by_status": phrase_counts,
+                    "confirm_candidates": cc_lemmas.get("phrase", 0)},
+        "grammar": {"by_status": grammar_counts,
+                    "confirm_candidates": cc_grammar,
+                    "proposed": conn.execute(
+                        "SELECT COUNT(*) FROM grammar_proposed").fetchone()[0]},
         "evidence_by_source": evidence_counts,
         "episodes": {"total": episodes[0] or 0, "watched": episodes[1] or 0},
         "needs_review": needs_review,
-        "confirm_candidates": confirm_candidates,
+        "confirm_candidates": cc_lemmas.get("word", 0) + cc_lemmas.get("phrase", 0)
+                              + cc_grammar,
         "cards_minted": conn.execute("SELECT COUNT(*) FROM cards").fetchone()[0],
     }
 
@@ -748,30 +1037,41 @@ def query_needs_review(conn):
 
 
 def query_confirm_queue(conn):
-    """Lemmas the exposure heuristic flagged for confirmation (confirm_candidate
-    = 1) — "we think you know this; do you?". Common words first (most likely a
-    quick yes). Each carries the watched episodes it turned up in as context."""
+    """Items the exposure heuristic flagged for confirmation (confirm_candidate
+    = 1) — "we think you know this; do you?". One queue, three kinds: words
+    and phrases from `lemmas` (common words first — most likely a quick yes),
+    then grammar points from `grammar_points` (easiest JLPT tier first). Every
+    row carries `kind` (the typed key) and the watched episodes it turned up
+    in as context."""
     rows = conn.execute(
-        """SELECT lemma, reading, pos, freq_rank, exposure_count, episode_spread, last_seen
+        """SELECT lemma, kind, reading, pos, freq_rank, exposure_count,
+                  episode_spread, last_seen
            FROM lemmas WHERE confirm_candidate = 1
            ORDER BY freq_rank IS NULL, freq_rank, exposure_count DESC""").fetchall()
-    if not rows:
+    grows = conn.execute(
+        """SELECT pattern, level, gloss, exposure_count, episode_spread, last_seen
+           FROM grammar_points WHERE confirm_candidate = 1
+           ORDER BY level IS NULL, level DESC, exposure_count DESC""").fetchall()
+    if not rows and not grows:
         return []
-    lemmas = [r["lemma"] for r in rows]
-    qmarks = ",".join("?" * len(lemmas))
+    keys = [(r["kind"], r["lemma"]) for r in rows] + \
+           [("grammar", g["pattern"]) for g in grows]
+    qmarks = ",".join("(?,?)" for _ in keys)
     titles = {}
     for r in conn.execute(
-            f"""SELECT e.lemma, ep.title FROM evidence e
+            f"""SELECT e.lemma, e.kind, ep.title FROM evidence e
                 JOIN episodes ep ON ep.id = e.episode_id
                 WHERE e.source = 'exposure' AND ep.watched = 1
-                      AND e.lemma IN ({qmarks})
-                ORDER BY ep.processed_at""", lemmas):
-        seen = titles.setdefault(r["lemma"], [])
+                      AND (e.kind, e.lemma) IN (VALUES {qmarks})
+                ORDER BY ep.processed_at""",
+            [x for pair in keys for x in pair]):
+        seen = titles.setdefault((r["kind"], r["lemma"]), [])
         if r["title"] and r["title"] not in seen:
             seen.append(r["title"])
     # Furigana over kanji only: reading_segs peels okurigana off the lemma's
     # dictionary reading (通す → 通[とお]す). Also normalize the flat reading to
-    # hiragana, matching what coverage emits on the wire.
+    # hiragana, matching what coverage emits on the wire. Works for phrases
+    # too — furigana() tokenizes the headword and rubies each kanji core.
     from engine.lemma import furigana, kata_to_hira
     out = []
     for r in rows:
@@ -779,8 +1079,16 @@ def query_confirm_queue(conn):
         if d.get("reading"):
             d["reading"] = kata_to_hira(d["reading"])
         d["reading_segs"] = furigana(r["lemma"])
-        d["episodes"] = titles.get(r["lemma"], [])
+        d["episodes"] = titles.get((r["kind"], r["lemma"]), [])
         out.append(d)
+    for g in grows:
+        out.append({
+            "lemma": g["pattern"], "kind": "grammar", "pattern": g["pattern"],
+            "level": g["level"], "gloss": g["gloss"],
+            "exposure_count": g["exposure_count"],
+            "episode_spread": g["episode_spread"], "last_seen": g["last_seen"],
+            "episodes": titles.get(("grammar", g["pattern"]), []),
+        })
     return out
 
 
@@ -897,10 +1205,26 @@ def main(argv=None):
     p.add_argument("--origin", default=None,
                    help="label recorded in the evidence context (default: file name)")
     sub.add_parser("promote", help="recompute the projection from evidence")
-    p = sub.add_parser("confirm", help="confirm a candidate lemma as known ('yes')")
-    p.add_argument("lemma")
-    p = sub.add_parser("defer", help="snooze a candidate lemma ('not yet')")
-    p.add_argument("lemma")
+    p = sub.add_parser("confirm", help="confirm a candidate item as known ('yes')")
+    p.add_argument("lemma", help="word lemma / phrase headword / grammar pattern")
+    p.add_argument("--kind", choices=["word", "phrase", "grammar"], default="word")
+    p = sub.add_parser("defer", help="snooze a candidate item ('not yet')")
+    p.add_argument("lemma", help="word lemma / phrase headword / grammar pattern")
+    p.add_argument("--kind", choices=["word", "phrase", "grammar"], default="word")
+    p = sub.add_parser("grammar-seed",
+                       help="load the once-authored grammar taxonomy into grammar_points")
+    p.add_argument("json_path", nargs="?",
+                   help="taxonomy JSON (default: ledger/grammar_taxonomy.json)")
+    p = sub.add_parser("grammar-approve",
+                       help="move a proposed grammar pattern into the taxonomy")
+    p.add_argument("pattern")
+    p.add_argument("--level", type=int, choices=[1, 2, 3, 4, 5],
+                   help="JLPT tier 5=N5 … 1=N1 (omitted = strictest θ)")
+    p.add_argument("--gloss")
+    p = sub.add_parser("phrase-add",
+                       help="deliberately track a non-JMdict phrase (reviewed path)")
+    p.add_argument("canonical")
+    p.add_argument("--reading")
     p = sub.add_parser("rate", help="rate an episode 1-5 stars + optional taste tags")
     p.add_argument("episode_id")
     p.add_argument("rating", help="1-5, or 'clear' to unrate")
@@ -914,7 +1238,8 @@ def main(argv=None):
     p.add_argument("curate_json", help="path to the episode's curate.json")
     p = sub.add_parser("query", help="read the ledger")
     p.add_argument("what", choices=["summary", "needs-review", "confirm-queue",
-                                    "why", "unwatched", "ratings"])
+                                    "why", "unwatched", "ratings",
+                                    "grammar-proposed"])
     p.add_argument("lemma", nargs="?")
 
     args = ap.parse_args(argv)
@@ -964,17 +1289,44 @@ def main(argv=None):
     elif args.verb == "promote":
         _json_out(promote(conn))
     elif args.verb == "confirm":
-        confirm_known_lemma(conn, args.lemma)
-        _json_out({"lemma": args.lemma, "confirmed": True, "promote": promote(conn)})
+        confirm_known_lemma(conn, args.lemma, kind=args.kind)
+        _json_out({"lemma": args.lemma, "kind": args.kind, "confirmed": True,
+                   "promote": promote(conn)})
     elif args.verb == "defer":
-        defer_known_lemma(conn, args.lemma)
-        _json_out({"lemma": args.lemma, "deferred": True, "promote": promote(conn)})
+        defer_known_lemma(conn, args.lemma, kind=args.kind)
+        _json_out({"lemma": args.lemma, "kind": args.kind, "deferred": True,
+                   "promote": promote(conn)})
+    elif args.verb == "grammar-seed":
+        path = Path(args.json_path) if args.json_path else \
+            Path(__file__).resolve().parent / "grammar_taxonomy.json"
+        rows = json.loads(path.read_text(encoding="utf-8"))
+        _json_out(seed_grammar_points(conn, rows))
+    elif args.verb == "grammar-approve":
+        result = approve_grammar_proposal(conn, args.pattern,
+                                          level=args.level, gloss=args.gloss)
+        result["promote"] = promote(conn)
+        _json_out(result)
+    elif args.verb == "phrase-add":
+        _json_out(add_phrase(conn, args.canonical, reading=args.reading))
     elif args.verb == "rate":
         rating = None if args.rating == "clear" else int(args.rating)
         _json_out(record_rating(conn, args.episode_id, rating, args.tag))
     elif args.verb == "record-curation":
         curation = json.loads(Path(args.curate_json).read_text(encoding="utf-8"))
-        _json_out(record_curation(conn, args.episode_id, curation))
+        result = record_curation(conn, args.episode_id, curation)
+        # Phrase/grammar emissions (GRAMMAR.md — Production path). Phrase keys
+        # are validated against JMdict, so open it if built.
+        from tools import jmdict as J
+        jpath = J.db_path(cfg) if cfg else None
+        jconn = J.open_db(jpath) if jpath and jpath.exists() else None
+        try:
+            result["items"] = record_curate_items(conn, args.episode_id,
+                                                  curation, jmdict_conn=jconn)
+        finally:
+            if jconn is not None:
+                jconn.close()
+        result["promote"] = promote(conn)
+        _json_out(result)
     elif args.verb == "query":
         if args.what == "summary":
             _json_out(query_summary(conn))
@@ -990,6 +1342,9 @@ def main(argv=None):
             _json_out(query_unwatched(conn))
         elif args.what == "ratings":
             _json_out(query_ratings(conn))
+        elif args.what == "grammar-proposed":
+            _json_out([dict(r) for r in conn.execute(
+                "SELECT * FROM grammar_proposed ORDER BY seen DESC, first_seen")])
 
 
 if __name__ == "__main__":

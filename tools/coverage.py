@@ -50,7 +50,8 @@ def analyze(transcript, known_bundle, freq=None, already_carded=frozenset(),
     """
     freq = freq or {}
     ks = L.KnownSet(known_bundle["known"], known_bundle.get("norm_known", ()),
-                    known_bundle.get("known_stems", ()))
+                    known_bundle.get("known_stems", ()),
+                    phrases=known_bundle.get("phrases"))
     learning = set(known_bundle.get("learning", ()))
 
     sentences = [(s["start"], s["end"], s["text"]) for s in transcript["sentences"]]
@@ -81,14 +82,18 @@ def analyze(transcript, known_bundle, freq=None, already_carded=frozenset(),
                     tok["t"] = round(times[pos], 2)
                 pos += n
             toks.append(tok)
-        out_sentences.append({
+        sent = {
             "idx": d["index"], "start": d["start"], "end": d["end"],
             "text": d["text"],
             "classification": d["classification"],
             "known_ratio": round(d["known_ratio"], 3),
             "unknown": d["unknown_lemmas"],
             "tokens": toks,
-        })
+        }
+        if d["phrases"]:
+            sent["phrases"] = [{"phrase": u["phrase"], "status": u["status"]}
+                               for u in d["phrases"]]
+        out_sentences.append(sent)
         for t in d["unknown"]:
             recurrence[t.lemma] = recurrence.get(t.lemma, 0) + 1
             other = d["unknown_count"] - 1
@@ -102,6 +107,28 @@ def analyze(transcript, known_bundle, freq=None, already_carded=frozenset(),
                     "surface": t.surface,
                     "reading": L.kata_to_hira(t.reading),
                     "pos": t.pos,
+                    "kind": "word",
+                }
+        # Tracked-but-unknown phrases are candidates too (GRAMMAR.md §6): one
+        # unit, mintable like a lemma — the card's audio is the sentence span
+        # either way.
+        for u in d["phrases"]:
+            if u["status"] != "unknown":
+                continue
+            hw = u["phrase"]
+            recurrence[hw] = recurrence.get(hw, 0) + 1
+            other = d["unknown_count"] - 1
+            cur = best.get(hw)
+            if cur is None or (other, d["index"]) < (cur["other_unknown_count"], cur["sentence_idx"]):
+                best[hw] = {
+                    "sentence_idx": d["index"],
+                    "other_unknown_count": other,
+                    "start": d["start"], "end": d["end"],
+                    "text": d["text"],
+                    "surface": hw,
+                    "reading": lemma_reading(hw),
+                    "pos": "expression",
+                    "kind": "phrase",
                 }
 
     candidates = []
@@ -110,6 +137,7 @@ def analyze(transcript, known_bundle, freq=None, already_carded=frozenset(),
             continue
         candidates.append({
             "lemma": lem,
+            "kind": b["kind"],
             "reading": lemma_reading(lem),
             "surface": b["surface"],
             "pos": b["pos"],

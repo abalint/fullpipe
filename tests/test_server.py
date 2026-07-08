@@ -308,6 +308,39 @@ class TestRoutes(ServerTestBase):
         self.assertEqual(self.client.get("/transcript/nope", headers=self.auth)
                          .status_code, 404)
         self.assertEqual(self.client.get(f"/transcript/{EP}").status_code, 401)
+        # pre-curation: no annotation keys at all
+        self.assertNotIn("grammar", data["sentences"][0])
+        self.assertNotIn("phrases", data["sentences"][0])
+
+    def test_transcript_carries_curated_grammar_and_phrases(self):
+        # the player popup's line context (GRAMMAR.md): curate.json grammar/
+        # phrase tags ride on their sentence; proposals are flagged
+        ep_dir = self.stage_episode(with_curate=True)
+        write_json(ep_dir / "curate.json", {
+            "synopsis": "犬の話。",
+            "keywords": [], "focal_points": [], "exclude": [],
+            "grammar": [
+                {"sentence_idx": 1, "pattern": "〜てしまう",
+                 "form_note": "行っちゃった = 行く+てしまう",
+                 "classification": "i_plus_1"},
+                {"sentence_idx": 1, "proposed_pattern": "ら抜き言葉",
+                 "gloss": "見られる→見れる", "example": "見れて"},
+                {"pattern": "〜てくる"},  # no sentence_idx — dropped, not a 500
+            ],
+            "phrases": [
+                {"sentence_idx": 0, "surface": "気を付けて",
+                 "canonical": "気を付ける", "classification": "comprehensible"},
+            ],
+        })
+        data = self.client.get(f"/transcript/{EP}", headers=self.auth).json()
+        self.assertNotIn("grammar", data["sentences"][0])
+        self.assertEqual(data["sentences"][1]["grammar"], [
+            {"pattern": "〜てしまう", "note": "行っちゃった = 行く+てしまう"},
+            {"pattern": "ら抜き言葉", "note": "見られる→見れる", "proposed": True},
+        ])
+        self.assertEqual(data["sentences"][0]["phrases"],
+                         [{"canonical": "気を付ける", "surface": "気を付けて"}])
+        self.assertNotIn("phrases", data["sentences"][1])
 
     def test_definitions_for_episode_lemmas(self):
         self.stage_episode()
@@ -699,6 +732,97 @@ class TestRoutes(ServerTestBase):
         # 公園 (rank 120) counts toward every band whose ceiling ≥ 120
         band1000 = next(b for b in body["freq_bands"] if b["band"] == 1000)
         self.assertGreaterEqual(band1000["known"], 1)
+
+
+class TestTypedConfirm(ServerTestBase):
+    """GRAMMAR.md: the confirm queue and /stats over the three item kinds."""
+
+    MINI_JMDICT = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE JMdict [<!ENTITY exp "expressions (phrases, clauses, etc.)">]>
+<JMdict>
+<entry><ent_seq>1</ent_seq>
+<k_ele><keb>気を付ける</keb></k_ele><r_ele><reb>きをつける</reb></r_ele>
+<sense><pos>&exp;</pos><gloss>to be careful</gloss></sense>
+</entry>
+</JMdict>
+"""
+
+    def seed_typed_candidates(self):
+        """A phrase and an N5 grammar point, both over their θ bar."""
+        import io
+        import sqlite3
+        from tools import jmdict
+        jconn = sqlite3.connect(Path(self.cfg["work_dir"]) / "jmdict.db")
+        jmdict.build_db(jconn, jmdict.parse_entries(
+            io.BytesIO(self.MINI_JMDICT.encode())))
+        conn = lc.open_db(self.cfg["ledger_db"])
+        lc.seed_grammar_points(conn, [
+            {"pattern": "〜てしまう", "level": 5, "gloss": "completion/regret"}])
+        for i in range(6):  # phrase bar is the rare-word θ (6 over ≥4 episodes)
+            ep = {"id": f"t{i}", "title": f"Ep {i}", "source": "t", "kind": "local"}
+            lc.record_exposure(conn, ep, {})
+            lc.record_curate_items(conn, f"t{i}", {
+                "phrases": [{"sentence_idx": 0, "surface": "気を付けて",
+                             "canonical": "気を付ける",
+                             "classification": "comprehensible"}],
+                "grammar": [{"sentence_idx": 0, "pattern": "〜てしまう",
+                             "classification": "comprehensible"}],
+            }, jmdict_conn=jconn)
+            lc.mark_watched(conn, f"t{i}")
+        lc.promote(conn)
+        conn.close()
+        jconn.close()
+
+    def test_typed_queue_and_answers(self):
+        self.seed_typed_candidates()
+        cands = self.client.get("/confirm", headers=self.auth).json()["candidates"]
+        by_kind = {c["kind"]: c for c in cands}
+        self.assertEqual(set(by_kind), {"phrase", "grammar"})
+        # phrase card: JMdict senses attach exactly like a word's
+        ph = by_kind["phrase"]
+        self.assertEqual(ph["lemma"], "気を付ける")
+        self.assertEqual(ph["senses"][0]["s"][0]["g"], ["to be careful"])
+        # grammar card: taxonomy fields, no senses
+        g = by_kind["grammar"]
+        self.assertEqual((g["pattern"], g["level"], g["gloss"]),
+                         ("〜てしまう", 5, "completion/regret"))
+        self.assertNotIn("senses", g)
+
+        # typed answers hit the right projection
+        r = self.client.post("/confirm", headers=self.auth,
+                             json={"kind": "phrase", "key": "気を付ける",
+                                   "known": True})
+        self.assertEqual(r.json()["status"], "known")
+        r = self.client.post("/confirm", headers=self.auth,
+                             json={"kind": "grammar", "key": "〜てしまう",
+                                   "known": False})
+        self.assertEqual(r.json()["status"], "learning")  # defer, snoozed
+        self.assertEqual(self.client.get("/confirm", headers=self.auth)
+                         .json()["candidates"], [])
+
+        # a non-taxonomy pattern can't be minted through confirm; bad kind 422
+        self.assertEqual(self.client.post(
+            "/confirm", headers=self.auth,
+            json={"kind": "grammar", "key": "〜偽パターン", "known": True}
+        ).status_code, 404)
+        self.assertEqual(self.client.post(
+            "/confirm", headers=self.auth,
+            json={"kind": "bogus", "key": "x", "known": True}).status_code, 422)
+
+    def test_stats_kind_siblings(self):
+        self.seed_typed_candidates()
+        conn = lc.open_db(self.cfg["ledger_db"])
+        lc.confirm_known_lemma(conn, "気を付ける", kind="phrase")
+        lc.confirm_known_lemma(conn, "〜てしまう", kind="grammar")
+        lc.promote(conn)
+        conn.close()
+        body = self.client.get("/stats", headers=self.auth).json()
+        # the words-only headline is untouched by phrase/grammar knowns
+        self.assertEqual(body["known"], 0)
+        self.assertEqual(body["words_encountered"], 0)
+        self.assertEqual(body["phrases_known"], 1)
+        self.assertEqual(body["grammar_known"], 1)
+        self.assertEqual(body["grammar_proposed"], 0)
 
 
 class TestSelect(unittest.TestCase):

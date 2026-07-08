@@ -215,7 +215,11 @@ Then produce, in `<episode_dir>/curate.json`:
   "focal_points": [{"word": "縄張り", "why": "one line: recurs ×6 and both hard scenes hinge on it"}, ...],
   "weighting": "one line: how you weighed freq_rank vs recurrence vs thematic centrality for THIS episode",
   "picks_rationale": "one or two lines on what you kept vs cut and why",
-  "exclude": [{"lemma": "すける", "why": "tokenizer misparse of the host's name ななすけ"}, ...]
+  "exclude": [{"lemma": "すける", "why": "tokenizer misparse of the host's name ななすけ"}, ...],
+  "phrases": [{"sentence_idx": 12, "surface": "気を付けて", "canonical": "気を付ける",
+               "classification": "i_plus_1"}, ...],
+  "grammar": [{"sentence_idx": 3, "pattern": "〜てしまう", "form_note": "食べちゃった = 食べる+てしまう (contracted past)",
+               "classification": "comprehensible"}, ...]
 }
 ```
 
@@ -255,6 +259,32 @@ Then produce, in `<episode_dir>/curate.json`:
   centrality from your reading; one-line rationale each. Record your effective
   weighting in `weighting` — after ~20 episodes a good fixed heuristic gets
   promoted into the dumb layer (resolved Q4).
+- **phrases — multi-word expressions the tokenizer shattered** (GRAMMAR.md).
+  While reading, when a line uses an idiom/MWE as a unit (気を付ける,
+  仕方がない, 取り返しがつかない — not a coincidental word run), emit it:
+  `surface` as it appears, `canonical` = its **JMdict dictionary form** (you
+  are the deinflector — the recorder only validates the key), and the
+  sentence's coverage `classification` (from `coverage.json`; it gates
+  whether the exposure counts toward promotion). The recorder rejects
+  anything that isn't a JMdict headword or is a single Sudachi token, and
+  reports rejects — surface genuinely idiomatic rejects to the user; a
+  deliberate `ledgerctl phrase-add` tracks them anyway. Sentences whose
+  `coverage.json` entry already lists the phrase (a `phrases` array on the
+  sentence) don't need re-emitting — those are already-tracked keys recorded
+  at Stage 1.
+- **grammar — pattern usages, matched into the fixed taxonomy** (GRAMMAR.md).
+  Tag notable grammar usages with the canonical `pattern` key from
+  `grammar_points` (`ledgerctl query summary` shows the taxonomy exists; when
+  unsure of a key, check with
+  `sqlite3 <ledger> "SELECT pattern FROM grammar_points WHERE pattern LIKE '%しまう%'"`).
+  Never invent a variant spelling of an existing key. A genuinely novel
+  pattern (colloquial/dialectal) goes in as
+  `{"proposed_pattern": "...", "gloss": "...", "example": "..."}` — it lands
+  in the review queue (`ledgerctl query grammar-proposed` →
+  `grammar-approve`), never straight into the taxonomy. `form_note` carries
+  the word-form structure worth showing (食べさせられた = causative-passive
+  of 食べる). Tag what a learner would *notice*: the N+1-ish patterns, keigo
+  shifts, contractions — not every 〜ます in the episode.
 - Write valid JSON, `ensure_ascii` irrelevant — just write UTF-8.
 
 **Completeness check — do this before moving on:** every candidate in
@@ -271,8 +301,11 @@ $PY -m ledger.ledgerctl record-curation EPISODE_ID <episode_dir>/curate.json
 
 Denormalizes `genre`/`format`/`difficulty_felt` onto the episode row and
 `topics` into its metadata JSON — the enjoyment-metric attribution features
-(DESIGN.md — Taste metadata). Idempotent: safe to re-run if you revise
-`curate.json`.
+(DESIGN.md — Taste metadata) — **and** lands the `phrases`/`grammar` blocks as
+inert exposure evidence (validated against JMdict / the grammar taxonomy;
+GRAMMAR.md). The output reports `items.phrases.rejected` and
+`items.grammar.proposed` — relay both to the user rather than silently moving
+on. Idempotent: safe to re-run if you revise `curate.json`.
 
 And in `<episode_dir>/picks.json`, the card **pool** (workflow decided
 2026-07-05: the user's phone feedback makes the final cut, not you):

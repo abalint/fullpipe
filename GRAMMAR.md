@@ -1,5 +1,13 @@
 # Grammar & phrase tracking — design
 
+> **Status: BUILT 2026-07-08** (both phases, same session as the design).
+> The taxonomy shipped with 474 patterns (quality bar over the ~600 target —
+> variants folded into canonical keys, surface collisions disambiguated with
+> parenthetical tags: 〜られる（受身）/（可能）/（尊敬）). Deviations from the
+> original notes are marked **[as built]** inline; acceptance criteria in §8
+> are all covered by tests (`PhraseGrammarTest`, `TestTypedConfirm`, the
+> phrase-unit engine tests, and the mobile smoke tests).
+
 Two new *tracked* axes alongside the vocabulary ledger, both riding the
 machinery already built for words (exposure → confirm → known; the confirm
 queue; `promote`):
@@ -102,15 +110,22 @@ grammar). No polymorphic id column.
 ## Production path (where the data comes from)
 
 `/immerse` curate already reads the full transcript and writes `curate.json`.
-It gains two emissions per episode:
+It gains two emissions per episode **[as built — exact shapes]**:
 
-- `phrases`: `[{span_idx, canonical, jmdict: bool}]` — confirmed phrase units.
-- `grammar`: `[{sentence_idx, point_id | proposed_pattern, form_note}]`.
+- `phrases`: `[{sentence_idx, surface, canonical, classification}]` —
+  confirmed phrase units, canonical = JMdict dictionary form.
+- `grammar`: `[{sentence_idx, pattern | proposed_pattern, classification,
+  form_note, example?, gloss?}]`.
 
-A new recorder (sibling to `coverage`'s exposure writer) lands these as inert
-grammar/phrase exposures, activated on watch by the same gate. No new sync
-surface on the phone — the confirm queue already renders any candidate; it just
-grows to cover `kind='phrase'` and grammar rows.
+The recorder is `ledgerctl.record_curate_items`, folded into the existing
+`record-curation` CLI verb (one curate.json → taste metadata + phrase/grammar
+evidence + promote, one call). It lands these as inert exposures, activated on
+watch by the same gate. **Division of labor with Stage 1 [as built]:** curate
+introduces *new* keys; coverage deterministically re-detects *already-tracked*
+phrases every episode (`KnownSet.phrase_units`) and writes their exposures
+itself — so tracked phrases keep accruing evidence even on episodes never
+curated. No new sync surface on the phone — the confirm queue already renders
+any candidate; it just grows to cover `kind='phrase'` and grammar rows.
 
 ## Build order
 
@@ -123,8 +138,13 @@ grows to cover `kind='phrase'` and grammar rows.
 
 **LLM-authored once, then classify-into (never generate per-episode).** The LLM
 (this session) enumerates the standard grammar inventory a single time — JLPT
-N5→N1, ~600 `pattern` + `level` + `gloss` rows — into `grammar_points`, reviewed
-by the user. That fixed table is the canonical spine: it gives stable ids and a
+N5→N1, `pattern` + `level` + `gloss` rows — into `grammar_points`, reviewed
+by the user. **[as built]** `ledger/grammar_taxonomy.json`, 474 rows
+(N5 64 · N4 78 · N3 68 · N2 130 · N1 134), loaded with `ledgerctl
+grammar-seed` (upserts level/gloss, never touches promote's verdict columns —
+re-seeding a revised taxonomy is safe). Proposals are approved with
+`ledgerctl grammar-approve PATTERN [--level N] [--gloss …]` and inspected with
+`ledgerctl query grammar-proposed`. That fixed table is the canonical spine: it gives stable ids and a
 `level` difficulty prior (the θ analogue for grammar-i+1) with no external list
 or licensing. Thereafter, per-episode curation only **matches** usages into the
 existing table or **proposes** a genuinely novel pattern (colloquial/dialectal)
@@ -161,27 +181,42 @@ to symbols, not line numbers.
 
 ## 1. Phrase detection rule (the crux)
 
-A JMdict headword is a phrase candidate **only if its span covers ≥2 Sudachi
-tokens** — otherwise every ordinary noun (a single-token headword) becomes a
-"phrase." Detection is **LLM-emits, server-validates** (the key is what must be
+A JMdict headword is a phrase candidate **only if the canonical form itself
+tokenizes to ≥2 Sudachi tokens** — otherwise every ordinary noun (a
+single-token headword) becomes a "phrase." **[as built]** The test runs on the
+*canonical*, NOT the matched surface span: inflected single verbs split on
+their auxiliaries (食べて → 食べ|て = 2 tokens), so a surface-span rule would
+admit every te-form verb; 食べる → 1 token rejects it, 気を付ける → 3 accepts.
+This also spares the recorder from locating the surface in the sentence at
+all. Detection is **LLM-emits, server-validates** (the key is what must be
 deterministic, not the detection):
 
-- Curate (`/immerse`) emits, per line, `{sentence_idx, surface, canonical}`
-  where `canonical` is the intended JMdict dictionary form.
-- The recorder validates: `canonical` **is** a JMdict headword
-  (`jmdict.is_headword`) **and** the matched surface span aligns to ≥2 Sudachi
-  tokens (`engine.lemma.tokenize`). Fail → drop, or route to the proposed-phrase
-  review (non-JMdict idioms).
+- Curate (`/immerse`) emits, per line,
+  `{sentence_idx, surface, canonical, classification}` where `canonical` is
+  the intended JMdict dictionary form and `classification` is the sentence's
+  coverage classification (the qualifying signal — see §3).
+- The recorder (`ledgerctl.record_curate_items`, run by `record-curation`)
+  validates: `canonical` **is** a JMdict headword (`jmdict.is_headword`)
+  **and** `len(tokenize(canonical)) >= 2`. Fail → returned in
+  `phrases.rejected` with a reason, never key-minted; a reviewed non-JMdict
+  idiom can be deliberately tracked with `ledgerctl phrase-add` (which still
+  enforces the ≥2-token guard).
 - Inflection is why raw longest-match is unreliable (sentence says 気を付けて,
   headword is 気を付ける). Letting the LLM return the canonical form and only
-  validating that it's a real key sidesteps deinflection entirely. An optional
-  JMdict longest-match pre-pass (concatenate token surfaces, substitute the
-  final token's `lemma` for its surface) may *suggest* candidates to the LLM,
-  but is not the source of truth.
+  validating that it's a real key sidesteps deinflection entirely.
+- **[as built] Already-tracked phrases ALSO match deterministically at
+  Stage 1**: `KnownSet.phrase_units` compares each tracked headword's own
+  lemma sequence (気|を|付ける) against the sentence tokens' lemmas — an
+  inflection-proof match with no deinflector. So coverage re-detects known
+  keys every episode (exposure accrual, i+1 units, candidates) with no LLM in
+  the loop; curate's job narrows to *new* keys and idiom-vs-coincidence
+  judgment.
 
 Store the phrase as a `lemmas` row: `lemma = canonical`, `kind='phrase'`,
-`reading` = the JMdict entry's primary reading, `pos='expression'`. Furigana for
-display via `engine.lemma.furigana(canonical)` (already kanji-only).
+`reading` = the JMdict entry's primary reading, `pos='expression'`. Furigana
+for display via `engine.lemma.furigana(canonical)` (already kanji-only).
+`_touch_lemma`'s upsert never changes an existing row's `kind` (first writer
+wins) — a later default-`word` touch of a phrase key can't demote it.
 
 ## 2. Schema & idempotency (exact)
 
@@ -203,6 +238,7 @@ CREATE TABLE grammar_points (          -- the projection table for kind='grammar
     needs_review INTEGER NOT NULL DEFAULT 0, confirm_candidate INTEGER NOT NULL DEFAULT 0,
     first_seen TEXT, last_seen TEXT, updated_at TEXT NOT NULL);
 CREATE TABLE grammar_proposed (pattern TEXT PRIMARY KEY, example TEXT,
+    gloss TEXT,                        -- [as built] the proposer's one-liner
     seen INTEGER NOT NULL DEFAULT 1, first_seen TEXT);
 ```
 
@@ -215,6 +251,13 @@ DROP INDEX IF EXISTS idx_exposure_once;
 CREATE UNIQUE INDEX idx_exposure_once
     ON evidence(kind, lemma, episode_id, source) WHERE source='exposure';
 ```
+
+**[as built] Migration ordering subtlety:** `open_db` executes `schema.sql`
+(all `IF NOT EXISTS`) *before* `_migrate`, so on a pre-kind DB the updated
+index DDL is a silent no-op (same name, old shape). `_migrate` therefore
+detects the old shape via `PRAGMA index_info(idx_exposure_once)` (first
+column ≠ `kind`) and drops/recreates it — after the `ALTER TABLE`s. Fresh DBs
+get the new shape straight from `schema.sql` and the check no-ops.
 
 No new evidence *sources*: exposures stay `source='exposure'` (now with
 `kind`); `confirm_known`/`confirm_defer` already exist and apply to any kind.
@@ -232,21 +275,26 @@ surfaced on the confirm card and prep — reference only, not a tracked key.
 
 ## 3. `promote` for grammar (second pass)
 
-`promote` currently groups `by_lemma` and writes `lemmas`; that pass now filters
-to `kind IN ('word','phrase')`. Add a parallel pass over `kind='grammar'`
-evidence grouped by `lemma` (= the pattern), applying the **same rule order**
-(rules 1–5) but writing `grammar_points` (keyed by pattern). Differences:
+**[as built]** The rule order (rules 1–5) is extracted into a shared `_judge`
+helper; `promote` groups evidence by `(kind, lemma)` and dispatches each group
+to its projection table — `lemmas` for word/phrase, `grammar_points` for
+grammar. One state machine, two write targets. Grammar rows whose evidence
+vanished (episode purge) are healed back to the seeded baseline at the end of
+every promote. Differences from the word pass:
 
-- No corpus freq. Threshold from `level` via a `GRAMMAR_THETA` table (retunable,
-  same spirit as `THETA_TABLE`):
+- No corpus freq. Threshold from `level` — a plain dict (five levels, 1:1
+  lookup; a range-scan table shape bought nothing), with unplaced patterns
+  (approved proposals without a tier) getting the strictest bar:
 
   ```python
-  # (max_level_inclusive, theta_exposures, spread_episodes); level 5=N5 … 1=N1
-  GRAMMAR_THETA = [(5, 2, 2), (4, 2, 2), (3, 3, 3), (2, 4, 3), (1, 5, 4)]
+  # level 5=N5 (easiest) … 1=N1; grammar_theta_for(None) → GRAMMAR_THETA[1]
+  GRAMMAR_THETA = {5: (2, 2), 4: (2, 2), 3: (3, 3), 2: (4, 3), 1: (5, 4)}
   ```
-- "Qualifying" exposure analogue: the grammar was in a sentence the learner
-  could parse — classification ∈ {`comprehensible`,`i_plus_1`,`reinforcement`}
-  (not `too_hard`). Record that in the exposure `context`; qualify on it.
+- "Qualifying" exposure analogue: the item was in a sentence the learner
+  could parse. `_exposure_qualifies(ctx)` accepts either signal —
+  `other_unknown_count == 0` (words, Q1) or classification ∈
+  {`comprehensible`,`i_plus_1`,`reinforcement`} (phrases/grammar, recorded in
+  the exposure `context`) — so one check serves all three kinds.
 - Confirm/defer identical to words: exposures cross θ → `confirm_candidate=1`
   (never auto-known); `confirm_known`→known; `confirm_defer` snoozes until a
   qualifying exposure lands after the defer.
@@ -282,11 +330,19 @@ After phrase detection for a sentence, count unknowns over **units**, not
 tokens: a detected phrase is one unit whose known-ness is its `lemmas` status;
 its component tokens are removed from the unknown tally when the phrase is the
 unit in play. A sentence stays `i_plus_1` when exactly one unknown *unit* (word
-or phrase) remains. Extend `engine.lemma.analyze_sentence` (and `KnownSet` to
-answer phrase membership) or post-process in `tools/coverage.py:run_coverage`.
-Phrases enter the candidate pool (`coverage.json` `candidates`) like lemmas, so
-`tools/select.py`/`tools/deck.py` can mint a phrase card unchanged (audio is the
-sentence span regardless).
+or phrase) remains. **[as built]** `KnownSet` gains a `phrases` dict
+({headword: status}, from `materialize_known`) and `phrase_units()`;
+`analyze_sentence`'s `unknown_lemmas`/`unknown_count`/`classification` are
+unit-level (phrase keys included), while the token-level fields (`tokens`,
+`unknown`, `known_ratio`) keep their word meaning — the wire shapes stay
+stable. Word-level tracking coexists: component words still accrue their own
+exposures inside a phrase. Tracked-but-unknown phrases enter the candidate
+pool (`coverage.json` `candidates`, `kind='phrase'`) like lemmas, so
+`tools/select.py`/`tools/deck.py` can mint a phrase card unchanged (audio is
+the sentence span regardless); `record_mined_cards` passes an optional `kind`
+through to the evidence row. Phrase keys are excluded from `materialize_known`'s
+token known-set and stem bridging (a phrase's kanji stem would contaminate
+stem matching).
 
 ## 7. queue + discover → ledger (separate phase)
 
@@ -298,27 +354,35 @@ acceptable; the discovery pool should be copied row-for-row. `tools/backup_ledge
 then covers them for free. Sequence this *after* phrases; it's orthogonal to the
 feature and shouldn't block it.
 
-## 8. Acceptance criteria (per phase)
+## 8. Acceptance criteria (per phase) — all ✅ 2026-07-08
 
-**Phase 1 — phrases** (`tests/test_ledger.py`, `test_server.py`, `test_engine.py`,
-`mobile/src/smoke.test.ts`):
-- `is_headword` true for 気を付ける, false for a non-key; detection ignores
-  single-token headwords.
-- A sentence "気を付けて…" yields a phrase exposure keyed 気を付ける; re-running
-  coverage is idempotent (P4).
-- Phrase rides exposure→confirm→known; appears in `query_confirm_queue` with
-  `kind='phrase'` and a JMdict gloss; `POST /confirm {kind:'phrase',...}` promotes.
-- `/stats` reports `known` unchanged (words only) plus `phrases_known`.
-- App confirm queue renders a phrase card; Progress shows the phrases tile.
+**Phase 1 — phrases** (`tests/test_ledger.py::PhraseGrammarTest`,
+`test_server.py::TestTypedConfirm`, `test_engine.py::LemmaTest` phrase-unit
+tests, `mobile/src/smoke.test.ts`):
+- ✅ `is_headword` true for 気を付ける, false for a non-key; the recorder
+  rejects single-token canonicals (犬) and non-headwords, with reasons.
+- ✅ A curate emission for "気を付けて…" yields a phrase exposure keyed
+  気を付ける; re-running the recorder is idempotent (P4, kind-aware index).
+- ✅ Phrase rides exposure→confirm→known; appears in `query_confirm_queue` with
+  `kind='phrase'` and JMdict senses; `POST /confirm {kind:'phrase',...}` promotes.
+- ✅ `/stats` reports `known` unchanged (words only) plus `phrases_known`.
+- ✅ App confirm queue renders a phrase card (badge + senses); Progress shows
+  the phrases tile.
 
 **Phase 2 — grammar**:
-- Taxonomy seed loads (~600 `grammar_points`); `grammar_theta_for(level)` matches
-  `GRAMMAR_THETA`.
-- Grammar exposure (qualifying-classification only) → `confirm_candidate` at θ,
-  never auto-known; confirm/defer/snooze mirror the word tests.
-- Unrecognized pattern lands in `grammar_proposed`, not `grammar_points`.
-- Confirm queue + `/stats` + app render grammar items (typed key, level badge).
+- ✅ Taxonomy seed loads (474 `grammar_points`); `grammar_theta_for(level)`
+  matches `GRAMMAR_THETA`, `None` → strictest.
+- ✅ Grammar exposure (qualifying-classification only; `too_hard` doesn't
+  count) → `confirm_candidate` at θ, never auto-known; confirm/defer/snooze
+  mirror the word tests.
+- ✅ Unrecognized pattern lands in `grammar_proposed` (no evidence row);
+  `grammar-approve` moves it into the taxonomy, after which recording works.
+- ✅ Confirm queue + `/stats` + app render grammar items (typed key, JLPT
+  level badge, taxonomy gloss).
+- ✅ A word and a grammar pattern sharing a string never merge (kind-scoped
+  evidence, groups, and idempotency index).
 
-Definition of done for a phase: its acceptance tests pass, `/immerse` emits the
-new `curate.json` block on a real episode, and the confirm queue shows the new
-items on the phone.
+Remaining definition-of-done (needs a real episode, not a test): `/immerse`
+emits the new `curate.json` blocks on the next curation pass, and the confirm
+queue shows typed items on the phone once something crosses θ. The live ledger
+is migrated and seeded (474 patterns, word counts untouched).

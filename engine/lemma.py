@@ -169,12 +169,18 @@ class KnownSet:
     known        set of dictionary_form lemmas
     norm_known   set of normalized_form values (spelling-variant expansion)
     known_stems  set of kanji stems of known lemmas (stem-match expansion)
+    phrases      {JMdict headword: ledger status} — the tracked multi-token
+                 phrases (GRAMMAR.md). Matched as units by phrase_units();
+                 never part of token membership.
     """
 
-    def __init__(self, known, norm_known=frozenset(), known_stems=frozenset()):
+    def __init__(self, known, norm_known=frozenset(), known_stems=frozenset(),
+                 phrases=None):
         self.known = set(known)
         self.norm_known = set(norm_known)
         self.known_stems = set(known_stems)
+        self.phrases = dict(phrases or {})
+        self._phrase_index = None  # first lemma -> [(headword, lemma_seq)], lazy
 
     def __contains__(self, token):
         if token.lemma in self.known:
@@ -186,6 +192,40 @@ class KnownSet:
 
     def __len__(self):
         return len(self.known)
+
+    def phrase_units(self, tokens):
+        """Occurrences of tracked phrases in a full token sequence (particles
+        included — 気を付ける needs its を). Matching is deterministic and
+        inflection-proof: the headword's own lemma sequence against the
+        sentence tokens' lemmas (気を付けて → 気|を|付ける|て matches
+        気|を|付ける). Greedy left-to-right, longest match first,
+        non-overlapping. Returns [{phrase, status, start, end}] with
+        start/end indexing *tokens* (end exclusive)."""
+        if not self.phrases:
+            return []
+        if self._phrase_index is None:
+            idx = {}
+            for hw in self.phrases:
+                seq = tuple(t.lemma for t in tokenize(hw))
+                if len(seq) < 2:
+                    continue  # single-token keys are words, not phrases
+                idx.setdefault(seq[0], []).append((hw, seq))
+            for cands in idx.values():
+                cands.sort(key=lambda c: -len(c[1]))
+            self._phrase_index = idx
+        lemmas = [t.lemma for t in tokens]
+        units = []
+        i = 0
+        while i < len(lemmas):
+            for hw, seq in self._phrase_index.get(lemmas[i], ()):
+                if tuple(lemmas[i:i + len(seq)]) == seq:
+                    units.append({"phrase": hw,
+                                  "status": self.phrases.get(hw, "unknown"),
+                                  "start": i, "end": i + len(seq)})
+                    i += len(seq) - 1
+                    break
+            i += 1
+        return units
 
 
 def analyze_sentence(text, known_set, learning=frozenset()):
@@ -199,23 +239,48 @@ def analyze_sentence(text, known_set, learning=frozenset()):
 
     Returns dict with tokens, unknown lists, known_ratio, and the four-way
     classification DESIGN.md's coverage analysis uses:
-      comprehensible  — all content tokens known (counts for exposure)
+      comprehensible  — all units known (counts for exposure)
       reinforcement   — exactly one unknown and it is `learning`
       i_plus_1        — exactly one unknown, truly unknown (mining candidate)
-      too_hard        — two or more unknown lemmas
+      too_hard        — two or more unknown units
+
+    Unknowns are counted over UNITS (GRAMMAR.md — i+1 with phrases): a tracked
+    phrase the sentence contains is one unit whose known-ness is its ledger
+    status, and its component tokens leave the tally — a line that is "one
+    known phrase away" is i+1. Token-level fields (tokens / unknown /
+    known_ratio) keep their word-level meaning; unknown_lemmas / unknown_count
+    are unit-level (phrase keys included).
     """
-    tokens = content_tokens(text)
+    all_tokens = tokenize(text)
+    content_idx = [i for i, t in enumerate(all_tokens)
+                   if is_content_word(t.pos) and is_card_worthy(t.lemma)]
+    tokens = [all_tokens[i] for i in content_idx]
     unknown = [t for t in tokens if t not in known_set]
-    unique_unknown = {t.lemma for t in unknown}
+
+    phrase_units = (known_set.phrase_units(all_tokens)
+                    if hasattr(known_set, "phrase_units") else [])
+    covered = set()
+    for u in phrase_units:
+        covered.update(range(u["start"], u["end"]))
+
+    unknown_units = {t.lemma for i, t in zip(content_idx, tokens)
+                     if i not in covered and t not in known_set}
+    learning_units = unknown_units & set(learning)
+    for u in phrase_units:
+        if u["status"] == "known":
+            continue
+        unknown_units.add(u["phrase"])
+        if u["status"] == "learning":
+            learning_units.add(u["phrase"])
 
     known_count = len(tokens) - len(unknown)
     known_ratio = known_count / len(tokens) if tokens else 1.0
 
-    if not unique_unknown:
+    if not unknown_units:
         classification = "comprehensible"
-    elif len(unique_unknown) == 1:
-        the_lemma = next(iter(unique_unknown))
-        classification = "reinforcement" if the_lemma in learning else "i_plus_1"
+    elif len(unknown_units) == 1:
+        the_key = next(iter(unknown_units))
+        classification = "reinforcement" if the_key in learning_units else "i_plus_1"
     else:
         classification = "too_hard"
 
@@ -223,8 +288,9 @@ def analyze_sentence(text, known_set, learning=frozenset()):
         "text": text,
         "tokens": tokens,
         "unknown": unknown,
-        "unknown_lemmas": sorted(unique_unknown),
-        "unknown_count": len(unique_unknown),
+        "phrases": phrase_units,
+        "unknown_lemmas": sorted(unknown_units),
+        "unknown_count": len(unknown_units),
         "known_ratio": known_ratio,
         "classification": classification,
     }
@@ -271,6 +337,22 @@ def analyze_transcript(sentences, known_set, learning=frozenset()):
             best = exposures.get(t.lemma)
             if best is None or ctx["other_unknown_count"] < best["other_unknown_count"]:
                 exposures[t.lemma] = ctx
+
+        # Already-tracked phrases met in this sentence accrue exposure too
+        # (kind rides in the context; record_exposure routes it). New phrase
+        # keys are never minted here — only curate's recorder does that.
+        for u in d["phrases"]:
+            other_unknown = d["unknown_count"] - (1 if u["phrase"] in d["unknown_lemmas"] else 0)
+            ctx = {
+                "sentence_idx": idx,
+                "known_ratio": round(d["known_ratio"], 3),
+                "other_unknown_count": other_unknown,
+                "classification": d["classification"],
+                "kind": "phrase",
+            }
+            best = exposures.get(u["phrase"])
+            if best is None or ctx["other_unknown_count"] < best["other_unknown_count"]:
+                exposures[u["phrase"]] = ctx
 
     return {
         "sentences": details,

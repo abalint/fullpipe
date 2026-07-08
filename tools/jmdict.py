@@ -100,6 +100,14 @@ def build_db(conn, entries):
     return n
 
 
+def is_headword(conn, text):
+    """Is *text* a JMdict headword (kanji or reading form)? The phrase-key
+    validator (GRAMMAR.md): a curate-emitted phrase canonical must be a real
+    key so tracked phrases join across episodes."""
+    return conn.execute("SELECT 1 FROM keys WHERE key = ? LIMIT 1",
+                        (text,)).fetchone() is not None
+
+
 def lookup_many(conn, lemmas, max_entries=DEFAULT_MAX_ENTRIES):
     """{lemma: [entry, …]} common-first; lemmas with no entry are absent.
 

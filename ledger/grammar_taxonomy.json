@@ -1,0 +1,2372 @@
+[
+  {
+    "pattern": "〜です",
+    "level": 5,
+    "gloss": "polite copula: is/am/are (past でした)"
+  },
+  {
+    "pattern": "〜だ",
+    "level": 5,
+    "gloss": "plain copula: is (past だった)"
+  },
+  {
+    "pattern": "〜ではない",
+    "level": 5,
+    "gloss": "negative copula: is not (colloquial じゃない)"
+  },
+  {
+    "pattern": "〜ます",
+    "level": 5,
+    "gloss": "polite non-past verb ending"
+  },
+  {
+    "pattern": "〜ました",
+    "level": 5,
+    "gloss": "polite past verb ending"
+  },
+  {
+    "pattern": "〜ません",
+    "level": 5,
+    "gloss": "polite negative verb ending"
+  },
+  {
+    "pattern": "〜ませんでした",
+    "level": 5,
+    "gloss": "polite past negative verb ending"
+  },
+  {
+    "pattern": "〜ない",
+    "level": 5,
+    "gloss": "plain negative: does not / is not"
+  },
+  {
+    "pattern": "〜なかった",
+    "level": 5,
+    "gloss": "plain past negative: did not"
+  },
+  {
+    "pattern": "〜た",
+    "level": 5,
+    "gloss": "plain past / perfective"
+  },
+  {
+    "pattern": "〜て",
+    "level": 5,
+    "gloss": "te-form: sequential and, linking clauses, light cause"
+  },
+  {
+    "pattern": "〜くて",
+    "level": 5,
+    "gloss": "i-adjective te-form: and, linking; light cause"
+  },
+  {
+    "pattern": "〜てください",
+    "level": 5,
+    "gloss": "polite request: please do"
+  },
+  {
+    "pattern": "〜ないでください",
+    "level": 5,
+    "gloss": "polite negative request: please don't"
+  },
+  {
+    "pattern": "〜ている",
+    "level": 5,
+    "gloss": "ongoing action or resultant state (past ていた; polite ています)"
+  },
+  {
+    "pattern": "〜てもいい",
+    "level": 5,
+    "gloss": "permission: may, it's okay to"
+  },
+  {
+    "pattern": "〜てはいけない",
+    "level": 5,
+    "gloss": "prohibition: must not (colloquial ちゃいけない/ちゃだめ)"
+  },
+  {
+    "pattern": "〜たい",
+    "level": 5,
+    "gloss": "want to do (first person; question second person)"
+  },
+  {
+    "pattern": "〜たり〜たりする",
+    "level": 5,
+    "gloss": "non-exhaustive listing of actions: do things like A and B"
+  },
+  {
+    "pattern": "〜ましょう",
+    "level": 5,
+    "gloss": "polite volitional: let's"
+  },
+  {
+    "pattern": "〜ましょうか",
+    "level": 5,
+    "gloss": "offer/suggestion: shall I, shall we"
+  },
+  {
+    "pattern": "〜ませんか",
+    "level": 5,
+    "gloss": "invitation: won't you, how about"
+  },
+  {
+    "pattern": "〜前に",
+    "level": 5,
+    "gloss": "before doing; before (a time/noun+の前に)"
+  },
+  {
+    "pattern": "〜てから",
+    "level": 5,
+    "gloss": "after doing, and then"
+  },
+  {
+    "pattern": "〜た後で",
+    "level": 5,
+    "gloss": "after doing (noun+の後で)"
+  },
+  {
+    "pattern": "〜とき",
+    "level": 5,
+    "gloss": "when, at the time of"
+  },
+  {
+    "pattern": "〜から",
+    "level": 5,
+    "gloss": "because, since (reason); also starting point: from"
+  },
+  {
+    "pattern": "〜ので",
+    "level": 5,
+    "gloss": "because (softer, objective reason; colloquial んで)"
+  },
+  {
+    "pattern": "〜まで",
+    "level": 5,
+    "gloss": "until, up to, as far as"
+  },
+  {
+    "pattern": "〜が",
+    "level": 5,
+    "gloss": "subject marker; clause-final: but, however"
+  },
+  {
+    "pattern": "〜は",
+    "level": 5,
+    "gloss": "topic marker; contrast"
+  },
+  {
+    "pattern": "〜を",
+    "level": 5,
+    "gloss": "direct object marker; path traversed; point of departure"
+  },
+  {
+    "pattern": "〜に",
+    "level": 5,
+    "gloss": "target/destination; time point; location of existence; indirect object"
+  },
+  {
+    "pattern": "〜で",
+    "level": 5,
+    "gloss": "location of action; means/instrument; cause; scope of totals"
+  },
+  {
+    "pattern": "〜へ",
+    "level": 5,
+    "gloss": "direction marker: toward"
+  },
+  {
+    "pattern": "〜と",
+    "level": 5,
+    "gloss": "exhaustive and (A and B); together with; quotative"
+  },
+  {
+    "pattern": "〜も",
+    "level": 5,
+    "gloss": "also, too; even; with quantity: as many as"
+  },
+  {
+    "pattern": "〜の",
+    "level": 5,
+    "gloss": "possessive/attributive の; nominalizer (のが/のを/のは)"
+  },
+  {
+    "pattern": "〜か",
+    "level": 5,
+    "gloss": "question marker; embedded question; A or B"
+  },
+  {
+    "pattern": "〜や",
+    "level": 5,
+    "gloss": "non-exhaustive and: A and B among others (や〜など)"
+  },
+  {
+    "pattern": "〜ね",
+    "level": 5,
+    "gloss": "sentence-final: seeking agreement/confirmation"
+  },
+  {
+    "pattern": "〜よ",
+    "level": 5,
+    "gloss": "sentence-final: assertion, new information"
+  },
+  {
+    "pattern": "〜けれども",
+    "level": 5,
+    "gloss": "but, although (けれど/けど)"
+  },
+  {
+    "pattern": "〜だけ",
+    "level": 5,
+    "gloss": "only, just; as much as"
+  },
+  {
+    "pattern": "〜しか〜ない",
+    "level": 5,
+    "gloss": "only, nothing but (with negative)"
+  },
+  {
+    "pattern": "〜くらい",
+    "level": 5,
+    "gloss": "about, approximately (ぐらい); to the extent of"
+  },
+  {
+    "pattern": "〜ごろ",
+    "level": 5,
+    "gloss": "around, about (a point in time)"
+  },
+  {
+    "pattern": "〜のだ",
+    "level": 5,
+    "gloss": "explanatory: it is that (んです/んだ)"
+  },
+  {
+    "pattern": "〜でしょう",
+    "level": 5,
+    "gloss": "probably; seeking confirmation (plain だろう)"
+  },
+  {
+    "pattern": "〜ほうがいい",
+    "level": 5,
+    "gloss": "had better do (たほうがいい; negative ないほうがいい)"
+  },
+  {
+    "pattern": "〜より",
+    "level": 5,
+    "gloss": "than (comparison standard)"
+  },
+  {
+    "pattern": "〜のほうが",
+    "level": 5,
+    "gloss": "comparative: the ~ side is more"
+  },
+  {
+    "pattern": "〜がある",
+    "level": 5,
+    "gloss": "there is, exists; have (inanimate)"
+  },
+  {
+    "pattern": "〜がいる",
+    "level": 5,
+    "gloss": "there is, exists (animate)"
+  },
+  {
+    "pattern": "〜が欲しい",
+    "level": 5,
+    "gloss": "want (a thing)"
+  },
+  {
+    "pattern": "〜すぎる",
+    "level": 5,
+    "gloss": "too much, excessively (verb stem / adjective + すぎる)"
+  },
+  {
+    "pattern": "〜方",
+    "level": 5,
+    "gloss": "way of doing, how to (書き方)"
+  },
+  {
+    "pattern": "〜にする",
+    "level": 5,
+    "gloss": "decide on; make (noun/na-adj) into"
+  },
+  {
+    "pattern": "〜くする",
+    "level": 5,
+    "gloss": "make (i-adjective): render (大きくする)"
+  },
+  {
+    "pattern": "〜になる",
+    "level": 5,
+    "gloss": "become (noun/na-adjective)"
+  },
+  {
+    "pattern": "〜くなる",
+    "level": 5,
+    "gloss": "become (i-adjective)"
+  },
+  {
+    "pattern": "〜をください",
+    "level": 5,
+    "gloss": "please give me (a thing)"
+  },
+  {
+    "pattern": "〜に行く",
+    "level": 5,
+    "gloss": "go somewhere to do (verb stem + に + motion verb)"
+  },
+  {
+    "pattern": "まだ〜ていない",
+    "level": 5,
+    "gloss": "not yet done, still hasn't"
+  },
+  {
+    "pattern": "〜られる（受身）",
+    "level": 4,
+    "gloss": "passive: is done by (u-verbs 〜れる); suffering/adversative passive"
+  },
+  {
+    "pattern": "〜られる（可能）",
+    "level": 4,
+    "gloss": "potential: can do (u-verbs 〜える; colloquial ら抜き れる)"
+  },
+  {
+    "pattern": "〜られる（尊敬）",
+    "level": 4,
+    "gloss": "light honorific: subject-exalting れる/られる"
+  },
+  {
+    "pattern": "〜させる",
+    "level": 4,
+    "gloss": "causative: make or let someone do"
+  },
+  {
+    "pattern": "〜させられる",
+    "level": 4,
+    "gloss": "causative-passive: be made to do (u-verbs contracted 〜される)"
+  },
+  {
+    "pattern": "〜よう",
+    "level": 4,
+    "gloss": "plain volitional: let's, I'll (u-verbs 〜おう)"
+  },
+  {
+    "pattern": "〜ようと思う",
+    "level": 4,
+    "gloss": "intend to do, thinking of doing (ようと思っている)"
+  },
+  {
+    "pattern": "〜ようとする",
+    "level": 4,
+    "gloss": "be about to do; try/attempt to do"
+  },
+  {
+    "pattern": "〜ろ",
+    "level": 4,
+    "gloss": "plain imperative: do! (u-verbs 〜え)"
+  },
+  {
+    "pattern": "〜な（禁止）",
+    "level": 4,
+    "gloss": "negative imperative: don't (dictionary form + な)"
+  },
+  {
+    "pattern": "〜なさい",
+    "level": 4,
+    "gloss": "polite command: do (parent/teacher tone)"
+  },
+  {
+    "pattern": "〜ば",
+    "level": 4,
+    "gloss": "conditional: if (hypothetical/general truth)"
+  },
+  {
+    "pattern": "〜たら",
+    "level": 4,
+    "gloss": "conditional: if/when; after doing; discovery (〜たら〜た)"
+  },
+  {
+    "pattern": "〜なら",
+    "level": 4,
+    "gloss": "conditional: if it is the case that; topic-setting (as for)"
+  },
+  {
+    "pattern": "〜と（条件）",
+    "level": 4,
+    "gloss": "conditional: whenever, natural consequence (押すと開く)"
+  },
+  {
+    "pattern": "〜ことができる",
+    "level": 4,
+    "gloss": "can do, be able to (formal potential)"
+  },
+  {
+    "pattern": "〜ことがある",
+    "level": 4,
+    "gloss": "there are times when, sometimes happens"
+  },
+  {
+    "pattern": "〜たことがある",
+    "level": 4,
+    "gloss": "have done before (experience)"
+  },
+  {
+    "pattern": "〜ようになる",
+    "level": 4,
+    "gloss": "come to do, reach the point where (change of state/ability)"
+  },
+  {
+    "pattern": "〜ようにする",
+    "level": 4,
+    "gloss": "make a point of doing, try to (habitual effort)"
+  },
+  {
+    "pattern": "〜ことになる",
+    "level": 4,
+    "gloss": "it is decided/arranged that; turn out that"
+  },
+  {
+    "pattern": "〜ことにする",
+    "level": 4,
+    "gloss": "decide to do (habit: ことにしている)"
+  },
+  {
+    "pattern": "〜つもりだ",
+    "level": 4,
+    "gloss": "intend to, plan to (negative ないつもり)"
+  },
+  {
+    "pattern": "〜予定だ",
+    "level": 4,
+    "gloss": "plan to, scheduled to"
+  },
+  {
+    "pattern": "〜ておく",
+    "level": 4,
+    "gloss": "do in advance/preparation; leave as is (colloquial 〜とく)"
+  },
+  {
+    "pattern": "〜てみる",
+    "level": 4,
+    "gloss": "try doing and see"
+  },
+  {
+    "pattern": "〜てしまう",
+    "level": 4,
+    "gloss": "completion or regret: do completely / end up doing (colloquial ちゃう/じゃう)"
+  },
+  {
+    "pattern": "〜てある",
+    "level": 4,
+    "gloss": "has been done, is left done (resultant state of deliberate action)"
+  },
+  {
+    "pattern": "〜ていく",
+    "level": 4,
+    "gloss": "go on doing (from now); change moving away from speaker"
+  },
+  {
+    "pattern": "〜てくる",
+    "level": 4,
+    "gloss": "have come to (change up to now); go do and come back"
+  },
+  {
+    "pattern": "〜てあげる",
+    "level": 4,
+    "gloss": "do (a favor) for someone (outward giving)"
+  },
+  {
+    "pattern": "〜てくれる",
+    "level": 4,
+    "gloss": "someone does (a favor) for me/us"
+  },
+  {
+    "pattern": "〜てもらう",
+    "level": 4,
+    "gloss": "have/get someone to do (receiving a favor; humble ていただく)"
+  },
+  {
+    "pattern": "〜てよかった",
+    "level": 4,
+    "gloss": "glad that, it was good that"
+  },
+  {
+    "pattern": "〜てほしい",
+    "level": 4,
+    "gloss": "want someone to do"
+  },
+  {
+    "pattern": "〜させてください",
+    "level": 4,
+    "gloss": "please let me do (causative + request)"
+  },
+  {
+    "pattern": "〜なければならない",
+    "level": 4,
+    "gloss": "must, have to (なくてはいけない; colloquial なきゃ/なくちゃ/ないと)"
+  },
+  {
+    "pattern": "〜なくてもいい",
+    "level": 4,
+    "gloss": "need not do, don't have to"
+  },
+  {
+    "pattern": "〜ないで",
+    "level": 4,
+    "gloss": "without doing; don't do and (instead)"
+  },
+  {
+    "pattern": "〜かどうか",
+    "level": 4,
+    "gloss": "whether or not"
+  },
+  {
+    "pattern": "〜という",
+    "level": 4,
+    "gloss": "called, named; the fact/claim that"
+  },
+  {
+    "pattern": "〜と思う",
+    "level": 4,
+    "gloss": "I think that (quotative opinion)"
+  },
+  {
+    "pattern": "〜かもしれない",
+    "level": 4,
+    "gloss": "might, may, possibly"
+  },
+  {
+    "pattern": "〜はずだ",
+    "level": 4,
+    "gloss": "should be, is expected to (はずだった: was supposed to)"
+  },
+  {
+    "pattern": "〜はずがない",
+    "level": 4,
+    "gloss": "cannot possibly be, no way that"
+  },
+  {
+    "pattern": "〜みたいだ",
+    "level": 4,
+    "gloss": "seems, looks like; simile (colloquial; みたいに/みたいな)"
+  },
+  {
+    "pattern": "〜ようだ",
+    "level": 4,
+    "gloss": "it seems, it appears; simile: like (ように/ような)"
+  },
+  {
+    "pattern": "〜らしい",
+    "level": 4,
+    "gloss": "apparently, I hear (inference from hearsay); typical of (男らしい)"
+  },
+  {
+    "pattern": "〜そうだ（様態）",
+    "level": 4,
+    "gloss": "looks like, seems about to (stem + そう; negative そうにない)"
+  },
+  {
+    "pattern": "〜そうだ（伝聞）",
+    "level": 4,
+    "gloss": "hearsay: I hear that, they say (plain form + そうだ)"
+  },
+  {
+    "pattern": "〜がる",
+    "level": 4,
+    "gloss": "show signs of (third-person emotion: 怖がる; がっている)"
+  },
+  {
+    "pattern": "〜たがる",
+    "level": 4,
+    "gloss": "(third person) wants to do"
+  },
+  {
+    "pattern": "〜やすい",
+    "level": 4,
+    "gloss": "easy to do, prone to"
+  },
+  {
+    "pattern": "〜にくい",
+    "level": 4,
+    "gloss": "hard to do, resistant to"
+  },
+  {
+    "pattern": "〜さ",
+    "level": 4,
+    "gloss": "adjective nominalizer: -ness (高さ)"
+  },
+  {
+    "pattern": "〜ながら",
+    "level": 4,
+    "gloss": "while doing (simultaneous actions)"
+  },
+  {
+    "pattern": "〜し",
+    "level": 4,
+    "gloss": "and what's more (listing reasons/qualities)"
+  },
+  {
+    "pattern": "〜のに",
+    "level": 4,
+    "gloss": "although, despite; and yet (dissatisfaction)"
+  },
+  {
+    "pattern": "〜ても",
+    "level": 4,
+    "gloss": "even if, even though"
+  },
+  {
+    "pattern": "〜でも",
+    "level": 4,
+    "gloss": "even (extreme example); ~ or something"
+  },
+  {
+    "pattern": "〜とか",
+    "level": 4,
+    "gloss": "listing examples: things like (とか〜とか); vague hearsay"
+  },
+  {
+    "pattern": "〜など",
+    "level": 4,
+    "gloss": "such as, and the like"
+  },
+  {
+    "pattern": "〜ために",
+    "level": 4,
+    "gloss": "purpose: in order to; cause: because of (のために)"
+  },
+  {
+    "pattern": "〜までに",
+    "level": 4,
+    "gloss": "by (a deadline), no later than"
+  },
+  {
+    "pattern": "〜たばかり",
+    "level": 4,
+    "gloss": "just did, has only just"
+  },
+  {
+    "pattern": "〜ところだ",
+    "level": 4,
+    "gloss": "about to do (るところ); in the middle of (ているところ); just did (たところ)"
+  },
+  {
+    "pattern": "〜がする",
+    "level": 4,
+    "gloss": "sense perception: there is a smell/sound/taste/feeling of"
+  },
+  {
+    "pattern": "〜出す",
+    "level": 4,
+    "gloss": "start suddenly, burst out doing (泣き出す)"
+  },
+  {
+    "pattern": "〜始める",
+    "level": 4,
+    "gloss": "begin to do"
+  },
+  {
+    "pattern": "〜終わる",
+    "level": 4,
+    "gloss": "finish doing"
+  },
+  {
+    "pattern": "〜続ける",
+    "level": 4,
+    "gloss": "continue doing, keep on"
+  },
+  {
+    "pattern": "〜ずつ",
+    "level": 4,
+    "gloss": "apiece, at a time (少しずつ)"
+  },
+  {
+    "pattern": "お〜になる",
+    "level": 4,
+    "gloss": "honorific: subject-exalting (お読みになる)"
+  },
+  {
+    "pattern": "お〜する",
+    "level": 4,
+    "gloss": "humble: speaker-lowering (お持ちする; お〜いたす)"
+  },
+  {
+    "pattern": "お〜ください",
+    "level": 4,
+    "gloss": "honorific request: please do (お待ちください)"
+  },
+  {
+    "pattern": "〜でございます",
+    "level": 4,
+    "gloss": "super-polite copula (formal service register)"
+  },
+  {
+    "pattern": "〜かな",
+    "level": 4,
+    "gloss": "sentence-final: I wonder"
+  },
+  {
+    "pattern": "〜なあ",
+    "level": 4,
+    "gloss": "sentence-final exclamation: how ~ ! (wistful/emphatic)"
+  },
+  {
+    "pattern": "〜うちに",
+    "level": 3,
+    "gloss": "while (a state still holds); before it changes (ないうちに: before)"
+  },
+  {
+    "pattern": "〜間",
+    "level": 3,
+    "gloss": "during, all the while (span)"
+  },
+  {
+    "pattern": "〜間に",
+    "level": 3,
+    "gloss": "at some point during, within (an interval)"
+  },
+  {
+    "pattern": "〜ば〜ほど",
+    "level": 3,
+    "gloss": "the more ~ the more"
+  },
+  {
+    "pattern": "〜ほど",
+    "level": 3,
+    "gloss": "to the extent that; so ~ that; approximate degree"
+  },
+  {
+    "pattern": "〜ほど〜ない",
+    "level": 3,
+    "gloss": "not as ~ as"
+  },
+  {
+    "pattern": "〜ように（目的）",
+    "level": 3,
+    "gloss": "so that (purpose with non-volitional/potential verb)"
+  },
+  {
+    "pattern": "〜ことになっている",
+    "level": 3,
+    "gloss": "it is the rule/custom/arrangement that"
+  },
+  {
+    "pattern": "〜ことはない",
+    "level": 3,
+    "gloss": "there is no need to; never happens"
+  },
+  {
+    "pattern": "〜ということだ",
+    "level": 3,
+    "gloss": "hearsay: I hear that; it means that (とのことだ)"
+  },
+  {
+    "pattern": "〜というのは",
+    "level": 3,
+    "gloss": "definition: ~ means, the thing called (とは)"
+  },
+  {
+    "pattern": "〜わけだ",
+    "level": 3,
+    "gloss": "that is why, no wonder; in other words"
+  },
+  {
+    "pattern": "〜わけではない",
+    "level": 3,
+    "gloss": "it does not mean that, not necessarily"
+  },
+  {
+    "pattern": "〜わけがない",
+    "level": 3,
+    "gloss": "there is no way that, impossible"
+  },
+  {
+    "pattern": "〜っぽい",
+    "level": 3,
+    "gloss": "-ish, -like; tends to (忘れっぽい)"
+  },
+  {
+    "pattern": "〜切る",
+    "level": 3,
+    "gloss": "do completely to the end (〜切れない: cannot fully)"
+  },
+  {
+    "pattern": "〜たびに",
+    "level": 3,
+    "gloss": "every time, whenever"
+  },
+  {
+    "pattern": "〜のに（目的）",
+    "level": 3,
+    "gloss": "for the purpose of, in/for doing (切るのに便利)"
+  },
+  {
+    "pattern": "〜せいで",
+    "level": 3,
+    "gloss": "because of (blame; せいか: perhaps because; せいにする: blame on)"
+  },
+  {
+    "pattern": "〜おかげで",
+    "level": 3,
+    "gloss": "thanks to (credit; also ironic)"
+  },
+  {
+    "pattern": "〜くせに",
+    "level": 3,
+    "gloss": "even though, despite (criticism/contempt)"
+  },
+  {
+    "pattern": "〜わりに",
+    "level": 3,
+    "gloss": "considering ~, unexpectedly (わりには)"
+  },
+  {
+    "pattern": "〜にしては",
+    "level": 3,
+    "gloss": "for, considering (contrary to what you'd expect)"
+  },
+  {
+    "pattern": "〜として",
+    "level": 3,
+    "gloss": "as, in the capacity/role of"
+  },
+  {
+    "pattern": "〜にとって",
+    "level": 3,
+    "gloss": "for, from the standpoint of"
+  },
+  {
+    "pattern": "〜について",
+    "level": 3,
+    "gloss": "about, concerning, regarding"
+  },
+  {
+    "pattern": "〜に対して",
+    "level": 3,
+    "gloss": "toward, against; in contrast to"
+  },
+  {
+    "pattern": "〜によって",
+    "level": 3,
+    "gloss": "by means of; depending on; because of; passive agent"
+  },
+  {
+    "pattern": "〜によると",
+    "level": 3,
+    "gloss": "according to (によれば)"
+  },
+  {
+    "pattern": "〜ばかりでなく",
+    "level": 3,
+    "gloss": "not only ~ but also"
+  },
+  {
+    "pattern": "〜だけでなく",
+    "level": 3,
+    "gloss": "not only ~ but also (だけではなく)"
+  },
+  {
+    "pattern": "〜はもちろん",
+    "level": 3,
+    "gloss": "not to mention; ~ of course, and ~ as well"
+  },
+  {
+    "pattern": "〜さえ",
+    "level": 3,
+    "gloss": "even (extreme example; ですら nuance)"
+  },
+  {
+    "pattern": "〜さえ〜ば",
+    "level": 3,
+    "gloss": "if only, as long as (that alone suffices)"
+  },
+  {
+    "pattern": "〜こそ",
+    "level": 3,
+    "gloss": "emphasis: precisely, exactly (からこそ: exactly because)"
+  },
+  {
+    "pattern": "〜なんて",
+    "level": 3,
+    "gloss": "things like (belittling/surprise; なんか)"
+  },
+  {
+    "pattern": "〜ばかり",
+    "level": 3,
+    "gloss": "nothing but, only (てばかりいる: do nothing but)"
+  },
+  {
+    "pattern": "〜まま",
+    "level": 3,
+    "gloss": "as is, leaving unchanged (たまま/のまま)"
+  },
+  {
+    "pattern": "〜ずに",
+    "level": 3,
+    "gloss": "without doing (literary continuative 〜ず)"
+  },
+  {
+    "pattern": "〜って",
+    "level": 3,
+    "gloss": "colloquial quotative/topic marker: speaking of, they say"
+  },
+  {
+    "pattern": "〜通りに",
+    "level": 3,
+    "gloss": "as, in accordance with (言われた通りに; noun+どおり)"
+  },
+  {
+    "pattern": "〜たらどうか",
+    "level": 3,
+    "gloss": "why don't you (suggestion; たらどうですか)"
+  },
+  {
+    "pattern": "〜途中で",
+    "level": 3,
+    "gloss": "on the way; midway through"
+  },
+  {
+    "pattern": "〜てもかまわない",
+    "level": 3,
+    "gloss": "don't mind if, it's fine to"
+  },
+  {
+    "pattern": "〜てごらん",
+    "level": 3,
+    "gloss": "try doing (gentle suggestion/command)"
+  },
+  {
+    "pattern": "〜のは〜だ",
+    "level": 3,
+    "gloss": "cleft sentence: it is X that ~ (focus construction)"
+  },
+  {
+    "pattern": "〜ばよかった",
+    "level": 3,
+    "gloss": "should have done (regret; なければよかった)"
+  },
+  {
+    "pattern": "たとえ〜ても",
+    "level": 3,
+    "gloss": "even if (hypothetical concession)"
+  },
+  {
+    "pattern": "いくら〜ても",
+    "level": 3,
+    "gloss": "no matter how much (どんなに〜ても)"
+  },
+  {
+    "pattern": "なかなか〜ない",
+    "level": 3,
+    "gloss": "not easily, takes a while to (get done)"
+  },
+  {
+    "pattern": "〜しかない",
+    "level": 3,
+    "gloss": "have no choice but to; nothing but"
+  },
+  {
+    "pattern": "〜ふりをする",
+    "level": 3,
+    "gloss": "pretend to, act as if"
+  },
+  {
+    "pattern": "〜気がする",
+    "level": 3,
+    "gloss": "have a feeling/hunch that (ような気がする)"
+  },
+  {
+    "pattern": "〜代わりに",
+    "level": 3,
+    "gloss": "instead of; in exchange/return for"
+  },
+  {
+    "pattern": "〜から〜にかけて",
+    "level": 3,
+    "gloss": "from ~ through ~ (vague span)"
+  },
+  {
+    "pattern": "〜おきに",
+    "level": 3,
+    "gloss": "at intervals of, every other (一日おきに)"
+  },
+  {
+    "pattern": "〜べきだ",
+    "level": 3,
+    "gloss": "should, ought to (べきではない: should not)"
+  },
+  {
+    "pattern": "〜場合は",
+    "level": 3,
+    "gloss": "in the case of, in the event that"
+  },
+  {
+    "pattern": "〜必要がある",
+    "level": 3,
+    "gloss": "need to, it is necessary to"
+  },
+  {
+    "pattern": "〜させていただく",
+    "level": 3,
+    "gloss": "humble: (I will) take the liberty of doing"
+  },
+  {
+    "pattern": "〜ところだった",
+    "level": 3,
+    "gloss": "nearly happened, was on the verge of (barely avoided)"
+  },
+  {
+    "pattern": "〜ばいい",
+    "level": 3,
+    "gloss": "all you have to do is; it would be good if (たらいい)"
+  },
+  {
+    "pattern": "〜一方だ",
+    "level": 3,
+    "gloss": "keeps on ~ing, continues in one direction (of change)"
+  },
+  {
+    "pattern": "〜中",
+    "level": 3,
+    "gloss": "throughout (一日中); in the middle of, under way (会議中)"
+  },
+  {
+    "pattern": "〜に比べて",
+    "level": 3,
+    "gloss": "compared to, in comparison with"
+  },
+  {
+    "pattern": "〜のではないか",
+    "level": 3,
+    "gloss": "isn't it the case that (conjecture; んじゃないか)"
+  },
+  {
+    "pattern": "〜ことは〜が",
+    "level": 3,
+    "gloss": "it is true that ~, but (行くことは行くが)"
+  },
+  {
+    "pattern": "せっかく〜のに",
+    "level": 3,
+    "gloss": "even though one went to the trouble of (せっかくの/せっかくだから)"
+  },
+  {
+    "pattern": "〜たとたん",
+    "level": 2,
+    "gloss": "the moment ~, just as (something unexpected happened)"
+  },
+  {
+    "pattern": "〜最中に",
+    "level": 2,
+    "gloss": "right in the middle of doing"
+  },
+  {
+    "pattern": "〜か〜ないかのうちに",
+    "level": 2,
+    "gloss": "hardly had ~ when, barely ~ before"
+  },
+  {
+    "pattern": "〜て以来",
+    "level": 2,
+    "gloss": "ever since doing (continuing state)"
+  },
+  {
+    "pattern": "〜てからでないと",
+    "level": 2,
+    "gloss": "unless/until after doing (てからでなければ)"
+  },
+  {
+    "pattern": "〜て初めて",
+    "level": 2,
+    "gloss": "only after doing did (one realize etc.)"
+  },
+  {
+    "pattern": "〜上で",
+    "level": 2,
+    "gloss": "upon/after doing (formal); in the course of"
+  },
+  {
+    "pattern": "〜上に",
+    "level": 2,
+    "gloss": "in addition to, on top of"
+  },
+  {
+    "pattern": "〜上",
+    "level": 2,
+    "gloss": "from the standpoint of, -wise (規則上, 仕事上)"
+  },
+  {
+    "pattern": "〜つつ",
+    "level": 2,
+    "gloss": "while doing (literary); although (つつも)"
+  },
+  {
+    "pattern": "〜つつある",
+    "level": 2,
+    "gloss": "in the process of, steadily becoming"
+  },
+  {
+    "pattern": "〜一方で",
+    "level": 2,
+    "gloss": "on the other hand, while at the same time"
+  },
+  {
+    "pattern": "〜反面",
+    "level": 2,
+    "gloss": "on the other hand, while (two-sided contrast)"
+  },
+  {
+    "pattern": "〜ついでに",
+    "level": 2,
+    "gloss": "while at it, taking the opportunity of"
+  },
+  {
+    "pattern": "〜っぱなし",
+    "level": 2,
+    "gloss": "left as is (つけっぱなし); doing continuously"
+  },
+  {
+    "pattern": "〜がちだ",
+    "level": 2,
+    "gloss": "tends to, apt to (usually undesirable)"
+  },
+  {
+    "pattern": "〜気味",
+    "level": 2,
+    "gloss": "a touch of, slightly (風邪気味)"
+  },
+  {
+    "pattern": "〜かける",
+    "level": 2,
+    "gloss": "half-done, in the middle of (かけの/かけだ: unfinished)"
+  },
+  {
+    "pattern": "〜だらけ",
+    "level": 2,
+    "gloss": "covered in, full of (undesirable: 泥だらけ)"
+  },
+  {
+    "pattern": "〜げ",
+    "level": 2,
+    "gloss": "looking, seeming (adjective stem + げ: 悲しげ)"
+  },
+  {
+    "pattern": "〜っこない",
+    "level": 2,
+    "gloss": "no way that, impossible (colloquial)"
+  },
+  {
+    "pattern": "〜かねる",
+    "level": 2,
+    "gloss": "cannot, find it hard to (polite refusal)"
+  },
+  {
+    "pattern": "〜かねない",
+    "level": 2,
+    "gloss": "might well, capable of (undesirable possibility)"
+  },
+  {
+    "pattern": "〜得る",
+    "level": 2,
+    "gloss": "can, possible to (あり得る; negative 〜得ない)"
+  },
+  {
+    "pattern": "〜ざるを得ない",
+    "level": 2,
+    "gloss": "cannot help but, have no choice but to"
+  },
+  {
+    "pattern": "〜ずにはいられない",
+    "level": 2,
+    "gloss": "cannot help doing (ないではいられない)"
+  },
+  {
+    "pattern": "〜ようがない",
+    "level": 2,
+    "gloss": "there is no way to (直しようがない)"
+  },
+  {
+    "pattern": "〜恐れがある",
+    "level": 2,
+    "gloss": "there is a risk/danger of"
+  },
+  {
+    "pattern": "〜に決まっている",
+    "level": 2,
+    "gloss": "definitely, bound to be"
+  },
+  {
+    "pattern": "〜に違いない",
+    "level": 2,
+    "gloss": "must be, no doubt"
+  },
+  {
+    "pattern": "〜とは限らない",
+    "level": 2,
+    "gloss": "not necessarily, not always the case"
+  },
+  {
+    "pattern": "〜ないことはない",
+    "level": 2,
+    "gloss": "not impossible, does happen (ないこともない)"
+  },
+  {
+    "pattern": "〜ないことには",
+    "level": 2,
+    "gloss": "unless, without first doing"
+  },
+  {
+    "pattern": "〜ことなく",
+    "level": 2,
+    "gloss": "without ever doing (formal)"
+  },
+  {
+    "pattern": "〜ことか",
+    "level": 2,
+    "gloss": "how ~ ! (exclamatory: どんなに〜ことか)"
+  },
+  {
+    "pattern": "〜ことだ",
+    "level": 2,
+    "gloss": "should, the thing to do is (advice)"
+  },
+  {
+    "pattern": "〜ことだから",
+    "level": 2,
+    "gloss": "because it is (typical of that person)"
+  },
+  {
+    "pattern": "〜ことから",
+    "level": 2,
+    "gloss": "from the fact that, owing to"
+  },
+  {
+    "pattern": "〜ことに",
+    "level": 2,
+    "gloss": "to my (surprise/joy): 驚いたことに"
+  },
+  {
+    "pattern": "〜ものだ",
+    "level": 2,
+    "gloss": "general truth: is the nature of; should (ものではない); nostalgia たものだ"
+  },
+  {
+    "pattern": "〜ものだから",
+    "level": 2,
+    "gloss": "because (excuse; もので/もんだから)"
+  },
+  {
+    "pattern": "〜ものの",
+    "level": 2,
+    "gloss": "although, but (とはいうものの)"
+  },
+  {
+    "pattern": "〜ものがある",
+    "level": 2,
+    "gloss": "there is something ~ about it (felt quality)"
+  },
+  {
+    "pattern": "〜というものだ",
+    "level": 2,
+    "gloss": "that is exactly what ~ is (assertion)"
+  },
+  {
+    "pattern": "〜というものではない",
+    "level": 2,
+    "gloss": "it is not that, not necessarily so (partial denial)"
+  },
+  {
+    "pattern": "〜というより",
+    "level": 2,
+    "gloss": "rather than, more ~ than"
+  },
+  {
+    "pattern": "〜といっても",
+    "level": 2,
+    "gloss": "although one says, having said that"
+  },
+  {
+    "pattern": "〜といえば",
+    "level": 2,
+    "gloss": "speaking of (というと/といったら)"
+  },
+  {
+    "pattern": "〜としたら",
+    "level": 2,
+    "gloss": "supposing, if we assume (とすれば/とすると)"
+  },
+  {
+    "pattern": "〜としても",
+    "level": 2,
+    "gloss": "even if, even supposing"
+  },
+  {
+    "pattern": "〜にしたら",
+    "level": 2,
+    "gloss": "from ~'s standpoint (にすれば/にしてみれば)"
+  },
+  {
+    "pattern": "〜にしても",
+    "level": 2,
+    "gloss": "even considering; even for"
+  },
+  {
+    "pattern": "〜にしろ",
+    "level": 2,
+    "gloss": "whether A or B; even if (にせよ; にしろ〜にしろ)"
+  },
+  {
+    "pattern": "〜どころか",
+    "level": 2,
+    "gloss": "far from, let alone (contrary emphasis)"
+  },
+  {
+    "pattern": "〜どころではない",
+    "level": 2,
+    "gloss": "no time/situation for, out of the question"
+  },
+  {
+    "pattern": "〜ばかりか",
+    "level": 2,
+    "gloss": "not only ~ but even"
+  },
+  {
+    "pattern": "〜ばかりに",
+    "level": 2,
+    "gloss": "simply because, just because (regrettable result)"
+  },
+  {
+    "pattern": "〜わけにはいかない",
+    "level": 2,
+    "gloss": "cannot very well (social/moral reasons); ないわけにはいかない: must"
+  },
+  {
+    "pattern": "〜ほかない",
+    "level": 2,
+    "gloss": "no choice but to (ほかはない/よりほかない)"
+  },
+  {
+    "pattern": "〜次第",
+    "level": 2,
+    "gloss": "as soon as (stem+次第); 次第で: depending on; 次第だ: that is how it stands"
+  },
+  {
+    "pattern": "〜末に",
+    "level": 2,
+    "gloss": "after (much ~), finally (た末に/の末に)"
+  },
+  {
+    "pattern": "〜あげく",
+    "level": 2,
+    "gloss": "in the end (after a long negative course; たあげく)"
+  },
+  {
+    "pattern": "〜のあまり",
+    "level": 2,
+    "gloss": "out of excessive (emotion): あまりの〜に"
+  },
+  {
+    "pattern": "〜たきり",
+    "level": 2,
+    "gloss": "(haven't) ever since doing (行ったきり)"
+  },
+  {
+    "pattern": "〜たて",
+    "level": 2,
+    "gloss": "freshly done, just out of (焼きたて)"
+  },
+  {
+    "pattern": "〜ぶり",
+    "level": 2,
+    "gloss": "manner/way of (話しぶり); after a lapse of (三年ぶり)"
+  },
+  {
+    "pattern": "〜向きだ",
+    "level": 2,
+    "gloss": "suitable for (初心者向き)"
+  },
+  {
+    "pattern": "〜向けだ",
+    "level": 2,
+    "gloss": "intended for, aimed at (子供向け)"
+  },
+  {
+    "pattern": "〜だけあって",
+    "level": 2,
+    "gloss": "as expected of, precisely because (だけのことはある)"
+  },
+  {
+    "pattern": "〜だけに",
+    "level": 2,
+    "gloss": "precisely because; all the more since"
+  },
+  {
+    "pattern": "〜からには",
+    "level": 2,
+    "gloss": "now that, since (obligation/determination; からは)"
+  },
+  {
+    "pattern": "〜以上",
+    "level": 2,
+    "gloss": "now that, seeing that (以上は)"
+  },
+  {
+    "pattern": "〜からすると",
+    "level": 2,
+    "gloss": "judging from (からいうと/からみると)"
+  },
+  {
+    "pattern": "〜からして",
+    "level": 2,
+    "gloss": "judging from ~ alone; starting with"
+  },
+  {
+    "pattern": "〜からといって",
+    "level": 2,
+    "gloss": "just because ~ doesn't mean"
+  },
+  {
+    "pattern": "〜に関して",
+    "level": 2,
+    "gloss": "concerning, regarding (formal; に関する)"
+  },
+  {
+    "pattern": "〜において",
+    "level": 2,
+    "gloss": "in, at, on (formal scene/domain; における)"
+  },
+  {
+    "pattern": "〜に応じて",
+    "level": 2,
+    "gloss": "according to, in proportion/response to"
+  },
+  {
+    "pattern": "〜に応えて",
+    "level": 2,
+    "gloss": "in response to (expectations, requests)"
+  },
+  {
+    "pattern": "〜に際して",
+    "level": 2,
+    "gloss": "on the occasion of, at the time of (formal)"
+  },
+  {
+    "pattern": "〜にあたって",
+    "level": 2,
+    "gloss": "on the occasion of, when (formal, forward-looking)"
+  },
+  {
+    "pattern": "〜に先立って",
+    "level": 2,
+    "gloss": "prior to, in advance of (formal)"
+  },
+  {
+    "pattern": "〜にしたがって",
+    "level": 2,
+    "gloss": "as ~ (proportional change); in accordance with"
+  },
+  {
+    "pattern": "〜につれて",
+    "level": 2,
+    "gloss": "as ~, in proportion to (change)"
+  },
+  {
+    "pattern": "〜とともに",
+    "level": 2,
+    "gloss": "together with; as ~ (simultaneous change)"
+  },
+  {
+    "pattern": "〜に伴って",
+    "level": 2,
+    "gloss": "along with, accompanying (change; に伴い)"
+  },
+  {
+    "pattern": "〜に反して",
+    "level": 2,
+    "gloss": "contrary to, against (予想に反して)"
+  },
+  {
+    "pattern": "〜に基づいて",
+    "level": 2,
+    "gloss": "based on, on the basis of"
+  },
+  {
+    "pattern": "〜にわたって",
+    "level": 2,
+    "gloss": "over (a span), throughout, extending"
+  },
+  {
+    "pattern": "〜にかけては",
+    "level": 2,
+    "gloss": "when it comes to (skill, second to none)"
+  },
+  {
+    "pattern": "〜にかかわらず",
+    "level": 2,
+    "gloss": "regardless of (にかかわりなく)"
+  },
+  {
+    "pattern": "〜にもかかわらず",
+    "level": 2,
+    "gloss": "despite, in spite of"
+  },
+  {
+    "pattern": "〜はともかく",
+    "level": 2,
+    "gloss": "setting aside, apart from (はともかくとして)"
+  },
+  {
+    "pattern": "〜に加えて",
+    "level": 2,
+    "gloss": "in addition to"
+  },
+  {
+    "pattern": "〜に沿って",
+    "level": 2,
+    "gloss": "along; in line with (方針に沿って)"
+  },
+  {
+    "pattern": "〜に代わって",
+    "level": 2,
+    "gloss": "in place of, on behalf of"
+  },
+  {
+    "pattern": "〜のもとで",
+    "level": 2,
+    "gloss": "under (guidance, conditions; のもとに)"
+  },
+  {
+    "pattern": "〜を〜として",
+    "level": 2,
+    "gloss": "with A as B (をリーダーとして)"
+  },
+  {
+    "pattern": "〜をもとに",
+    "level": 2,
+    "gloss": "based on, drawing from (をもとにして)"
+  },
+  {
+    "pattern": "〜をきっかけに",
+    "level": 2,
+    "gloss": "taking ~ as the trigger/opportunity"
+  },
+  {
+    "pattern": "〜を中心に",
+    "level": 2,
+    "gloss": "centering on, focused around"
+  },
+  {
+    "pattern": "〜を通じて",
+    "level": 2,
+    "gloss": "through, via; throughout (を通して)"
+  },
+  {
+    "pattern": "〜をはじめ",
+    "level": 2,
+    "gloss": "starting with, including (をはじめとする)"
+  },
+  {
+    "pattern": "〜を問わず",
+    "level": 2,
+    "gloss": "regardless of, irrespective of"
+  },
+  {
+    "pattern": "〜をめぐって",
+    "level": 2,
+    "gloss": "over, concerning (dispute/discussion)"
+  },
+  {
+    "pattern": "〜を込めて",
+    "level": 2,
+    "gloss": "filled with (emotion): 心を込めて"
+  },
+  {
+    "pattern": "〜も〜ば〜も",
+    "level": 2,
+    "gloss": "both ~ and ~ (AもBば、CもD; も〜なら〜も)"
+  },
+  {
+    "pattern": "〜やら〜やら",
+    "level": 2,
+    "gloss": "~ and ~ and so on (overwhelmed/uncertain listing)"
+  },
+  {
+    "pattern": "〜てたまらない",
+    "level": 2,
+    "gloss": "unbearably, extremely (feeling/desire)"
+  },
+  {
+    "pattern": "〜てならない",
+    "level": 2,
+    "gloss": "cannot help feeling, extremely (spontaneous emotion)"
+  },
+  {
+    "pattern": "〜てしかたがない",
+    "level": 2,
+    "gloss": "extremely; can't help (てしょうがない)"
+  },
+  {
+    "pattern": "〜てこそ",
+    "level": 2,
+    "gloss": "only by doing (does something hold true)"
+  },
+  {
+    "pattern": "〜てまで",
+    "level": 2,
+    "gloss": "going so far as to (extreme means)"
+  },
+  {
+    "pattern": "〜ながらも",
+    "level": 2,
+    "gloss": "although, despite (concessive ながら)"
+  },
+  {
+    "pattern": "〜抜きで",
+    "level": 2,
+    "gloss": "without, leaving out (抜きにして/は抜きにして)"
+  },
+  {
+    "pattern": "〜抜く",
+    "level": 2,
+    "gloss": "do through to the very end (やり抜く)"
+  },
+  {
+    "pattern": "〜づらい",
+    "level": 2,
+    "gloss": "hard to do (psychologically/physically taxing)"
+  },
+  {
+    "pattern": "〜ところに",
+    "level": 2,
+    "gloss": "just as, at the very moment when (ところへ/ところを)"
+  },
+  {
+    "pattern": "〜に過ぎない",
+    "level": 2,
+    "gloss": "merely, nothing more than"
+  },
+  {
+    "pattern": "〜くらいなら",
+    "level": 2,
+    "gloss": "rather than (do that), better to"
+  },
+  {
+    "pattern": "〜はもとより",
+    "level": 2,
+    "gloss": "not to mention, let alone (formal)"
+  },
+  {
+    "pattern": "〜限り",
+    "level": 2,
+    "gloss": "as long as; to the full extent of (ない限り: unless)"
+  },
+  {
+    "pattern": "〜に限って",
+    "level": 2,
+    "gloss": "of all ~ (contrary to expectation); precisely when"
+  },
+  {
+    "pattern": "〜に限らず",
+    "level": 2,
+    "gloss": "not only, not limited to"
+  },
+  {
+    "pattern": "〜に限る",
+    "level": 2,
+    "gloss": "nothing beats, the best is"
+  },
+  {
+    "pattern": "〜際に",
+    "level": 2,
+    "gloss": "on the occasion of, when (formal; 際は)"
+  },
+  {
+    "pattern": "〜ずに済む",
+    "level": 2,
+    "gloss": "get by without doing (なくて済む; て済む: settle with)"
+  },
+  {
+    "pattern": "〜たって",
+    "level": 2,
+    "gloss": "even if (colloquial ても; noun/na-adj だって)"
+  },
+  {
+    "pattern": "〜ほうがましだ",
+    "level": 2,
+    "gloss": "would rather, ~ is preferable (to a bad alternative)"
+  },
+  {
+    "pattern": "〜かいがある",
+    "level": 2,
+    "gloss": "be worth doing, effort rewarded (stem+がいがある)"
+  },
+  {
+    "pattern": "〜あっての",
+    "level": 1,
+    "gloss": "exists only thanks to; owes everything to (ファンあっての歌手)"
+  },
+  {
+    "pattern": "〜いかんで",
+    "level": 1,
+    "gloss": "depending on (いかんだ/いかんによって)"
+  },
+  {
+    "pattern": "〜いかんにかかわらず",
+    "level": 1,
+    "gloss": "regardless of (いかんによらず/いかんを問わず)"
+  },
+  {
+    "pattern": "〜うが",
+    "level": 1,
+    "gloss": "no matter if, even if (volitional + が; 〜うと)"
+  },
+  {
+    "pattern": "〜うが〜まいが",
+    "level": 1,
+    "gloss": "whether or not (〜うと〜まいと)"
+  },
+  {
+    "pattern": "〜うにも〜ない",
+    "level": 1,
+    "gloss": "want to but cannot (行こうにも行けない)"
+  },
+  {
+    "pattern": "〜まい",
+    "level": 1,
+    "gloss": "will not (determination); probably not (negative conjecture)"
+  },
+  {
+    "pattern": "〜ものなら",
+    "level": 1,
+    "gloss": "if one could/were to (dire consequence would follow; ようものなら)"
+  },
+  {
+    "pattern": "〜ものか",
+    "level": 1,
+    "gloss": "as if I would ever! (strong denial; もんか)"
+  },
+  {
+    "pattern": "〜ものを",
+    "level": 1,
+    "gloss": "if only, and yet (resentful: could have been otherwise)"
+  },
+  {
+    "pattern": "〜限りだ",
+    "level": 1,
+    "gloss": "utterly, extremely (feeling: 羨ましい限りだ)"
+  },
+  {
+    "pattern": "〜を限りに",
+    "level": 1,
+    "gloss": "as of, ending with (今日を限りに); at the top of (声を限りに)"
+  },
+  {
+    "pattern": "〜かたがた",
+    "level": 1,
+    "gloss": "with the dual purpose of, while also (formal)"
+  },
+  {
+    "pattern": "〜かたわら",
+    "level": 1,
+    "gloss": "while (one's main occupation), alongside"
+  },
+  {
+    "pattern": "〜がてら",
+    "level": 1,
+    "gloss": "while, on the same occasion as (散歩がてら)"
+  },
+  {
+    "pattern": "〜が早いか",
+    "level": 1,
+    "gloss": "no sooner had ~ than, as soon as"
+  },
+  {
+    "pattern": "〜や否や",
+    "level": 1,
+    "gloss": "the moment ~, no sooner than (〜や)"
+  },
+  {
+    "pattern": "〜なり",
+    "level": 1,
+    "gloss": "as soon as, the instant (dictionary form + なり)"
+  },
+  {
+    "pattern": "〜そばから",
+    "level": 1,
+    "gloss": "no sooner does one ~ than (repeatedly undone)"
+  },
+  {
+    "pattern": "〜てからというもの",
+    "level": 1,
+    "gloss": "ever since (a change that has persisted)"
+  },
+  {
+    "pattern": "〜かのようだ",
+    "level": 1,
+    "gloss": "as if, as though (かのように/かのような)"
+  },
+  {
+    "pattern": "〜からある",
+    "level": 1,
+    "gloss": "as much/many as, upwards of (quantity; からの/からする)"
+  },
+  {
+    "pattern": "〜きらいがある",
+    "level": 1,
+    "gloss": "has an (undesirable) tendency to"
+  },
+  {
+    "pattern": "〜極まりない",
+    "level": 1,
+    "gloss": "extremely, in the extreme (失礼極まりない; 極まる)"
+  },
+  {
+    "pattern": "〜ごとき",
+    "level": 1,
+    "gloss": "like, such as (literary; ごとく/ごとし)"
+  },
+  {
+    "pattern": "〜こととて",
+    "level": 1,
+    "gloss": "because, on account of (formal excuse/apology)"
+  },
+  {
+    "pattern": "〜ことなしに",
+    "level": 1,
+    "gloss": "without doing (formal; なしに)"
+  },
+  {
+    "pattern": "〜この上ない",
+    "level": 1,
+    "gloss": "supremely, unsurpassed (この上なく)"
+  },
+  {
+    "pattern": "〜ずくめ",
+    "level": 1,
+    "gloss": "full of, nothing but (いいことずくめ; 黒ずくめ)"
+  },
+  {
+    "pattern": "〜ずにはおかない",
+    "level": 1,
+    "gloss": "will inevitably (cause); won't rest until (ないではおかない)"
+  },
+  {
+    "pattern": "〜ずにはすまない",
+    "level": 1,
+    "gloss": "cannot get away without doing (ないではすまない)"
+  },
+  {
+    "pattern": "〜ずじまい",
+    "level": 1,
+    "gloss": "ended up never doing (会わずじまい)"
+  },
+  {
+    "pattern": "〜だに",
+    "level": 1,
+    "gloss": "even (just): 想像するだに; not even (だにしない)"
+  },
+  {
+    "pattern": "〜たりとも",
+    "level": 1,
+    "gloss": "not even (one): 一日たりとも無駄にできない"
+  },
+  {
+    "pattern": "〜たる",
+    "level": 1,
+    "gloss": "(one) who is, in the position of (たる者: befitting)"
+  },
+  {
+    "pattern": "〜つ〜つ",
+    "level": 1,
+    "gloss": "alternating actions (行きつ戻りつ, 抜きつ抜かれつ)"
+  },
+  {
+    "pattern": "〜であれ",
+    "level": 1,
+    "gloss": "no matter what/who; whether A or B (であれ〜であれ; であろうと)"
+  },
+  {
+    "pattern": "〜でなくてなんだろう",
+    "level": 1,
+    "gloss": "what is this if not ~ (rhetorical emphasis)"
+  },
+  {
+    "pattern": "〜てやまない",
+    "level": 1,
+    "gloss": "(hope/love) unceasingly, from the bottom of one's heart"
+  },
+  {
+    "pattern": "〜と相まって",
+    "level": 1,
+    "gloss": "combined with, coupled with"
+  },
+  {
+    "pattern": "〜とあって",
+    "level": 1,
+    "gloss": "given the (special) circumstance that"
+  },
+  {
+    "pattern": "〜とあれば",
+    "level": 1,
+    "gloss": "if it is (for) ~, if that is the case"
+  },
+  {
+    "pattern": "〜といい〜といい",
+    "level": 1,
+    "gloss": "both ~ and ~ (admiring/critical appraisal)"
+  },
+  {
+    "pattern": "〜というところだ",
+    "level": 1,
+    "gloss": "at most, roughly, about (といったところだ)"
+  },
+  {
+    "pattern": "〜といえども",
+    "level": 1,
+    "gloss": "even, although (formal concession)"
+  },
+  {
+    "pattern": "〜といったらない",
+    "level": 1,
+    "gloss": "indescribably, extremely (といったらありはしない)"
+  },
+  {
+    "pattern": "〜と思いきや",
+    "level": 1,
+    "gloss": "thought ~ but (contrary to expectation)"
+  },
+  {
+    "pattern": "〜ときたら",
+    "level": 1,
+    "gloss": "when it comes to (complaint about familiar topic)"
+  },
+  {
+    "pattern": "〜ところを",
+    "level": 1,
+    "gloss": "although, at a time when (お忙しいところを); in the act of"
+  },
+  {
+    "pattern": "〜たところで",
+    "level": 1,
+    "gloss": "even if one did, it's no use"
+  },
+  {
+    "pattern": "〜とは",
+    "level": 1,
+    "gloss": "surprise/disbelief: to think that; formal definition marker"
+  },
+  {
+    "pattern": "〜とはいえ",
+    "level": 1,
+    "gloss": "although, be that as it may"
+  },
+  {
+    "pattern": "〜とばかりに",
+    "level": 1,
+    "gloss": "as if to say, with a look that said"
+  },
+  {
+    "pattern": "〜ともなく",
+    "level": 1,
+    "gloss": "without particular intention (見るともなく; ともなしに)"
+  },
+  {
+    "pattern": "〜ともなると",
+    "level": 1,
+    "gloss": "when it comes to (that level/status; ともなれば)"
+  },
+  {
+    "pattern": "〜となると",
+    "level": 1,
+    "gloss": "when it comes to, if it comes to that (となれば/となったら)"
+  },
+  {
+    "pattern": "〜ないまでも",
+    "level": 1,
+    "gloss": "even if not (to that extent), at least"
+  },
+  {
+    "pattern": "〜ないものでもない",
+    "level": 1,
+    "gloss": "not entirely impossible, might well (ないでもない)"
+  },
+  {
+    "pattern": "〜ないとも限らない",
+    "level": 1,
+    "gloss": "might possibly, can't rule out that"
+  },
+  {
+    "pattern": "〜ながらに",
+    "level": 1,
+    "gloss": "while remaining, as it is (涙ながらに, 生まれながらに; ながらの)"
+  },
+  {
+    "pattern": "〜なくして",
+    "level": 1,
+    "gloss": "without ~ (it would be impossible; なくしては)"
+  },
+  {
+    "pattern": "〜なしに",
+    "level": 1,
+    "gloss": "without (断りなしに; なしには〜ない)"
+  },
+  {
+    "pattern": "〜ならでは",
+    "level": 1,
+    "gloss": "unique to, only possible for (ならではの)"
+  },
+  {
+    "pattern": "〜なり〜なり",
+    "level": 1,
+    "gloss": "either ~ or ~ (open suggestions)"
+  },
+  {
+    "pattern": "〜なりに",
+    "level": 1,
+    "gloss": "in one's own way, as befits (なりの)"
+  },
+  {
+    "pattern": "〜にあって",
+    "level": 1,
+    "gloss": "in, at, amid (special situation; formal)"
+  },
+  {
+    "pattern": "〜に至るまで",
+    "level": 1,
+    "gloss": "down to, even including (every last)"
+  },
+  {
+    "pattern": "〜に至っては",
+    "level": 1,
+    "gloss": "when it comes to (extreme case); に至って: only upon reaching"
+  },
+  {
+    "pattern": "〜の至り",
+    "level": 1,
+    "gloss": "the utmost of, overwhelmed with (光栄の至り)"
+  },
+  {
+    "pattern": "〜にかかわる",
+    "level": 1,
+    "gloss": "affects, is a matter of (命にかかわる)"
+  },
+  {
+    "pattern": "〜にかたくない",
+    "level": 1,
+    "gloss": "not hard to (imagine/understand): 想像にかたくない"
+  },
+  {
+    "pattern": "〜にして",
+    "level": 1,
+    "gloss": "only at/after (finally): 50歳にして; at once A and B"
+  },
+  {
+    "pattern": "〜に即して",
+    "level": 1,
+    "gloss": "in line with, conforming to (facts, rules)"
+  },
+  {
+    "pattern": "〜にたえない",
+    "level": 1,
+    "gloss": "cannot bear to (見るにたえない); overflowing with (感謝にたえない); にたえる: worth doing"
+  },
+  {
+    "pattern": "〜に足る",
+    "level": 1,
+    "gloss": "worthy of, deserving (信頼に足る)"
+  },
+  {
+    "pattern": "〜にとどまらず",
+    "level": 1,
+    "gloss": "not limited to, extending beyond"
+  },
+  {
+    "pattern": "〜には当たらない",
+    "level": 1,
+    "gloss": "no need to (be surprised etc.); not worth"
+  },
+  {
+    "pattern": "〜にひきかえ",
+    "level": 1,
+    "gloss": "in stark contrast to"
+  },
+  {
+    "pattern": "〜にもまして",
+    "level": 1,
+    "gloss": "even more than, above (以前にもまして)"
+  },
+  {
+    "pattern": "〜の極み",
+    "level": 1,
+    "gloss": "the height/extreme of (贅沢の極み)"
+  },
+  {
+    "pattern": "〜はおろか",
+    "level": 1,
+    "gloss": "let alone, not to mention"
+  },
+  {
+    "pattern": "〜ばこそ",
+    "level": 1,
+    "gloss": "precisely because (formal positive reason)"
+  },
+  {
+    "pattern": "〜ばそれまでだ",
+    "level": 1,
+    "gloss": "if ~ then it's all over, nothing more to be done"
+  },
+  {
+    "pattern": "〜はさておき",
+    "level": 1,
+    "gloss": "setting aside (for now)"
+  },
+  {
+    "pattern": "〜べからず",
+    "level": 1,
+    "gloss": "must not (prohibition on notices; attributive べからざる)"
+  },
+  {
+    "pattern": "〜べく",
+    "level": 1,
+    "gloss": "in order to (literary purpose; べくして)"
+  },
+  {
+    "pattern": "〜まじき",
+    "level": 1,
+    "gloss": "unbecoming, should never (あるまじき行為)"
+  },
+  {
+    "pattern": "〜までだ",
+    "level": 1,
+    "gloss": "will simply (if need be); that's all it is (までのことだ)"
+  },
+  {
+    "pattern": "〜までもない",
+    "level": 1,
+    "gloss": "no need to (言うまでもない: needless to say)"
+  },
+  {
+    "pattern": "〜まみれ",
+    "level": 1,
+    "gloss": "covered all over in (泥まみれ, 血まみれ)"
+  },
+  {
+    "pattern": "〜めく",
+    "level": 1,
+    "gloss": "take on the air of (春めく; 謎めいた)"
+  },
+  {
+    "pattern": "〜もさることながら",
+    "level": 1,
+    "gloss": "not only ~ but even more so"
+  },
+  {
+    "pattern": "〜ゆえに",
+    "level": 1,
+    "gloss": "because of, due to (literary; ゆえの/それゆえ)"
+  },
+  {
+    "pattern": "〜をおいて",
+    "level": 1,
+    "gloss": "other than (no one/nothing): 彼をおいてほかにいない"
+  },
+  {
+    "pattern": "〜を皮切りに",
+    "level": 1,
+    "gloss": "starting with (the first of a series)"
+  },
+  {
+    "pattern": "〜を禁じ得ない",
+    "level": 1,
+    "gloss": "cannot suppress (emotion): 涙を禁じ得ない"
+  },
+  {
+    "pattern": "〜を機に",
+    "level": 1,
+    "gloss": "seizing ~ as the occasion/turning point (を契機に)"
+  },
+  {
+    "pattern": "〜を余儀なくされる",
+    "level": 1,
+    "gloss": "be forced/compelled to (余儀なくさせる: force)"
+  },
+  {
+    "pattern": "〜をものともせずに",
+    "level": 1,
+    "gloss": "in defiance of, undaunted by"
+  },
+  {
+    "pattern": "〜をよそに",
+    "level": 1,
+    "gloss": "ignoring, in disregard of (周囲の心配をよそに)"
+  },
+  {
+    "pattern": "〜んがため",
+    "level": 1,
+    "gloss": "in order to (literary strong purpose; んがために/んがための)"
+  },
+  {
+    "pattern": "〜んばかりに",
+    "level": 1,
+    "gloss": "as if about to (泣かんばかりに; んばかりの)"
+  },
+  {
+    "pattern": "〜んとする",
+    "level": 1,
+    "gloss": "be on the verge of, try to (literary; まさに〜んとする)"
+  },
+  {
+    "pattern": "〜すら",
+    "level": 1,
+    "gloss": "even (extreme example, literary; ですら)"
+  },
+  {
+    "pattern": "〜だの〜だの",
+    "level": 1,
+    "gloss": "~ and ~ and so on (dissatisfied listing)"
+  },
+  {
+    "pattern": "〜とて",
+    "level": 1,
+    "gloss": "even, even if (formal; 私とて)"
+  },
+  {
+    "pattern": "〜たが最後",
+    "level": 1,
+    "gloss": "once (done), irreversibly (たら最後)"
+  },
+  {
+    "pattern": "〜ぐるみ",
+    "level": 1,
+    "gloss": "whole, entire, involving all (家族ぐるみ)"
+  },
+  {
+    "pattern": "〜始末だ",
+    "level": 1,
+    "gloss": "ended up in the sorry state of (この始末だ)"
+  },
+  {
+    "pattern": "〜だけましだ",
+    "level": 1,
+    "gloss": "at least it's better than (the worse case)"
+  },
+  {
+    "pattern": "〜ためしがない",
+    "level": 1,
+    "gloss": "never once has, no precedent of (成功したためしがない)"
+  },
+  {
+    "pattern": "〜ならまだしも",
+    "level": 1,
+    "gloss": "if it were ~ that would be one thing, but (はまだしも)"
+  },
+  {
+    "pattern": "〜ならいざしらず",
+    "level": 1,
+    "gloss": "setting aside the case of, that might be so for ~ but (はいざしらず)"
+  },
+  {
+    "pattern": "〜には及ばない",
+    "level": 1,
+    "gloss": "no need to (心配には及ばない); does not match"
+  },
+  {
+    "pattern": "〜に照らして",
+    "level": 1,
+    "gloss": "in light of, against (standards, precedent)"
+  },
+  {
+    "pattern": "〜に相違ない",
+    "level": 1,
+    "gloss": "must certainly be (formal に違いない)"
+  },
+  {
+    "pattern": "〜に越したことはない",
+    "level": 1,
+    "gloss": "nothing better than, best to (safe-side advice)"
+  },
+  {
+    "pattern": "〜ぶる",
+    "level": 1,
+    "gloss": "pretend to be, act like (学者ぶる; 偉ぶる)"
+  },
+  {
+    "pattern": "〜も同然だ",
+    "level": 1,
+    "gloss": "practically the same as, as good as (タダも同然)"
+  },
+  {
+    "pattern": "〜を踏まえて",
+    "level": 1,
+    "gloss": "based on, taking into account (facts, results)"
+  },
+  {
+    "pattern": "〜を経て",
+    "level": 1,
+    "gloss": "via, after going through (stages, time)"
+  },
+  {
+    "pattern": "〜きっての",
+    "level": 1,
+    "gloss": "the most ~ of, foremost in (当代きっての)"
+  },
+  {
+    "pattern": "〜矢先に",
+    "level": 1,
+    "gloss": "just when (one was about to)"
+  },
+  {
+    "pattern": "〜折に",
+    "level": 1,
+    "gloss": "on the occasion of, when (polite; 折には)"
+  },
+  {
+    "pattern": "〜放題",
+    "level": 1,
+    "gloss": "as much as one likes (食べ放題; したい放題)"
+  },
+  {
+    "pattern": "〜まくる",
+    "level": 1,
+    "gloss": "do like crazy, do over and over (colloquial: 買いまくる)"
+  },
+  {
+    "pattern": "〜てしかるべきだ",
+    "level": 1,
+    "gloss": "ought properly to be done, deserves to be"
+  },
+  {
+    "pattern": "〜のみ",
+    "level": 1,
+    "gloss": "only, solely (formal; ただ〜のみ)"
+  },
+  {
+    "pattern": "〜のみならず",
+    "level": 1,
+    "gloss": "not only ~ but also (formal; ひとり〜のみならず)"
+  },
+  {
+    "pattern": "〜こそあれ",
+    "level": 1,
+    "gloss": "though there may be (differences etc.); こそすれ"
+  },
+  {
+    "pattern": "〜ではあるまいし",
+    "level": 1,
+    "gloss": "it's not as if, you're not ~ so (じゃあるまいし)"
+  },
+  {
+    "pattern": "〜がたい",
+    "level": 1,
+    "gloss": "hard to, can scarcely (信じがたい, 許しがたい)"
+  },
+  {
+    "pattern": "〜上は",
+    "level": 1,
+    "gloss": "now that, since (formal resolve; からには)"
+  },
+  {
+    "pattern": "〜ぬ",
+    "level": 1,
+    "gloss": "literary negative (=ない): 知らぬ, 見知らぬ (contracted 〜ん)"
+  }
+]

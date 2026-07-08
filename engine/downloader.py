@@ -8,7 +8,7 @@ from urllib.parse import parse_qs, urlparse
 
 from .paths import ytdlp_path, ytdlp_extra_args, _NOWWIN
 from .local_file import is_local_file
-from .transcriber import TranscriptionError, transcribe_audio_to_srt
+from .transcriber import TranscriptionError, transcribe_audio_to_srt, words_sidecar_path
 
 
 def _resolve_transcription_engine(sub_lang: str, engine_pref: str = "auto",
@@ -344,6 +344,15 @@ def download_youtube(url, output_dir, progress_callback=None, cookie_browser=Non
 
     if progress_callback and audio_already_exists:
         progress_callback("Audio cache verified")
+
+    # force_transcription must beat the cache: a .srt left by an earlier
+    # subs-based run would otherwise short-circuit the ASR below and silently
+    # return the very subs the caller is trying to escape.
+    if force_transcription and srt_path.exists():
+        srt_path.unlink()
+        sidecar = words_sidecar_path(srt_path)
+        if sidecar.exists():
+            sidecar.unlink()
 
     # No uploaded subtitles present → transcribe (auto-captions were never
     # requested; see the --write-sub note above).

@@ -525,5 +525,308 @@ class LedgerTest(unittest.TestCase):
             "SELECT COUNT(*) FROM taste_events WHERE episode_id='eu'").fetchone()[0], 0)
 
 
+# --- phrases & grammar (GRAMMAR.md — one ledger, three item kinds) -------------
+
+MINI_JMDICT = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE JMdict [
+<!ENTITY exp "expressions (phrases, clauses, etc.)">
+<!ENTITY n "noun (common) (futsuumeishi)">
+]>
+<JMdict>
+<entry>
+<ent_seq>1</ent_seq>
+<k_ele><keb>気を付ける</keb><ke_pri>ichi1</ke_pri></k_ele>
+<r_ele><reb>きをつける</reb></r_ele>
+<sense><pos>&exp;</pos><gloss>to be careful</gloss><gloss>to pay attention</gloss></sense>
+</entry>
+<entry>
+<ent_seq>2</ent_seq>
+<k_ele><keb>犬</keb></k_ele>
+<r_ele><reb>いぬ</reb></r_ele>
+<sense><pos>&n;</pos><gloss>dog</gloss></sense>
+</entry>
+</JMdict>
+"""
+
+
+class PhraseGrammarTest(unittest.TestCase):
+    def setUp(self):
+        import io
+        import sqlite3
+        from tools import jmdict
+        self.conn = lc.open_db(":memory:")
+        self.jconn = sqlite3.connect(":memory:")
+        jmdict.build_db(self.jconn,
+                        jmdict.parse_entries(io.BytesIO(MINI_JMDICT.encode())))
+
+    def _stage1(self, episode_id):
+        # In the real pipeline Stage 1 (record_exposure) creates the episode
+        # row with a title before curate ever runs — mirror that.
+        ep, exp = _exposure_payload(episode_id, ["公園"])
+        lc.record_exposure(self.conn, ep, exp)
+
+    def _curate_phrase(self, episode_id, classification="comprehensible",
+                       canonical="気を付ける", jconn="default"):
+        self._stage1(episode_id)
+        curation = {"phrases": [{"sentence_idx": 0, "surface": "気を付けて",
+                                 "canonical": canonical,
+                                 "classification": classification}]}
+        return lc.record_curate_items(
+            self.conn, episode_id, curation,
+            jmdict_conn=self.jconn if jconn == "default" else jconn)
+
+    def _curate_grammar(self, episode_id, pattern="〜てしまう",
+                        classification="comprehensible", **extra):
+        self._stage1(episode_id)
+        curation = {"grammar": [{"sentence_idx": 0, "pattern": pattern,
+                                 "classification": classification, **extra}]}
+        return lc.record_curate_items(self.conn, episode_id, curation)
+
+    # --- phrases (Phase 1 acceptance) --------------------------------------
+
+    def test_is_headword(self):
+        from tools import jmdict
+        self.assertTrue(jmdict.is_headword(self.jconn, "気を付ける"))
+        self.assertTrue(jmdict.is_headword(self.jconn, "きをつける"))
+        self.assertFalse(jmdict.is_headword(self.jconn, "存在しない語"))
+
+    def test_phrase_validation_rules(self):
+        # not a JMdict headword → rejected, never key-minted
+        r = self._curate_phrase("p0", canonical="変な組み合わせ")
+        self.assertEqual(r["phrases"]["recorded"], 0)
+        self.assertEqual(r["phrases"]["rejected"][0]["reason"],
+                         "not_a_jmdict_headword")
+        # a single-token headword is a word, not a phrase (the canonical-form
+        # rule: 犬 is a headword but tokenizes to one unit)
+        r = self._curate_phrase("p0", canonical="犬")
+        self.assertEqual(r["phrases"]["rejected"][0]["reason"], "single_token")
+        # no jmdict.db → validation can't run → reject, don't guess
+        r = self._curate_phrase("p0", jconn=None)
+        self.assertEqual(r["phrases"]["rejected"][0]["reason"],
+                         "jmdict_unavailable")
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM lemmas WHERE kind='phrase'").fetchone()[0], 0)
+
+    def test_phrase_recorded_with_jmdict_reading(self):
+        r = self._curate_phrase("p1")
+        self.assertEqual(r["phrases"]["recorded"], 1)
+        row = self.conn.execute(
+            "SELECT kind, reading, pos FROM lemmas WHERE lemma='気を付ける'").fetchone()
+        self.assertEqual(row["kind"], "phrase")
+        self.assertEqual(row["reading"], "きをつける")
+        self.assertEqual(row["pos"], "expression")
+        # idempotent re-run (P4, kind-aware index)
+        r2 = self._curate_phrase("p1")
+        self.assertEqual(r2["phrases"]["recorded"], 0)
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM evidence WHERE kind='phrase'").fetchone()[0], 1)
+
+    def test_phrase_exposure_confirm_known_flow(self):
+        # phrases carry no corpus rank → rare-word bar (θ=6, spread 4)
+        for i in range(6):
+            self._curate_phrase(f"pe{i}")
+            lc.mark_watched(self.conn, f"pe{i}")
+        lc.promote(self.conn)
+        row = self.conn.execute(
+            "SELECT status, confirm_candidate, exposure_count FROM lemmas "
+            "WHERE lemma='気を付ける'").fetchone()
+        self.assertEqual(row["status"], "learning")  # never auto-known
+        self.assertEqual(row["confirm_candidate"], 1)
+        self.assertEqual(row["exposure_count"], 6)
+
+        queue = lc.query_confirm_queue(self.conn)
+        ph = next(c for c in queue if c["kind"] == "phrase")
+        self.assertEqual(ph["lemma"], "気を付ける")
+        self.assertEqual(ph["reading"], "きをつける")
+        self.assertTrue(ph["episodes"])  # watched-episode context
+
+        lc.confirm_known_lemma(self.conn, "気を付ける", kind="phrase")
+        lc.promote(self.conn)
+        self.assertEqual(self.conn.execute(
+            "SELECT status FROM lemmas WHERE lemma='気を付ける'").fetchone()["status"],
+            "known")
+        # words-only headline unaffected; the phrase rides the sibling block
+        summary = lc.query_summary(self.conn)
+        self.assertEqual(summary["lemmas_by_status"].get("known", 0), 0)
+        self.assertEqual(summary["phrases"]["by_status"]["known"], 1)
+
+    def test_phrase_too_hard_exposures_do_not_qualify(self):
+        for i in range(6):
+            self._curate_phrase(f"ph{i}", classification="too_hard")
+            lc.mark_watched(self.conn, f"ph{i}")
+        lc.promote(self.conn)
+        row = self.conn.execute(
+            "SELECT confirm_candidate, exposure_count FROM lemmas "
+            "WHERE lemma='気を付ける'").fetchone()
+        self.assertEqual(row["confirm_candidate"], 0)  # activated, not qualifying
+        self.assertEqual(row["exposure_count"], 6)
+
+    def test_add_phrase_deliberate_and_purge_survival(self):
+        lc.add_phrase(self.conn, "取り返しがつかない", reading="とりかえしがつかない")
+        with self.assertRaises(ValueError):
+            lc.add_phrase(self.conn, "犬")  # single token — never a phrase key
+        # an unrelated purge must not sweep the deliberately tracked key
+        ep, exp = _exposure_payload("px", ["猫"])
+        lc.record_exposure(self.conn, ep, exp)
+        lc.purge_episode(self.conn, "px")
+        self.assertEqual(self.conn.execute(
+            "SELECT kind FROM lemmas WHERE lemma='取り返しがつかない'"
+        ).fetchone()["kind"], "phrase")
+
+    # --- grammar (Phase 2 acceptance) ---------------------------------------
+
+    SEED = [{"pattern": "〜てしまう", "level": 5, "gloss": "completion/regret"},
+            {"pattern": "〜させられる", "level": 3, "gloss": "causative-passive"}]
+
+    def test_real_taxonomy_seed_loads(self):
+        # the once-authored inventory (ledger/grammar_taxonomy.json) is the
+        # canonical key space — it must load clean and stay collision-free
+        path = Path(__file__).resolve().parent.parent / "ledger" / "grammar_taxonomy.json"
+        rows = json.loads(path.read_text(encoding="utf-8"))
+        self.assertGreaterEqual(len(rows), 400)
+        self.assertEqual(len({r["pattern"] for r in rows}), len(rows))
+        self.assertTrue(all(r["level"] in (1, 2, 3, 4, 5) for r in rows))
+        r = lc.seed_grammar_points(self.conn, rows)
+        self.assertEqual(r["grammar_points"], len(rows))
+        # every seeded row starts at the unknown baseline
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM grammar_points WHERE status != 'unknown'"
+        ).fetchone()[0], 0)
+
+    def test_grammar_seed_and_theta(self):
+        r = lc.seed_grammar_points(self.conn, self.SEED)
+        self.assertEqual(r["grammar_points"], 2)
+        # re-seeding updates gloss/level but never promote's verdict columns
+        self.conn.execute(
+            "UPDATE grammar_points SET status='known' WHERE pattern='〜てしまう'")
+        self.conn.commit()
+        lc.seed_grammar_points(self.conn, [
+            {"pattern": "〜てしまう", "level": 4, "gloss": "revised"}])
+        row = self.conn.execute(
+            "SELECT level, gloss, status FROM grammar_points "
+            "WHERE pattern='〜てしまう'").fetchone()
+        self.assertEqual((row["level"], row["gloss"], row["status"]),
+                         (4, "revised", "known"))
+        # θ ladder: easy tiers need little, N1 the most, unplaced = strictest
+        self.assertEqual(lc.grammar_theta_for(5), (2, 2))
+        self.assertEqual(lc.grammar_theta_for(1), (5, 4))
+        self.assertEqual(lc.grammar_theta_for(None), lc.GRAMMAR_THETA[1])
+
+    def test_grammar_exposure_confirm_flow(self):
+        lc.seed_grammar_points(self.conn, self.SEED)
+        # N5 tier: θ=2 exposures over 2 episodes — qualifying classification only
+        for i in range(2):
+            r = self._curate_grammar(f"g{i}",
+                                     form_note="食べちゃった = 食べる+てしまう")
+            self.assertEqual(r["grammar"]["recorded"], 1)
+            lc.mark_watched(self.conn, f"g{i}")
+        lc.promote(self.conn)
+        row = self.conn.execute(
+            "SELECT status, confirm_candidate FROM grammar_points "
+            "WHERE pattern='〜てしまう'").fetchone()
+        self.assertEqual(row["status"], "learning")  # never auto-known
+        self.assertEqual(row["confirm_candidate"], 1)
+
+        queue = lc.query_confirm_queue(self.conn)
+        g = next(c for c in queue if c["kind"] == "grammar")
+        self.assertEqual((g["pattern"], g["level"], g["gloss"]),
+                         ("〜てしまう", 5, "completion/regret"))
+        self.assertTrue(g["episodes"])
+
+        # defer snoozes it out of the queue, still learning
+        lc.defer_known_lemma(self.conn, "〜てしまう", kind="grammar")
+        lc.promote(self.conn)
+        self.assertEqual([c for c in lc.query_confirm_queue(self.conn)
+                          if c["kind"] == "grammar"], [])
+        # a fresh qualifying exposure after the defer re-surfaces it
+        time.sleep(1.1)
+        self._curate_grammar("g9")
+        lc.mark_watched(self.conn, "g9")
+        lc.promote(self.conn)
+        self.assertTrue([c for c in lc.query_confirm_queue(self.conn)
+                         if c["kind"] == "grammar"])
+        # confirm → known in grammar_points
+        lc.confirm_known_lemma(self.conn, "〜てしまう", kind="grammar")
+        lc.promote(self.conn)
+        self.assertEqual(self.conn.execute(
+            "SELECT status FROM grammar_points WHERE pattern='〜てしまう'"
+        ).fetchone()["status"], "known")
+
+    def test_grammar_too_hard_exposures_do_not_qualify(self):
+        lc.seed_grammar_points(self.conn, self.SEED)
+        for i in range(3):
+            self._curate_grammar(f"gt{i}", classification="too_hard")
+            lc.mark_watched(self.conn, f"gt{i}")
+        lc.promote(self.conn)
+        row = self.conn.execute(
+            "SELECT status, confirm_candidate, exposure_count FROM grammar_points "
+            "WHERE pattern='〜てしまう'").fetchone()
+        self.assertEqual(row["confirm_candidate"], 0)
+        self.assertEqual(row["exposure_count"], 3)
+
+    def test_unrecognized_pattern_goes_to_proposed(self):
+        lc.seed_grammar_points(self.conn, self.SEED)
+        r = self._curate_grammar("gp0", pattern="〜てまう",
+                                 example="やってまうで", gloss="Kansai てしまう")
+        self.assertEqual(r["grammar"]["recorded"], 0)
+        self.assertEqual(r["grammar"]["proposed"], ["〜てまう"])
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM evidence WHERE kind='grammar'").fetchone()[0], 0)
+        # re-sighting bumps `seen`, keeps the first example
+        self._curate_grammar("gp1", pattern="〜てまう")
+        row = self.conn.execute(
+            "SELECT seen, example FROM grammar_proposed WHERE pattern='〜てまう'"
+        ).fetchone()
+        self.assertEqual(row["seen"], 2)
+        self.assertEqual(row["example"], "やってまうで")
+
+        # deliberate approval moves it into the taxonomy; recording then works
+        lc.approve_grammar_proposal(self.conn, "〜てまう", level=3)
+        self.assertIsNone(self.conn.execute(
+            "SELECT 1 FROM grammar_proposed WHERE pattern='〜てまう'").fetchone())
+        r = self._curate_grammar("gp2", pattern="〜てまう")
+        self.assertEqual(r["grammar"]["recorded"], 1)
+        with self.assertRaises(KeyError):
+            lc.approve_grammar_proposal(self.conn, "〜ないやつ")
+
+    def test_word_and_grammar_share_string_without_collision(self):
+        # kind is part of the exposure key and the promote group: the same
+        # string tracked as a word and a grammar pattern never merges.
+        lc.seed_grammar_points(self.conn, [
+            {"pattern": "ばかり", "level": 4, "gloss": "just/only"}])
+        ep, exp = _exposure_payload("wc0", ["ばかり"])
+        lc.record_exposure(self.conn, ep, exp)
+        self._curate_grammar("wc0", pattern="ばかり")
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM evidence WHERE lemma='ばかり'").fetchone()[0], 2)
+        lc.mark_watched(self.conn, "wc0")
+        lc.promote(self.conn)
+        self.assertEqual(self.conn.execute(
+            "SELECT kind FROM lemmas WHERE lemma='ばかり'").fetchone()["kind"],
+            "word")
+        self.assertIsNotNone(self.conn.execute(
+            "SELECT 1 FROM grammar_points WHERE pattern='ばかり'").fetchone())
+
+    def test_summary_confirm_total_spans_kinds(self):
+        lc.seed_grammar_points(self.conn, self.SEED)
+        for i in range(2):
+            self._curate_grammar(f"s{i}")
+            self._curate_phrase(f"s{i}")
+            lc.mark_watched(self.conn, f"s{i}")
+        for i in range(2, 6):
+            self._curate_phrase(f"s{i}")
+            lc.mark_watched(self.conn, f"s{i}")
+        lc.promote(self.conn)
+        summary = lc.query_summary(self.conn)
+        self.assertEqual(summary["phrases"]["confirm_candidates"], 1)
+        self.assertEqual(summary["grammar"]["confirm_candidates"], 1)
+        # the headline total spans all kinds (the Stage-1 word 公園 also
+        # crossed its bar here — 6 watched qualifying exposures)
+        word_cc = self.conn.execute(
+            "SELECT COUNT(*) FROM lemmas WHERE confirm_candidate=1 "
+            "AND kind='word'").fetchone()[0]
+        self.assertEqual(summary["confirm_candidates"], word_cc + 2)
+
+
 if __name__ == "__main__":
     unittest.main()

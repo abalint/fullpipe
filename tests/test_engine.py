@@ -184,6 +184,52 @@ class LemmaTest(unittest.TestCase):
         self.assertIn("縄張り", exp)
         self.assertEqual(exp["縄張り"]["other_unknown_count"], 1)
 
+    # --- phrase units (GRAMMAR.md — i+1 with phrases) -----------------------
+
+    def test_phrase_units_match_inflected(self):
+        # the headword's lemma sequence matches the inflected surface:
+        # 気を付けて → 気|を|付ける|て contains 気|を|付ける
+        ks = L.KnownSet(known=set(), phrases={"気を付ける": "known"})
+        units = ks.phrase_units(L.tokenize("今日は気を付けてね。"))
+        self.assertEqual([(u["phrase"], u["status"]) for u in units],
+                         [("気を付ける", "known")])
+
+    def test_single_token_phrase_key_never_matches(self):
+        # defensive: a single-token key can't be a phrase unit — it would turn
+        # every ordinary word into a "phrase"
+        ks = L.KnownSet(known=set(), phrases={"犬": "known"})
+        self.assertEqual(ks.phrase_units(L.tokenize("犬が走る。")), [])
+
+    def test_unknown_phrase_is_one_unit_iplus1(self):
+        # every word is known; the phrase itself is the single unknown unit
+        ks = L.KnownSet(known={"今日", "気", "付ける", "する"},
+                        phrases={"気を付ける": "unknown"})
+        d = L.analyze_sentence("今日は気を付けて。", ks)
+        self.assertEqual(d["classification"], "i_plus_1")
+        self.assertEqual(d["unknown_lemmas"], ["気を付ける"])
+
+    def test_known_phrase_covers_unknown_components(self):
+        # 付ける is unknown as a word, but the known phrase is the unit in
+        # play — its component tokens leave the unknown tally
+        ks = L.KnownSet(known={"今日"}, phrases={"気を付ける": "known"})
+        d = L.analyze_sentence("今日は気を付けて。", ks)
+        self.assertEqual(d["classification"], "comprehensible")
+        self.assertEqual(d["unknown_lemmas"], [])
+
+    def test_learning_phrase_is_reinforcement(self):
+        ks = L.KnownSet(known={"今日"}, phrases={"気を付ける": "learning"})
+        d = L.analyze_sentence("今日は気を付けて。", ks)
+        self.assertEqual(d["classification"], "reinforcement")
+
+    def test_transcript_emits_phrase_exposures(self):
+        ks = L.KnownSet(known={"今日", "犬", "走る"},
+                        phrases={"気を付ける": "learning"})
+        sentences = [(0.0, 2.0, "今日は気を付けて。"), (2.0, 4.0, "犬が走る。")]
+        exp = L.analyze_transcript(sentences, ks)["exposures"]
+        self.assertEqual(exp["気を付ける"]["kind"], "phrase")
+        self.assertEqual(exp["気を付ける"]["classification"], "reinforcement")
+        self.assertNotIn("kind", exp["犬"])  # words are unmarked (default)
+
 
 class WordAlignTest(unittest.TestCase):
     def test_char_timeline_interpolates_within_word_spans(self):
