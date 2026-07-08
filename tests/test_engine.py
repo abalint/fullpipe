@@ -131,6 +131,17 @@ class LemmaTest(unittest.TestCase):
         lemmas = [t.lemma for t in tokens]
         self.assertIn("警察官", lemmas)  # mode C keeps the compound whole
 
+    def test_furigana_over_kanji_only(self):
+        # okurigana is peeled: reading sits on the kanji, す/く stay bare
+        self.assertEqual(L.furigana("通す"), [["通", "とお"], ["す", None]])
+        self.assertEqual(L.furigana("行く"), [["行", "い"], ["く", None]])
+        # no okurigana → whole-word ruby; kana-only → no reading at all
+        self.assertEqual(L.furigana("大丈夫"), [["大丈夫", "だいじょうぶ"]])
+        self.assertEqual(L.furigana("くれる"), [["くれる", None]])
+        # segments always reconstruct the input exactly
+        for w in ("通す", "行く", "大丈夫", "くれる", "食べる"):
+            self.assertEqual("".join(s[0] for s in L.furigana(w)), w)
+
     def test_content_tokens_filters_particles(self):
         tokens = L.content_tokens("犬が走った。")
         lemmas = [t.lemma for t in tokens]

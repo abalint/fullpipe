@@ -769,14 +769,16 @@ def query_confirm_queue(conn):
         seen = titles.setdefault(r["lemma"], [])
         if r["title"] and r["title"] not in seen:
             seen.append(r["title"])
-    # lemmas.reading is Sudachi reading_form (katakana); furigana wants hiragana,
-    # matching the reading normalization coverage already does on the wire.
-    from engine.lemma import kata_to_hira
+    # Furigana over kanji only: reading_segs peels okurigana off the lemma's
+    # dictionary reading (通す → 通[とお]す). Also normalize the flat reading to
+    # hiragana, matching what coverage emits on the wire.
+    from engine.lemma import furigana, kata_to_hira
     out = []
     for r in rows:
         d = dict(r)
         if d.get("reading"):
             d["reading"] = kata_to_hira(d["reading"])
+        d["reading_segs"] = furigana(r["lemma"])
         d["episodes"] = titles.get(r["lemma"], [])
         out.append(d)
     return out
