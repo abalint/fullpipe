@@ -178,6 +178,36 @@ class TestQueue(unittest.TestCase):
         q.set_state(self.conn, job["id"], "prepared", episode_id=EP)
         self.assertEqual(q.get_job(self.conn, EP)["episode_id"], EP)
 
+    def test_reap_stale_reclaims_stage1_and_pushing(self):
+        # a crash mid-flight strands jobs in states DELETE also refuses — the
+        # reaper must free them so the executor and the phone can proceed.
+        stage1, _ = q.enqueue(self.conn, "https://youtu.be/aaaaaaaaaaa")
+        q.set_state(self.conn, stage1["id"], "transcribing", error=None)
+        pushing, _ = q.enqueue(self.conn, "https://youtu.be/bbbbbbbbbbb")
+        q.set_state(self.conn, pushing["id"], "pushing")
+        untouched, _ = q.enqueue(self.conn, "https://youtu.be/ccccccccccc")
+        q.set_state(self.conn, untouched["id"], "staged")
+
+        reaped = q.reap_stale(self.conn)
+        self.assertEqual(set(reaped), {stage1["id"], pushing["id"]})
+        self.assertEqual(q.get_job(self.conn, stage1["id"])["state"], "queued")
+        pj = q.get_job(self.conn, pushing["id"])
+        self.assertEqual(pj["state"], "watched")  # mark_watched already ran
+        self.assertIn("retry", pj["error"])
+        self.assertEqual(q.get_job(self.conn, untouched["id"])["state"], "staged")
+        self.assertEqual(q.reap_stale(self.conn), [])  # idempotent
+
+    def test_retry_job_requeues_only_failed(self):
+        job, _ = q.enqueue(self.conn, "https://youtu.be/abcDEF12345")
+        q.set_state(self.conn, job["id"], "failed", error="boom")
+        updated = q.retry_job(self.conn, job["id"])
+        self.assertEqual(updated["state"], "queued")
+        self.assertIsNone(updated["error"])
+        # a non-failed job (or a ghost) is not retryable
+        q.set_state(self.conn, job["id"], "staged")
+        self.assertIsNone(q.retry_job(self.conn, job["id"]))
+        self.assertIsNone(q.retry_job(self.conn, "ghost"))
+
 
 class TestRoutes(ServerTestBase):
     def test_auth_required(self):
@@ -593,6 +623,39 @@ class TestRoutes(ServerTestBase):
         r = self.client.get("/coverage", headers=self.auth)
         self.assertEqual(r.json()["summary"]["episodes"]["total"], 1)
         self.assertIn("needs_review", r.json())
+
+    def test_retry_requeues_failed_job(self):
+        conn, job = self._enqueue_at("failed")
+        q.set_state(conn, job["id"], "failed", episode_id=EP, error="boom")
+        r = self.client.post(f"/jobs/{EP}/retry", headers=self.auth)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["state"], "queued")
+        self.assertIsNone(r.json()["error"])
+        # retrying a non-failed job is a 409, a ghost is a 404
+        q.set_state(conn, job["id"], "staged", episode_id=EP)
+        self.assertEqual(self.client.post(f"/jobs/{EP}/retry", headers=self.auth)
+                         .status_code, 409)
+        self.assertEqual(self.client.post("/jobs/ghost/retry", headers=self.auth)
+                         .status_code, 404)
+
+    def test_stats_endpoint(self):
+        # seed the ledger: a known lemma in-corpus, plus an exposure + freq row
+        self.stage_episode()
+        conn = lc.open_db(self.cfg["ledger_db"])
+        conn.execute("INSERT INTO freq (lemma, rank, source) VALUES ('公園', 120, 'g')")
+        # 公園 already exists (record_exposure seeded it) — promote it to known
+        conn.execute("UPDATE lemmas SET status='known' WHERE lemma='公園'")
+        conn.commit()
+        conn.close()
+        r = self.client.get("/stats", headers=self.auth)
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertGreaterEqual(body["known"], 1)
+        self.assertEqual(body["episodes_total"], 1)
+        self.assertEqual(body["words_encountered"], 1)  # 公園 exposure
+        # 公園 (rank 120) counts toward every band whose ceiling ≥ 120
+        band1000 = next(b for b in body["freq_bands"] if b["band"] == 1000)
+        self.assertGreaterEqual(band1000["known"], 1)
 
 
 class TestSelect(unittest.TestCase):

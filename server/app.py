@@ -174,6 +174,19 @@ def create_app(cfg, start_worker=True):
                     episode_id=job["episode_id"], title=job.get("title"))
         return q.get_job(conn, job["id"])
 
+    @app.post("/jobs/{id_}/retry", dependencies=[Depends(auth)])
+    def post_retry(id_: str):
+        """Re-queue a failed Stage-1 job — the phone's Retry button. The worker
+        picks it up on its next poll (acquire is idempotent). Only `failed`
+        jobs are retryable this way; a stranded in-flight job is reclaimed
+        automatically at server startup (jobqueue.reap_stale)."""
+        job = get_job_or_404(id_)
+        updated = q.retry_job(queue_conn(), job["id"])
+        if updated is None:
+            raise HTTPException(
+                409, f"job is {job['state']}, not failed — nothing to retry")
+        return updated
+
     @app.post("/jobs/{id_}/passive", dependencies=[Depends(auth)])
     def post_passive(id_: str, body: dict):
         """Move a watched episode into (or back out of) the passive-listening
@@ -472,6 +485,46 @@ def create_app(cfg, start_worker=True):
             raise HTTPException(404, str(e))
 
     # --- ledger reads ---------------------------------------------------------------
+
+    FREQ_BANDS = (1000, 2000, 5000, 10000)
+
+    @app.get("/stats", dependencies=[Depends(auth)])
+    def get_stats():
+        """Progress dashboard for the app's Stats tab: the ledger's headline
+        counts plus frequency-band coverage — of the N most common corpus
+        lemmas (show-penetration rank), how many are known. Ledger-only (no
+        AnkiConnect), so it stays fast and works with Anki closed."""
+        conn = ledger_conn()
+        summary = lc.query_summary(conn)
+        by_status = summary["lemmas_by_status"]
+        by_source = summary["evidence_by_source"]
+
+        # frequency-band coverage: known lemmas ∩ corpus ranks, bucketed.
+        # Join known (~few k rows) against freq — cheap despite freq's ~300k.
+        known_ranks = [r[0] for r in conn.execute(
+            "SELECT f.rank FROM lemmas l JOIN freq f ON f.lemma = l.lemma "
+            "WHERE l.status = 'known' AND f.rank IS NOT NULL")]
+        bands = [{"band": b,
+                  "known": sum(1 for r in known_ranks if r <= b),
+                  "total": b}
+                 for b in FREQ_BANDS]
+
+        distinct_exposed = conn.execute(
+            "SELECT COUNT(DISTINCT lemma) FROM evidence "
+            "WHERE source = 'exposure'").fetchone()[0]
+
+        return {
+            "known": by_status.get("known", 0),
+            "learning": by_status.get("learning", 0),
+            "episodes_watched": summary["episodes"]["watched"],
+            "episodes_total": summary["episodes"]["total"],
+            "cards_minted": summary["cards_minted"],
+            "needs_review": summary["needs_review"],
+            "words_encountered": distinct_exposed,
+            "want_to_learn": len(lc.active_interest(conn)),
+            "freq_bands": bands,
+            "evidence_by_source": by_source,
+        }
 
     @app.get("/coverage", dependencies=[Depends(auth)])
     def get_coverage():

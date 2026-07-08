@@ -228,6 +228,17 @@ streaming never worked reliably and the whole flow assumes local files on the
 phone. Server media endpoints stay (they serve the downloads; ?t= query auth
 kept for Filesystem.downloadFile).
 
+**Progress surface + job recovery (2026-07-08, `AUDIT.md` #1/#2):** `GET /stats`
+aggregates the ledger — known/learning counts, episodes watched, cards minted,
+distinct words encountered, and **frequency-band coverage** (of the top
+1k/2k/5k/10k show-penetration lemmas, how many are known) — feeding a new
+**Progress** tab in the app (offline-cached like the queue snapshot). Separately,
+`jobqueue.reap_stale` (run at every executor startup — server `Worker.run`, CLI
+`drain`) reclaims jobs stranded by a crash: dangling Stage-1 states → `queued`,
+stranded `pushing` → `watched` with a re-submit-to-retry error, so a wedged row
+is neither un-runnable nor un-deletable. `POST /jobs/{id}/retry` re-queues a
+failed job (the app's `↻ retry` button). See `AUDIT.md` for the full gap list.
+
 Next: `/reconcile` skill for the offline-blob path (the online path is now
 `POST /taps`), `/setup` config interview, teach `/immerse` to consume
 `prepared` jobs (skip re-acquire), WorkManager video pull + retention on the

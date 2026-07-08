@@ -159,6 +159,55 @@ def next_queued(conn):
     ).fetchone())
 
 
+def reap_stale(conn):
+    """Recover jobs stranded by a process crash/restart. Called once at
+    executor startup (the server's Worker.run, the CLI drain) — the single
+    executor means nothing is *legitimately* mid-flight at that moment, so any
+    in-flight state is a corpse to reclaim:
+
+      • a Stage-1 state (downloading/transcribing/tokenizing) → back to
+        `queued`, so the worker simply re-runs it (acquire is idempotent);
+      • `pushing` → `watched` with an error, since mark_watched already ran
+        before the close-out thread that died — the remaining card push is
+        exactly the phone's existing re-POST-/watched retry.
+
+    Without this a crash left the row un-runnable *and* un-deletable (DELETE
+    refuses these states). Returns the list of reclaimed job ids."""
+    ts = now_iso()
+    reaped = []
+    for row in conn.execute(
+            "SELECT id, state FROM jobs WHERE state IN (?,?,?,?)",
+            (*STAGE1_STATES, "pushing")).fetchall():
+        if row["state"] == "pushing":
+            conn.execute(
+                "UPDATE jobs SET state='watched', progress_msg=NULL, "
+                "error=?, updated_at=? WHERE id=?",
+                ("card push interrupted by a server restart — re-submit to retry",
+                 ts, row["id"]))
+        else:
+            conn.execute(
+                "UPDATE jobs SET state='queued', progress_msg=NULL, error=NULL, "
+                "updated_at=? WHERE id=?", (ts, row["id"]))
+        reaped.append(row["id"])
+    if reaped:
+        conn.commit()
+    return reaped
+
+
+def retry_job(conn, job_id):
+    """Re-queue a failed job (the phone's Retry button). Returns the updated
+    job dict, or None if the job doesn't exist or isn't in a retryable state."""
+    row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+    if row is None or row["state"] != "failed":
+        return None
+    conn.execute(
+        "UPDATE jobs SET state='queued', error=NULL, progress_msg=NULL, "
+        "updated_at=? WHERE id=?", (now_iso(), job_id))
+    conn.commit()
+    return job_dict(conn.execute(
+        "SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone())
+
+
 # --- CLI (used by /immerse for queue review; humans can poke it too) -----------
 
 def main(argv=None):

@@ -151,7 +151,8 @@ def drain(cfg, conn, sources=(), log=print):
     and pick up Stage-2 artifacts. Same states, same artifacts as the
     server's thread — the phone sees identical results next time it syncs.
     """
-    summary = {"enqueued": [], "prepared": [], "failed": [], "skipped": []}
+    summary = {"enqueued": [], "prepared": [], "failed": [], "skipped": [],
+               "reaped": q.reap_stale(conn)}
     for src in sources:
         job, created = q.enqueue(conn, src)
         if not created and job["state"] != "queued":
@@ -209,6 +210,10 @@ class Worker(threading.Thread):
 
     def run(self):
         conn = q.open_queue(self.queue_db)
+        reaped = q.reap_stale(conn)
+        if reaped:
+            self.log(f"worker: reclaimed {len(reaped)} stranded job(s): "
+                     f"{', '.join(reaped)}")
         self.log("worker: draining queue")
         while not self._stop.is_set():
             try:
