@@ -55,7 +55,14 @@
 
   "deck": {
     "name": "Immersion Mining",
-    "new_cards_per_day": 15,
+
+    "_comment_volume": "There is deliberately no cards-per-day/per-episode cap: card volume is an outcome of the curation quality bar (zero from an episode is fine), never of a count.",
+
+    "_comment_audio_gate": "Push-time clip validation: each card's cut clip is re-transcribed on the GPU service (asr.gpu_url) and the card is dropped unless the sentence is actually audible (matched-chars/expected >= min_match after kana/punctuation normalization). On by default when gpu_url is set; fails open if the desktop is unreachable.",
+    "audio_gate": {
+      "enabled": true,
+      "min_match": 0.6
+    },
 
     "_comment_loudness": "Card audio clips are loudness-normalized to this integrated loudness (LUFS) so volume is consistent across episodes when reviewing. Set to null to keep the source volume untouched.",
     "clip_target_lufs": -16,

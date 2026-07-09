@@ -622,8 +622,15 @@ computing i+1 leverage, ranking which unknowns unlock the most future sentences,
 frequency, "does this word recur enough to deserve a card." *The corpus scores and
 selects; the video supplies the actual card.*
 
-**Low volume (~10 new cards/day) is the enabler.** The job is not "mine all 40 i+1
-sentences" — it's "surface the ~10 highest-value and curate ruthlessly." Quality bar:
+**Quality density, not quotas (the user's rule, restated 2026-07-08: no budget, no cap
+of any kind).** The job is not "mine all 40 i+1 sentences," and it is not "fill N
+slots" either: it's "card only what clears the bar, however few that is." Zero from an
+episode is a fine outcome. Card volume is an *emergent* property of the bar below; any
+numeric target invites padding, and padded cards get deleted on first view in Anki —
+pure review-time waste. The user's empirical estimate of the base rate — an observation
+of reality, **not** a guideline — is roughly one genuinely excellent card per 10 minutes
+of runtime at best; a pool much denser than that is evidence the bar slipped, and the
+number has no other use. Quality bar:
 - complete merged sentence (drop fragments/trail-offs),
 - clean audio, dialogue not drowned by BGM/SFX,
 - target word transcribed correctly and in the card's intended sense/reading,
@@ -633,8 +640,23 @@ sentences" — it's "surface the ~10 highest-value and curate ruthlessly." Quali
 
 Curation may relax on *incidental surrounding-word* ASR errors (the card's audio is the
 real native line regardless of text) but stays strict on the **target word** and the
-**audio**. Rank survivors by *leverage × audio-quality*, keep the top ~10. A short pool
-under the cap is the expected result of these bars, not a shortfall.
+**audio**. Rank survivors by *leverage × audio-quality* and keep only what genuinely
+clears the bar — a small pool is the expected result, not a shortfall.
+
+**Push-time guards (tools/deck.py, 2026-07-08).** The curation bars above are prose;
+`tools.deck` is the one layer every push path crosses (server close-out, direct-mode CLI,
+`.apkg` fallback), so it enforces the mechanical ones in code:
+- *Interest first:* standing `tap_interest` lemmas jump the queue (stable sort — pool
+  order stays the tiebreak) on every path, including direct mode, which previously
+  bypassed `tools.select` entirely.
+- *Clip-span sanity:* spans outside 1.5–15s are rejected — a bad audio card regardless
+  of text.
+- *Audio gate:* each cut clip is re-transcribed on the GPU service (`asr.gpu_url`) and
+  the card is dropped unless the sentence is audible in the clip
+  (matched-chars/expected ≥ `deck.audio_gate.min_match`, kana/punctuation-normalized).
+  Fails open when the desktop is unreachable — a dark PC must not block the phone's
+  mark-watched close-out. This is the audio-based `probe_speech` evolution anticipated
+  by the discovery gate note above, applied per-card.
 
 **Consequence for the ledger:** with few cards but fast immersion learning, cards cover
 only ~10% of knowledge growth. The **exposure/tap pathways are the primary record** of

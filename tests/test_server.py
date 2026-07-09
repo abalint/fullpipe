@@ -308,9 +308,11 @@ class TestRoutes(ServerTestBase):
         self.assertEqual(self.client.get("/transcript/nope", headers=self.auth)
                          .status_code, 404)
         self.assertEqual(self.client.get(f"/transcript/{EP}").status_code, 401)
-        # pre-curation: no annotation keys at all
+        # pre-curation: no annotation keys at all, and flagged uncurated so
+        # the app knows to refresh its sidecar once curation lands
         self.assertNotIn("grammar", data["sentences"][0])
         self.assertNotIn("phrases", data["sentences"][0])
+        self.assertFalse(data["curated"])
 
     def test_transcript_carries_curated_grammar_and_phrases(self):
         # the player popup's line context (GRAMMAR.md): curate.json grammar/
@@ -333,6 +335,7 @@ class TestRoutes(ServerTestBase):
             ],
         })
         data = self.client.get(f"/transcript/{EP}", headers=self.auth).json()
+        self.assertTrue(data["curated"])
         self.assertNotIn("grammar", data["sentences"][0])
         self.assertEqual(data["sentences"][1]["grammar"], [
             {"pattern": "〜てしまう", "note": "行っちゃった = 行く+てしまう"},
@@ -366,6 +369,37 @@ class TestRoutes(ServerTestBase):
         self.assertEqual(self.client.get("/definitions/nope", headers=self.auth)
                          .status_code, 404)
         self.assertEqual(self.client.get(f"/definitions/{EP}").status_code, 401)
+
+    def test_definitions_merge_curate_authored_defs(self):
+        # words JMdict lacks get their gloss from the curate pass (`defs` in
+        # curate.json), flagged ai — and never shadow a real JMdict entry
+        import sqlite3
+
+        from tools import jmdict
+        ep_dir = self.stage_episode()
+        conn = sqlite3.connect(jmdict.db_path(self.cfg))
+        jmdict.build_db(conn, iter([
+            (2, {"公園", "こうえん"},
+             {"k": ["公園"], "r": ["こうえん"],
+              "s": [{"pos": ["noun"], "g": ["(public) park"]}]}),
+        ]))
+        conn.close()
+        write_json(ep_dir / "curate.json", {
+            "synopsis": "", "keywords": [], "focal_points": [], "exclude": [],
+            "defs": [
+                {"word": "犬", "reading": "いぬ", "gloss": "dog",
+                 "pos": "noun"},
+                {"word": "公園", "reading": "こうえん",
+                 "gloss": "must not shadow JMdict"},
+                {"word": "ノイズ"},  # glossless row is dropped, not a 500
+            ],
+        })
+        data = self.client.get(f"/definitions/{EP}", headers=self.auth).json()
+        self.assertEqual(data["犬"], [{"k": ["犬"], "r": ["いぬ"],
+                                      "s": [{"pos": ["noun"], "g": ["dog"]}],
+                                      "ai": True}])
+        self.assertNotIn("ai", data["公園"][0])  # JMdict wins
+        self.assertNotIn("ノイズ", data)
 
     def test_video_and_subs(self):
         ep_dir = self.stage_episode()
@@ -826,7 +860,8 @@ class TestTypedConfirm(ServerTestBase):
 
 
 class TestSelect(unittest.TestCase):
-    """Pure selection rules: known prunes, interest jumps the queue, cap holds."""
+    """Pure selection rules: known prunes, interest jumps the queue — no cap
+    exists (card volume is the curation bar's outcome, never a count)."""
 
     POOL = [{"lemma": w, "sentence_idx": i, "reading": "", "english": w}
             for i, w in enumerate(["a", "b", "c", "d"])]
@@ -842,30 +877,30 @@ class TestSelect(unittest.TestCase):
     def test_known_pruned_interest_first(self):
         from tools.select import select_picks
         final = select_picks(self.POOL, self.COV,
-                             [["a", "k"], ["c", "h"]], cap=15)
+                             [["a", "k"], ["c", "h"]])
         self.assertEqual([p["lemma"] for p in final], ["c", "b", "d"])
 
-    def test_cap_and_rescue(self):
+    def test_rescue_only_true_i_plus_1(self):
         from tools.select import select_picks
         # e is rescuable (0 other unknowns, sane clip); f is not (3 others)
         final = select_picks(self.POOL, self.COV,
-                             [["e", "h"], ["f", "h"]], cap=3)
+                             [["e", "h"], ["f", "h"]])
         lemmas = [p["lemma"] for p in final]
         self.assertEqual(lemmas[0], "e")
         self.assertTrue(final[0].get("rescued"))
-        self.assertEqual(len(final), 3)
+        self.assertEqual(len(final), 5)  # whole pool + rescue — no cap
         self.assertNotIn("f", lemmas)
 
     def test_no_feedback_keeps_pool_order(self):
         from tools.select import select_picks
-        final = select_picks(self.POOL, self.COV, [], cap=2)
-        self.assertEqual([p["lemma"] for p in final], ["a", "b"])
+        final = select_picks(self.POOL, self.COV, [])
+        self.assertEqual([p["lemma"] for p in final], ["a", "b", "c", "d"])
 
     def test_standing_interest_prioritizes_pool_pick(self):
         # No taps this episode, but "c" is a carried-over wanted word: it
         # jumps ahead of pool order even without being re-tapped.
         from tools.select import select_picks
-        final = select_picks(self.POOL, self.COV, [], cap=2,
+        final = select_picks(self.POOL, self.COV, [],
                              standing_interest=["c"])
         self.assertEqual(final[0]["lemma"], "c")
 
@@ -873,14 +908,14 @@ class TestSelect(unittest.TestCase):
         # "e" isn't in the curated pool but is a wanted word with a clean
         # candidate → rescued into a fresh card, no re-tap needed.
         from tools.select import select_picks
-        final = select_picks(self.POOL, self.COV, [], cap=15,
+        final = select_picks(self.POOL, self.COV, [],
                              standing_interest=["e"])
         e = next(p for p in final if p["lemma"] == "e")
         self.assertTrue(e.get("rescued"))
 
     def test_fresh_tap_outranks_standing_interest(self):
         from tools.select import select_picks
-        final = select_picks(self.POOL, self.COV, [["b", "h"]], cap=15,
+        final = select_picks(self.POOL, self.COV, [["b", "h"]],
                              standing_interest=["c"])
         # fresh tap "b" first, then standing interest "c", then pool order
         self.assertEqual([p["lemma"] for p in final][:2], ["b", "c"])

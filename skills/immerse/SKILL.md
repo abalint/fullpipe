@@ -1,6 +1,6 @@
 ---
 name: immerse
-description: Curation session for the fullPipe Immersion Workstation. Bare `/immerse` reviews the mobile job queue — reports what the worker is still preparing, surfaces failures, and runs the live curate pass (synopsis, key-vocab glosses, focal points, ~15-card native-audio shortlist → Anki push + phone prep doc) over every episode that's ready, asking the user what to curate when there's a choice. `/immerse <url|file>` handles one source directly, end to end (acquire → coverage → curate → render → deck). Writes exposure evidence to the known-lemma ledger (inert until watched). Use for "/immerse", "curate the queue", "what's ready to curate", "/immerse <url|file>", "prep this episode", "analyze this before I watch it", or any Japanese video URL paired with a mention of prep / pre-watch / immersion.
+description: Curation session for the fullPipe Immersion Workstation. Bare `/immerse` reviews the mobile job queue — reports what the worker is still preparing, surfaces failures, and runs the live curate pass (synopsis, key-vocab glosses, focal points, ruthlessly-curated native-audio shortlist → Anki push + phone prep doc) over every episode that's ready, asking the user what to curate when there's a choice. `/immerse <url|file>` handles one source directly, end to end (acquire → coverage → curate → render → deck). Writes exposure evidence to the known-lemma ledger (inert until watched). Use for "/immerse", "curate the queue", "what's ready to curate", "/immerse <url|file>", "prep this episode", "analyze this before I watch it", or any Japanese video URL paired with a mention of prep / pre-watch / immersion.
 ---
 
 # /immerse — curation orchestrator
@@ -219,7 +219,9 @@ Then produce, in `<episode_dir>/curate.json`:
   "phrases": [{"sentence_idx": 12, "surface": "気を付けて", "canonical": "気を付ける",
                "classification": "i_plus_1"}, ...],
   "grammar": [{"sentence_idx": 3, "pattern": "〜てしまう", "form_note": "食べちゃった = 食べる+てしまう (contracted past)",
-               "classification": "comprehensible"}, ...]
+               "classification": "comprehensible"}, ...],
+  "defs": [{"word": "廃線跡", "reading": "はいせんあと", "gloss": "abandoned rail line remains",
+            "pos": "noun"}, ...]
 }
 ```
 
@@ -285,6 +287,26 @@ Then produce, in `<episode_dir>/curate.json`:
   the word-form structure worth showing (食べさせられた = causative-passive
   of 食べる). Tag what a learner would *notice*: the N+1-ish patterns, keigo
   shifts, contractions — not every 〜ます in the episode.
+- **defs — dictionary entries for the words JMdict doesn't have.** The
+  player's tap-a-word popup is JMdict-backed; whatever JMdict misses shows
+  "no dictionary entry" — a dead tap. Get the worklist:
+
+  ```sh
+  $PY -m tools.jmdict missing EPISODE_ID
+  ```
+
+  (content lemmas with no entry even after the normalized-form fallback, most
+  frequent first, one example line each). Write a `defs` row —
+  `{"word", "reading" (hiragana), "gloss", "pos"?}` — for everything a
+  viewer might genuinely tap: real words and compounds the dictionary lacks
+  (廃線跡, 出し方, 作りたて), onomatopoeia (ぷくっ, ピタッ), and the
+  episode's orienting proper nouns (people, places — gloss = who/what they
+  are, e.g. "Takeda-o: abandoned JR station on the old Fukuchiyama line").
+  The gloss is the sense used in this episode, ≤6 words. Skip bare numbers
+  (1万) and ASR garbage — garbage goes in `exclude`, never gets a def. The
+  server merges `defs` into `/definitions` flagged `ai`, JMdict always wins
+  on conflict, so an entry here can't corrupt a real lookup.
+
 - Write valid JSON, `ensure_ascii` irrelevant — just write UTF-8.
 
 **Completeness check — do this before moving on:** every candidate in
@@ -292,6 +314,9 @@ Then produce, in `<episode_dir>/curate.json`:
 `exclude`. Count them: `len(keywords ∪ exclude) ≥ len(candidates)`. Silent
 leftovers render as blank rows at the bottom of the phone's vocab grid
 (word + ×N and nothing else) — that's a curation bug, not a display quirk.
+Same bar for `defs`: every row `tools.jmdict missing` printed is either
+def'd, excluded, or a bare number/ASR artifact you consciously skipped — a
+skipped real word is a dead tap in the player.
 
 **Persist the taste-metadata block** once `curate.json` is written:
 
@@ -319,12 +344,20 @@ And in `<episode_dir>/picks.json`, the card **pool** (workflow decided
 ```
 
 The pool is **ordered by your preference** — after feedback, `tools.select`
-prunes known-tapped lemmas, moves high-interest (★) taps to the front —
+prunes known-tapped lemmas and moves high-interest (★) taps to the front —
 alongside the *standing* interest set carried over from earlier shows (★ taps
-persist in the ledger until the word is known) — and caps at
-`deck.new_cards_per_day`; the final picks are pushed to Anki when the user
-marks the episode watched (`POST /watched`), not at curate time. Your
-pool order IS the default selection, so lead with your best.
+persist in the ledger until the word is known); the final picks are pushed to
+Anki when the user marks the episode watched (`POST /watched`), not at curate
+time. There is **no numeric cap** anywhere — every pool entry that survives
+the user's pruning becomes a card, which is exactly why the pool must contain
+only genuinely excellent entries (see the Selection bar).
+
+At push time `tools.deck` applies two further quality guards on every path:
+standing ★-interest lemmas jump the queue again, and each cut clip is
+validated — span within 1.5–15s, then re-transcribed on the GPU service
+(`deck.audio_gate`) and dropped unless the sentence is actually audible in
+the clip. So "cards pushed" can come in under the pool; fewer, better cards
+is the intended outcome, not a failure.
 
 Include `english` (a natural full-sentence translation) on **every** pool
 entry whenever config's `deck.field_map` maps an `english` field — you're
@@ -373,10 +406,16 @@ review time):
 **Selection bar** (DESIGN.md — Card philosophy; curate ruthlessly, fewer good
 cards beats hitting the cap):
 
-- Pool size: aim for up to ~2× `deck.new_cards_per_day` (default cap 10) so
-  known-taps can prune without starving the final cut — but never pad with
-  weak entries to get there. With the strict bars below, a short high-quality
-  pool (even under the cap) is the expected outcome, not a failure.
+- **Pool size: there is no target number in either direction — and no cap
+  downstream, so every entry you pool is a card the user will review.** Judge
+  each candidate against the bars below and nothing else; zero survivors is a
+  fine answer. For reference only: the user's observed reality is that
+  genuinely excellent cards run **about one per 10 minutes of runtime at
+  best** — that is an estimate of the base rate, NOT a quota to fill or aim
+  for. Its only legitimate use is as a smell test: a pool much denser than
+  that almost certainly contains padding — recheck it against the bars.
+  Half of over-generous pools used to get deleted on first view in Anki,
+  which is pure review-time waste.
 - Complete merged sentence — drop fragments, trail-offs, interjection-only lines.
 - **Strict i+1: require `other_unknown_count == 0`.** The card's sentence must
   have exactly one gap — the target. Drop a lemma whose only sentences carry a
@@ -431,8 +470,11 @@ AnkiConnect — onto the config's `deck.note_type`/`field_map` if set (the
 user's own note type, which must already exist), else the built-in
 "fullPipe Sentence Mining" model; deck from config; note ids recorded for
 lapse polling. Registers `mined_card` evidence and runs `promote` — picked
-lemmas become ledger-`learning`. In direct mode trim the pool to the cap
-yourself first (top of your ordering).
+lemmas become ledger-`learning`. Deck itself orders standing ★-interest
+lemmas to the front and audio-gates every clip against the GPU transcriber
+(plus the 1.5–15s span check) — report what it actually pushed vs gated.
+There is no cap to trim to: the pool you authored IS the deck, so pool only
+what genuinely clears the bar.
 
 - Duplicate notes are skipped with a log line, not an error — report them.
 - If AnkiConnect is down and can't be revived: `--apkg` builds
@@ -471,6 +513,8 @@ session, M still in flight, any failures awaiting a retry decision.
 | coverage: AnkiConnect failed after 3 attempts | Anki closed mid-run, no fresh cache | `ensure_anki.sh`, re-run coverage |
 | job `failed` with a yt-dlp error | source gone/region-locked/needs cookies | show the error; retry only if the user says the source is fine |
 | deck: "skip <lemma>: … duplicate" | note already exists | fine — report it |
+| deck: "skip <lemma>: clip audio doesn't match text …" / "no clean speech" | audio gate rejected the clip (mistimed span, BGM-drowned, silence) | fine — fewer, better cards; report which lemmas were gated. The lemma stays uncarded and re-mineable |
+| deck: "audio gate: GPU service unreachable — pushing … unvalidated" | desktop PC off/asleep | cards push ungated (fail-open); mention it so the user can eyeball new cards |
 | known-source matched 0 cards (stderr) | config `known_words.sources` query wrong | flag to user; known-set is undercounting |
 
 ## Notes

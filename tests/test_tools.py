@@ -10,7 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from ledger import ledgerctl as lc
-from tools import acquire, coverage as cov_tool, deck, render
+from tools import acquire, coverage as cov_tool, deck, jmdict, render
 from tools._staging import episode_dir, write_json
 
 KNOWN_BUNDLE = {
@@ -363,6 +363,80 @@ class DeckAndRenderTest(unittest.TestCase):
         self.assertIsNotNone(row[0])
         self.assertIsNone(row[1])
 
+    # ---- push guards: interest priority, audio gate, clip bounds ----
+
+    def _mark_interest(self, lemma):
+        self.conn.execute(
+            """INSERT INTO evidence (lemma, kind, source, polarity, weight, ts)
+               VALUES (?, 'word', 'tap_interest', 0, 0, ?)""",
+            (lemma, lc.now_iso()))
+        self.conn.commit()
+
+    def test_no_cap_every_pick_pushes(self):
+        # No numeric budget anywhere: the whole (quality-curated) pool mints.
+        picks = [{"lemma": "縄張り", "sentence_idx": 1},
+                 {"lemma": "設計", "sentence_idx": 2},
+                 {"lemma": "頑丈", "sentence_idx": 3}]
+        result = deck.push_cards(self.cfg, "test_ep", picks,
+                                 anki_call=self._fake_anki([]),
+                                 conn=self.conn, log=lambda m: None)
+        self.assertEqual(result["pushed"], 3)
+
+    def test_standing_interest_jumps_queue_at_push(self):
+        self._mark_interest("頑丈")
+        calls = []
+        picks = [{"lemma": "縄張り", "sentence_idx": 1},   # pool order first...
+                 {"lemma": "頑丈", "sentence_idx": 3}]     # ...but ★-marked
+        result = deck.push_cards(self.cfg, "test_ep", picks,
+                                 anki_call=self._fake_anki(calls),
+                                 conn=self.conn, log=lambda m: None)
+        self.assertEqual(result["pushed"], 2)  # nothing dropped — just reordered
+        added = [p["note"]["fields"]["Lemma"] for a, p in calls if a == "addNote"]
+        self.assertEqual(added, ["頑丈", "縄張り"])
+
+    def test_audio_gate_drops_unmatched_clip(self):
+        logs = []
+        gate = lambda clip, sentence: (  # noqa: E731
+            (False, "clip audio doesn't match text") if "縄張り" in sentence
+            else (True, "match 1.00"))
+        picks = [{"lemma": "縄張り", "sentence_idx": 1},
+                 {"lemma": "設計", "sentence_idx": 2}]
+        result = deck.push_cards(self.cfg, "test_ep", picks,
+                                 anki_call=self._fake_anki([]),
+                                 conn=self.conn, log=logs.append, gate=gate)
+        # the bad clip's card is dropped — fewer, better cards; the lemma
+        # stays uncarded (re-mineable later)
+        self.assertEqual(result["pushed"], 1)
+        self.assertEqual(self.conn.execute(
+            "SELECT lemma FROM cards").fetchone()[0], "設計")
+        self.assertTrue(any("doesn't match" in m for m in logs))
+
+    def test_clip_length_bounds_enforced_at_push(self):
+        transcript = json.loads(json.dumps(TRANSCRIPT))
+        transcript["episode"]["audio"] = str(self.audio)
+        transcript["sentences"][1]["end"] = 2.9  # 0.9s span < MIN_CLIP
+        write_json(episode_dir(self.cfg, "test_ep2", create=True) / "transcript.json",
+                   transcript)
+        logs = []
+        result = deck.push_cards(self.cfg, "test_ep2",
+                                 [{"lemma": "縄張り", "sentence_idx": 1}],
+                                 anki_call=self._fake_anki([]),
+                                 conn=self.conn, log=logs.append)
+        self.assertEqual(result["pushed"], 0)
+        self.assertTrue(any("outside" in m for m in logs))
+
+    def test_clip_match_ratio(self):
+        # punctuation is rendering, not speech
+        self.assertEqual(deck.clip_match_ratio("犬が、走る。", "犬が走る"), 1.0)
+        # katakana vs hiragana script choice isn't a mismatch
+        self.assertEqual(deck.clip_match_ratio("すごいネコだ", "すごいねこだ"), 1.0)
+        # pad-captured neighboring speech must not count against the card
+        self.assertEqual(deck.clip_match_ratio("犬が走る", "でも犬が走るよね"), 1.0)
+        # unrelated ASR output (BGM / wrong span) scores low
+        self.assertLess(deck.clip_match_ratio("犬が公園を走る", "全然違う話です"), 0.4)
+        # silence → no words → zero
+        self.assertEqual(deck.clip_match_ratio("犬が走る", ""), 0.0)
+
     def test_render_excludes_curated_junk(self):
         cov = cov_tool.analyze(TRANSCRIPT, KNOWN_BUNDLE, freq={"縄張り": 6000})
         write_json(episode_dir(self.cfg, "test_ep") / "coverage.json", cov)
@@ -398,6 +472,60 @@ class DeckAndRenderTest(unittest.TestCase):
         payload = json.loads(data.replace("<\\/", "</"))
         self.assertEqual(payload["iplus1"][0]["lemma"], "縄張り")
         self.assertIn("1", payload["sentences_by_idx"])
+
+    def test_render_annotate_kanji_core_only(self):
+        # prep-doc furigana sits on the kanji core, not the whole word
+        segs = render.annotate("切ない話だ")
+        self.assertEqual(segs[0], ["切", "せつ"])
+        self.assertEqual("".join(s[0] for s in segs), "切ない話だ")
+
+
+class JmdictMissingTest(unittest.TestCase):
+    """The curate pass's `defs` worklist and its /definitions merge."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        work = Path(self.tmp.name)
+        self.cfg = {"work_dir": str(work)}
+        cov = cov_tool.analyze(TRANSCRIPT, KNOWN_BUNDLE, freq={})
+        write_json(episode_dir(self.cfg, "test_ep", create=True) / "coverage.json",
+                   cov)
+        import sqlite3
+        conn = sqlite3.connect(jmdict.db_path(self.cfg))
+        jmdict.build_db(conn, iter([
+            (2, {"犬", "いぬ"}, {"k": ["犬"], "r": ["いぬ"],
+                                 "s": [{"pos": ["noun"], "g": ["dog"]}]}),
+            (2, {"公園"}, {"k": ["公園"], "r": ["こうえん"],
+                           "s": [{"pos": ["noun"], "g": ["park"]}]}),
+        ]))
+        conn.close()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_missing_lists_undefined_content_lemmas_with_context(self):
+        rows = jmdict.missing(self.cfg, "test_ep")
+        lemmas = {r["lemma"] for r in rows}
+        self.assertNotIn("犬", lemmas)      # has an entry
+        self.assertNotIn("公園", lemmas)    # has an entry
+        self.assertIn("縄張り", lemmas)     # no entry in the tiny test dict
+        nawabari = next(r for r in rows if r["lemma"] == "縄張り")
+        self.assertEqual(nawabari["count"], 2)
+        self.assertIn("縄張り", nawabari["example"])
+        # most-frequent first — the worklist leads with what recurs
+        counts = [r["count"] for r in rows]
+        self.assertEqual(counts, sorted(counts, reverse=True))
+
+    def test_ai_entry_wire_shape(self):
+        self.assertEqual(
+            jmdict.ai_entry({"word": "縄張り", "reading": "なわばり",
+                             "gloss": "territory", "pos": "noun"}),
+            {"k": ["縄張り"], "r": ["なわばり"],
+             "s": [{"pos": ["noun"], "g": ["territory"]}], "ai": True})
+        # kana-only word: no kanji key, the word itself is the reading
+        self.assertEqual(jmdict.ai_entry({"word": "ぷくっ", "gloss": "puffily"}),
+                         {"k": [], "r": ["ぷくっ"],
+                          "s": [{"pos": [], "g": ["puffily"]}], "ai": True})
 
 
 if __name__ == "__main__":

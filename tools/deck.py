@@ -10,6 +10,17 @@ addNote → note ids the ledger can lapse-poll). `--apkg` is the offline
 fallback (genanki, stable guids). Every minted card is registered in the
 ledger (mined_card evidence + cards row), then `promote` runs.
 
+Every push path runs three quality guards (this is the layer that sees them
+all — server close-out, direct-mode CLI, .apkg fallback). There is no numeric
+cap anywhere: card volume is an outcome of the curation bar, never a count.
+  * standing high-interest lemmas (ledger tap_interest) jump the queue;
+  * clip spans outside 1.5–15s are rejected (a bad audio card regardless of
+    text);
+  * each cut clip is re-transcribed on the GPU service (asr.gpu_url) and the
+    card is dropped unless the sentence is audible in the clip
+    (deck.audio_gate: enabled / min_match; fails open when the desktop is
+    unreachable).
+
 Input picks.json — the /immerse curate output:
     [{"lemma": "縄張り", "sentence_idx": 9, "reading": "なわばり",
       "english": "optional gloss/translation",
@@ -39,8 +50,10 @@ CLI:
 """
 
 import argparse
+import difflib
 import re
 import sys
+import unicodedata
 from functools import partial
 from pathlib import Path
 
@@ -49,10 +62,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from engine.audio import probe_audio_duration, slice_audio, MIN_SLICE_DURATION  # noqa: E402
 from engine.frames import extract_frame  # noqa: E402
 from engine.local_file import get_video_path  # noqa: E402
+from engine.transcriber import (  # noqa: E402
+    GpuTranscriber, GpuUnavailableError, TranscriptionError)
 from lib_config import load_config  # noqa: E402
 from ledger import ledgerctl as lc  # noqa: E402
 from ledger.anki_known import anki_request  # noqa: E402
 from tools._staging import episode_dir, load_transcript, read_json  # noqa: E402
+from tools.select import MIN_CLIP, MAX_CLIP  # noqa: E402
 
 CLIP_PAD = 0.5
 # Every card clip is loudness-normalized to this integrated loudness so review
@@ -122,6 +138,79 @@ def furigana_matches(annotated, raw):
     return strip(annotated) == strip(raw)
 
 
+def _norm_ja(text):
+    """Collapse a Japanese line to its spoken payload for ASR comparison:
+    NFKC, drop punctuation/whitespace (rendering, not speech), fold katakana
+    to hiragana (ASR vs subtitle script choice isn't a mismatch)."""
+    out = []
+    for c in unicodedata.normalize("NFKC", text or ""):
+        if not c.isalnum():
+            continue
+        if "ァ" <= c <= "ヶ":
+            c = chr(ord(c) - 0x60)
+        out.append(c)
+    return "".join(out)
+
+
+def clip_match_ratio(expected, heard):
+    """How much of the expected sentence is audible in the clip: matched
+    chars / len(expected), both sides normalized. Recall, not symmetric
+    similarity — the ±0.5s pad legitimately catches slivers of neighboring
+    speech, which must not count against the card."""
+    a, b = _norm_ja(expected), _norm_ja(heard)
+    if not a or not b:
+        return 0.0
+    m = difflib.SequenceMatcher(None, a, b, autojunk=False)
+    return sum(bl.size for bl in m.get_matching_blocks()) / len(a)
+
+
+class _GpuAudioGate:
+    """Push-time clip validation: re-transcribe the cut clip on the desktop
+    GPU service and require the card's sentence to actually be audible in it.
+    Catches what used to reach Anki and get deleted on first view — mistimed
+    spans, BGM-drowned dialogue, silence. Fails open when the desktop is off
+    (a dark PC must not block the phone's mark-watched close-out); a real
+    transcription failure on a clip fails just that card."""
+
+    def __init__(self, base_url, token, min_match, log):
+        self._transcriber = GpuTranscriber(base_url, token=token)
+        self.min_match = min_match
+        self.log = log
+        self.enabled = True
+
+    def __call__(self, clip_path, expected):
+        """Returns (ok, detail)."""
+        if not self.enabled:
+            return True, "gate offline"
+        try:
+            words = self._transcriber.transcribe(Path(clip_path), "ja")
+        except GpuUnavailableError as e:
+            self.enabled = False
+            self.log(f"  audio gate: GPU service unreachable — "
+                     f"pushing remaining cards unvalidated ({e})")
+            return True, "gate offline"
+        except TranscriptionError as e:
+            return False, f"no clean speech in clip ({e})"
+        heard = "".join(w.get("text", "") for w in words)
+        ratio = clip_match_ratio(expected, heard)
+        if ratio < self.min_match:
+            return False, (f"clip audio doesn't match text "
+                           f"(heard {heard!r}, match {ratio:.2f} < {self.min_match})")
+        return True, f"match {ratio:.2f}"
+
+
+def _resolve_audio_gate(cfg, log):
+    """Build the clip gate from config, or None when it can't/shouldn't run.
+    On by default whenever asr.gpu_url is configured; deck.audio_gate
+    {"enabled": false} switches it off, "min_match" tunes the bar."""
+    gate_cfg = cfg.get("deck", {}).get("audio_gate", {})
+    url = cfg.get("asr", {}).get("gpu_url")
+    if not url or not gate_cfg.get("enabled", True):
+        return None
+    return _GpuAudioGate(url, cfg.get("asr", {}).get("gpu_token"),
+                         float(gate_cfg.get("min_match", 0.6)), log)
+
+
 def _note_fields(field_map, p, title):
     values = {
         "sentence": p.get("sentence_furigana") or p["sentence"],
@@ -178,11 +267,14 @@ def _clip_sentence(audio_path, sentence, clip_path, total_duration,
 
 
 def _prepare_clips(cfg, episode_id, transcript, picks, log=print,
-                   on_progress=None, want_image=True):
+                   on_progress=None, want_image=True, gate=None):
     """Cut one native-audio clip per pick. Returns enriched pick dicts.
     on_progress(msg) narrates the per-card work (an ffmpeg encode each) for
     live consumers like the server's queue row. want_image=False skips the
-    frame grab entirely (the target note type has no image field)."""
+    frame grab entirely (the target note type has no image field).
+    gate(clip_path, sentence) → (ok, detail) is the audio validation hook
+    (see _GpuAudioGate); a rejected clip just drops its card — fewer, better
+    cards is the intended outcome, not a shortfall."""
     audio = transcript["episode"]["audio"]
     total = probe_audio_duration(audio)
     if total is None:
@@ -207,9 +299,23 @@ def _prepare_clips(cfg, episode_id, transcript, picks, log=print,
         if sent is None:
             log(f"  skip {p['lemma']}: sentence_idx {p['sentence_idx']} not in transcript")
             continue
+        span = sent["end"] - sent["start"]
+        if not (MIN_CLIP <= span <= MAX_CLIP):
+            # The curation bar (SKILL.md — Selection bar) enforced only in
+            # prose until now; a fragment or a rambling span makes a bad card.
+            log(f"  skip {p['lemma']}: clip {span:.1f}s outside "
+                f"{MIN_CLIP}–{MAX_CLIP}s")
+            continue
         clip_name = f"fullPipe_{episode_id}_{p['sentence_idx']:04d}.mp3"
         _clip_sentence(audio, sent, clips_dir / clip_name, total,
                        target_lufs=target_lufs)
+        if gate is not None:
+            if on_progress:
+                on_progress(f"validating clip {i}/{len(picks)}")
+            ok, detail = gate(clips_dir / clip_name, sent["text"])
+            if not ok:
+                log(f"  skip {p['lemma']}: {detail}")
+                continue
 
         # Grab a still from the sentence midpoint. Best-effort: a frame that
         # won't extract must not sink the card (DESIGN.md — Card philosophy).
@@ -273,21 +379,34 @@ def _ensure_model(anki_call):
                   model={"name": MODEL_NAME, "css": MODEL_CSS})
 
 
+def _interest_first(conn, picks):
+    """Push-time ordering, applied on every path (server close-out,
+    direct-mode CLI, .apkg fallback): standing high-interest lemmas (ledger
+    tap_interest minus known) jump the queue — stable, so pool order stays
+    the tiebreak. Direct mode used to skip tools.select entirely and lose
+    the ★-priority; ordering here catches it everywhere."""
+    interest = lc.active_interest(conn)
+    return sorted(picks, key=lambda p: p.get("lemma") not in interest)
+
+
 def push_cards(cfg, episode_id, picks, anki_call=None, conn=None, log=print,
-               on_progress=None):
-    """AnkiConnect path: store media, add notes, register in the ledger."""
+               on_progress=None, gate=None):
+    """AnkiConnect path: store media, add notes, register in the ledger.
+    gate overrides the config-resolved audio gate (tests)."""
     transcript = load_transcript(cfg, episode_id)
     deck_cfg = cfg.get("deck", {})
     deck_name = deck_cfg.get("name", "Immersion Mining")
     note_type = deck_cfg.get("note_type", MODEL_NAME)
     field_map = deck_cfg.get("field_map") or DEFAULT_FIELD_MAP
+    conn = conn or lc.open_db(cfg["ledger_db"])
+    picks = _interest_first(conn, picks)
     # Only grab frames when the target note type actually has an image field.
     prepared = _prepare_clips(cfg, episode_id, transcript, picks, log=log,
                               on_progress=on_progress,
-                              want_image="image" in field_map)
+                              want_image="image" in field_map,
+                              gate=gate or _resolve_audio_gate(cfg, log))
     anki_call = anki_call or partial(
         anki_request, url=cfg.get("anki_connect_url", "http://localhost:8765"))
-    conn = conn or lc.open_db(cfg["ledger_db"])
 
     if note_type == MODEL_NAME:
         _ensure_model(anki_call)
@@ -326,13 +445,15 @@ def push_cards(cfg, episode_id, picks, anki_call=None, conn=None, log=print,
     return {"pushed": len(minted), "skipped": skipped, "deck": deck_name}
 
 
-def build_apkg(cfg, episode_id, picks, conn=None, log=print):
+def build_apkg(cfg, episode_id, picks, conn=None, log=print, gate=None):
     """Offline fallback: .apkg with stable guids, registered in the ledger."""
     import genanki
 
     transcript = load_transcript(cfg, episode_id)
-    prepared = _prepare_clips(cfg, episode_id, transcript, picks, log=log)
     conn = conn or lc.open_db(cfg["ledger_db"])
+    picks = _interest_first(conn, picks)
+    prepared = _prepare_clips(cfg, episode_id, transcript, picks, log=log,
+                              gate=gate or _resolve_audio_gate(cfg, log))
     deck_name = cfg.get("deck", {}).get("name", "Immersion Mining")
     title = transcript["episode"].get("title", episode_id)
 

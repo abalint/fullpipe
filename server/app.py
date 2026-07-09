@@ -313,6 +313,10 @@ def create_app(cfg, start_worker=True):
             return d
 
         return {"episode_id": episode_id,
+                # curated: the curate pass has run, so grammar/phrases (and the
+                # curate-authored defs in /definitions) are as good as they
+                # get — the app uses this to stop refreshing its sidecars
+                "curated": bool(curate),
                 "candidates": [c["lemma"] for c in coverage.get("candidates", [])],
                 "interest": sorted(interest & here),
                 "sentences": [sent(s) for s in coverage["sentences"]]}
@@ -322,19 +326,24 @@ def create_app(cfg, start_worker=True):
         """JMdict entries for every content lemma in the episode — the
         player's any-word dictionary popup. Keyed by the Sudachi lemma the
         transcript tokens already carry, so the client needs no deinflection.
+        Curate-authored `defs` (words JMdict lacks: names, onomatopoeia,
+        compounds — glossed by the curate pass) merge in, flagged `ai`.
         {} until `tools.jmdict build` has produced <work_dir>/jmdict.db."""
         try:
             coverage = load_coverage(cfg, episode_id)
         except FileNotFoundError as e:
             raise HTTPException(404, str(e))
+        curate_path = episode_dir(cfg, episode_id) / "curate.json"
+        curate = read_json(curate_path) if curate_path.exists() else {}
         path = jmdict.db_path(cfg)
         if not path.exists():
-            return {}
+            return jmdict.merge_curate_defs({}, curate)
         lemmas = {t["l"] for s in coverage["sentences"]
                   for t in s["tokens"] if t.get("c") and t.get("l")}
         conn = jmdict.open_db(path)  # per-request: sqlite handles are thread-bound
         try:
-            return jmdict.lookup_many(conn, lemmas)
+            return jmdict.merge_curate_defs(
+                jmdict.lookup_many(conn, lemmas), curate)
         finally:
             conn.close()
 
@@ -473,7 +482,6 @@ def create_app(cfg, start_worker=True):
             # high-interest set prioritizes wanted words — falling back to raw
             # curated picks only when there's no coverage (blob-only episode).
             ep_dir = episode_dir(cfg, episode_id)
-            cap = cfg.get("deck", {}).get("new_cards_per_day", 15)
             picks_path = ep_dir / "final_picks.json"
             if picks_path.exists():
                 picks = read_json(picks_path)
@@ -483,7 +491,7 @@ def create_app(cfg, start_worker=True):
                     interest = lc.active_interest(conn)
                     picks = run_select(cfg, episode_id, [], interest)
                 except FileNotFoundError:
-                    picks = read_json(ep_dir / "picks.json")[:cap]
+                    picks = read_json(ep_dir / "picks.json")
             result["cards"] = ({"queued": len(picks)} if picks
                                else {"queued": 0, "note": "no picks staged"})
 

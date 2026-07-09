@@ -10,14 +10,21 @@ return compact JSON the server relays verbatim.
 Usage:
     python -m tools.jmdict build [--config PATH] [--xml JMdict_e(.gz)]
     python -m tools.jmdict lookup WORD [WORD ...]
+    python -m tools.jmdict missing EPISODE_ID
 
 `build` downloads JMdict_e.gz from EDRDG (CC BY-SA, ~9 MB) when --xml is not
 given, and writes <work_dir>/jmdict.db (~40 MB). One-off; rerun to refresh.
+
+`missing` lists the episode's content lemmas that have NO JMdict entry (after
+the normalized-form fallback) with an example line each — the words the
+player's popup would shrug at. The curate pass glosses the real ones into
+curate.json's `defs`; /definitions serves them alongside JMdict.
 """
 
 import argparse
 import gzip
 import json
+import re
 import sqlite3
 import sys
 import urllib.request
@@ -28,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lib_config import load_config  # noqa: E402
 
+HAS_KANJI = re.compile(r"[㐀-鿿々〆]")
 JMDICT_URL = "http://ftp.edrdg.org/pub/Nihongo/JMdict_e.gz"
 MAX_SENSES = 8
 MAX_GLOSSES = 5
@@ -142,6 +150,55 @@ def lookup_many(conn, lemmas, max_entries=DEFAULT_MAX_ENTRIES):
     return out
 
 
+def ai_entry(d):
+    """A curate-authored `defs` row → the compact JMdict wire shape the app
+    already renders, flagged `ai` (episode-specific, not EDRDG)."""
+    word, reading = d.get("word", ""), d.get("reading", "")
+    entry = {"k": [word] if HAS_KANJI.search(word) else [],
+             "r": [reading or word],
+             "s": [{"pos": [d["pos"]] if d.get("pos") else [],
+                    "g": [d.get("gloss", "")]}],
+             "ai": True}
+    return entry
+
+
+def merge_curate_defs(result, curate):
+    """Fold curate.json's `defs` into a lookup_many result, JMdict first:
+    curate only glosses words the dictionary lacks, so an AI entry never
+    shadows a real one."""
+    for d in curate.get("defs", []):
+        word = d.get("word")
+        if word and d.get("gloss") and word not in result:
+            result[word] = [ai_entry(d)]
+    return result
+
+
+def missing(cfg, episode_id):
+    """[{lemma, count, example}] for the episode's content lemmas with no
+    JMdict entry — the curate pass's worklist for `defs`."""
+    from tools._staging import load_coverage
+    coverage = load_coverage(cfg, episode_id)
+    lemmas, example, count = set(), {}, {}
+    for s in coverage["sentences"]:
+        for t in s["tokens"]:
+            if not (t.get("c") and t.get("l")):
+                continue
+            lemmas.add(t["l"])
+            count[t["l"]] = count.get(t["l"], 0) + 1
+            example.setdefault(t["l"], s.get("text", ""))
+    path = db_path(cfg)
+    if not path.exists():
+        raise FileNotFoundError(f"{path} — run: python -m tools.jmdict build")
+    conn = open_db(path)
+    try:
+        found = lookup_many(conn, lemmas)
+    finally:
+        conn.close()
+    return [{"lemma": lm, "count": count[lm], "example": example[lm]}
+            for lm in sorted(lemmas - set(found),
+                             key=lambda x: (-count[x], x))]
+
+
 def build(cfg, xml_path=None):
     out = db_path(cfg)
     if xml_path is None:
@@ -167,11 +224,17 @@ def main(argv=None):
     b.add_argument("--xml", help="local JMdict_e(.gz); downloaded if omitted")
     q = sub.add_parser("lookup", help="debug: print entries for words")
     q.add_argument("words", nargs="+")
+    m = sub.add_parser("missing",
+                       help="episode content lemmas with no JMdict entry")
+    m.add_argument("episode_id")
     args = ap.parse_args(argv)
 
     cfg = load_config(args.config)
     if args.cmd == "build":
         build(cfg, args.xml)
+    elif args.cmd == "missing":
+        print(json.dumps(missing(cfg, args.episode_id),
+                         ensure_ascii=False, indent=2))
     else:
         conn = open_db(db_path(cfg))
         print(json.dumps(lookup_many(conn, args.words),

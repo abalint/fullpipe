@@ -8,7 +8,10 @@ feedback deterministically:
     known taps ("k")      → dropped from the pool (they know it; no card)
     high-interest ("h")   → jump the queue, in tap order
     everything else       → keeps its pool order
-    cap                   → deck.new_cards_per_day
+
+There is deliberately NO numeric cap (the user's rule, 2026-07-08): card
+volume is an outcome of the curation quality bar (SKILL.md — Selection bar),
+never of a count. Every quality survivor the user didn't prune gets a card.
 
 High-interest lemmas *outside* the pool are rescued from coverage candidates
 when a true i+1 sentence exists (other_unknown_count == 0, clip 1.5–15s) —
@@ -35,7 +38,7 @@ from tools._staging import episode_dir, load_coverage, read_json, write_json  # 
 MIN_CLIP, MAX_CLIP = 1.5, 15.0
 
 
-def select_picks(pool, coverage, taps, cap, standing_interest=()):
+def select_picks(pool, coverage, taps, standing_interest=()):
     """Pure selection. taps: [[lemma, "k"|"h"], ...] (others ignored).
 
     standing_interest: durable high-interest lemmas carried over from prior
@@ -78,7 +81,7 @@ def select_picks(pool, coverage, taps, cap, standing_interest=()):
         key=lambda p: (pri.get(p["lemma"], len(pri)),        # interest first, tap order
                        kept.index(p) if p in kept else 10**9)  # then pool order
     )
-    return ordered[:cap]
+    return ordered
 
 
 def run_select(cfg, episode_id, taps, standing_interest=()):
@@ -90,9 +93,8 @@ def run_select(cfg, episode_id, taps, standing_interest=()):
     pool_path = ep_dir / "picks.json"
     pool = read_json(pool_path) if pool_path.exists() else []
     coverage = load_coverage(cfg, episode_id)
-    cap = cfg.get("deck", {}).get("new_cards_per_day", 15)
 
-    final = select_picks(pool, coverage, taps, cap, sorted(standing_interest))
+    final = select_picks(pool, coverage, taps, sorted(standing_interest))
     write_json(ep_dir / "feedback.json", {
         "taps": taps,
         "applied_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
