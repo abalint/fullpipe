@@ -6,7 +6,13 @@ REM gitignored because it holds the token; keep it readable only by the
 REM service account + admins.
 
 set FULLPIPE_GPU_TOKEN=REPLACE_WITH_SHARED_SECRET
-set FULLPIPE_ASR_MODEL=kotoba-tech/kotoba-whisper-v2.0-faster
+REM large-v3-turbo: calibrated 2026-07-08 against creator-uploaded subs —
+REM kotoba-whisper-v2.0 dropped whole sentences on BGM-heavy content
+REM (26-44% CER vs YouTube auto's 10-12%); turbo scores 4-11% at nearly the
+REM same speed. no_repeat_ngram=0: the repetition guard was a distil-model
+REM workaround and slightly hurts turbo.
+set FULLPIPE_ASR_MODEL=deepdml/faster-whisper-large-v3-turbo-ct2
+set FULLPIPE_ASR_NO_REPEAT_NGRAM=0
 set FULLPIPE_ASR_DEVICE=cuda
 set FULLPIPE_ASR_COMPUTE=float16
 set FULLPIPE_GPU_PORT=8422

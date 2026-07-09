@@ -9,8 +9,14 @@ It exposes the same word-level output shape the pipeline already consumes
 transcription engine selected via `asr.gpu_url` in `config.json`.
 
 - **Backend:** [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (CTranslate2) on CUDA
-- **Default model:** `kotoba-tech/kotoba-whisper-v2.0-faster` — Japanese-tuned,
-  in-domain-strong on natural/broadcast speech, ~6× faster than Whisper large-v3.
+- **Recommended model:** `deepdml/faster-whisper-large-v3-turbo-ct2` (set in
+  run_service.bat). The code default is still `kotoba-tech/kotoba-whisper-v2.0-faster`,
+  but a 2026-07-08 calibration against creator-uploaded subs on 6 immersion-domain
+  videos showed kotoba silently drops whole sentences on BGM-heavy content
+  (26–44% CER vs YouTube auto-captions' 10–12%); large-v3-turbo scores 4–11%
+  (beats auto-captions) at nearly the same speed, with
+  `FULLPIPE_ASR_NO_REPEAT_NGRAM=0` (the repetition guard was a distil-model
+  workaround and slightly hurts turbo).
 - **VAD:** Silero VAD filtering on by default (helps noisy audio).
 
 ## Endpoints
