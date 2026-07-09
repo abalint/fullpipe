@@ -107,48 +107,57 @@ def _is_kana(c):
     return "ぁ" <= c <= "ゖ" or "ァ" <= c <= "ヶ" or c == "ー"
 
 
+def _extend_segs(segs, token_segs):
+    """Append [chunk, reading-or-None] pairs, merging adjacent bare chunks."""
+    for chunk, reading in token_segs:
+        if not chunk:
+            continue
+        if reading is None and segs and segs[-1][1] is None:
+            segs[-1][0] += chunk
+        else:
+            segs.append([chunk, reading])
+
+
+def token_segs(surface, reading):
+    """[chunk, reading-or-None] segments for ONE token, furigana over the
+    kanji core only: matching leading/trailing kana — okurigana like す・る・
+    い — are peeled off both sides so the rt sits on the kanji, not the kana.
+    Chunks concatenate back to `surface` exactly.
+
+    e.g. (通す, とおす) → [[通,とお],[す,None]]   (切ない, せつない) →
+         [[切,せつ],[ない,None]]   (大丈夫, だいじょうぶ) → [[大丈夫,だいじょうぶ]]
+    """
+    if not reading or not HAS_KANJI.search(surface):
+        return [[surface, None]]
+    s, r = surface, kata_to_hira(reading)
+    tail = ""
+    while s and r and _is_kana(s[-1]) and s[-1] == r[-1]:
+        tail = s[-1] + tail
+        s, r = s[:-1], r[:-1]
+    head = ""
+    while s and r and _is_kana(s[0]) and s[0] == r[0]:
+        head += s[0]
+        s, r = s[1:], r[1:]
+    if s and r and HAS_KANJI.search(s):
+        core = [s, r]
+    else:
+        core = [s, None]  # reading didn't align to a clean kanji core — bare
+    return [[head, None], core, [tail, None]]
+
+
 def furigana(word):
     """[surface, reading-or-None] segments for a single word, with furigana over
-    the KANJI ONLY. The reading is the token's dictionary reading (so the caller
-    need not supply an inflected surface's reading), and matching leading /
-    trailing kana — okurigana like す・る・い — are peeled off both sides so the
-    rt sits on the kanji core, not the trailing kana. Segment texts concatenate
-    back to `word` exactly; kana-only tokens carry no reading.
+    the KANJI ONLY (token_segs per Sudachi token, dictionary readings — so the
+    caller need not supply an inflected surface's reading). Segment texts
+    concatenate back to `word` exactly; kana-only tokens carry no reading.
 
     e.g. 通す → [[通,とお],[す,None]]   行く → [[行,い],[く,None]]
          大丈夫 → [[大丈夫,だいじょうぶ]]   くれる → [[くれる,None]]
     """
     segs = []
-
-    def plain(chunk):
-        if not chunk:
-            return
-        if segs and segs[-1][1] is None:
-            segs[-1][0] += chunk
-        else:
-            segs.append([chunk, None])
-
     for t in tokenize(word):
-        surface = t.surface
         reading = kata_to_hira(t.reading) if t.reading else None
-        if not reading or not HAS_KANJI.search(surface):
-            plain(surface)
-            continue
-        s, r = surface, reading
-        tail = ""
-        while s and r and _is_kana(s[-1]) and s[-1] == r[-1]:
-            tail = s[-1] + tail
-            s, r = s[:-1], r[:-1]
-        head = ""
-        while s and r and _is_kana(s[0]) and s[0] == r[0]:
-            head += s[0]
-            s, r = s[1:], r[1:]
-        plain(head)
-        if s and r and HAS_KANJI.search(s):
-            segs.append([s, r])
-        else:
-            plain(s)  # reading didn't align to a clean kanji core — leave it bare
-        plain(tail)
+        _extend_segs(segs, token_segs(t.surface, reading))
     return segs
 
 

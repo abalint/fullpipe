@@ -58,10 +58,12 @@ def annotate(text):
         if _HAS_KANJI.search(run):
             for t in L.tokenize(run):
                 reading = L.kata_to_hira(t.reading) if t.reading else None
-                if reading and reading != t.surface and _HAS_KANJI.search(t.surface):
-                    segs.append([t.surface, reading])
-                else:
-                    plain(t.surface)
+                # kanji-core-only furigana (切ない → 切[せつ]ない)
+                for chunk, r in L.token_segs(t.surface, reading):
+                    if r:
+                        segs.append([chunk, r])
+                    else:
+                        plain(chunk)
         else:
             plain(run)
         pos = m.end()

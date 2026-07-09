@@ -142,6 +142,18 @@ class LemmaTest(unittest.TestCase):
         for w in ("通す", "行く", "大丈夫", "くれる", "食べる"):
             self.assertEqual("".join(s[0] for s in L.furigana(w)), w)
 
+    def test_token_segs_peels_okurigana(self):
+        # the single-token peel used by furigana() AND render.annotate():
+        # i-adjective okurigana comes off (切ない ≠ whole-word ruby)
+        self.assertEqual(L.token_segs("切ない", "せつない"),
+                         [["", None], ["切", "せつ"], ["ない", None]])
+        # leading kana peels too, and katakana readings are normalized
+        self.assertEqual(L.token_segs("お茶", "オチャ"),
+                         [["お", None], ["茶", "ちゃ"], ["", None]])
+        # kana-only / readingless tokens stay bare
+        self.assertEqual(L.token_segs("くれる", "くれる"), [["くれる", None]])
+        self.assertEqual(L.token_segs("ノート", None), [["ノート", None]])
+
     def test_content_tokens_filters_particles(self):
         tokens = L.content_tokens("犬が走った。")
         lemmas = [t.lemma for t in tokens]
