@@ -98,7 +98,7 @@ download/ASR/tokenize it used to do up front is exactly the batch that already r
 | `staged` | 2 done | curate step | **pull prep-doc** (tiny, fast); review + tap |
 | `reconciled` | — | `POST /taps` (pre-watch feedback) | ready to watch; cards selected |
 | `pushing` | — | `POST /watched` | close-out running in the background (clips + Anki push + lapse poll); `progress_msg` narrates it ("pushing card 3/12"); delete is refused |
-| `watched` | — | close-out thread | terminal: cards pushed to Anki (skipped for the disliked-it branch, body `{cards:false}`); a failed push lands on the row's `error` — re-POST `/watched` retries; **delete local files** |
+| `watched` | — | close-out thread | terminal: cards pushed to Anki (skipped for the disliked-it branch, body `{cards:false}`); a failed push lands on the row's `error` — re-POST `/watched` retries; **local files are kept** (rewatch / passive listening; deletion is manual only) |
 | `failed` | any | worker | surface error + retry action |
 
 Orthogonal to state: a `passive` flag (`POST /jobs/{id}/passive`) shelves a
@@ -110,13 +110,15 @@ the native player reads the same on-device file the in-app watch/rewatch uses
 phone already has. Un-shelving flips the flag back; delete from the Listen tab
 is the same `DELETE /jobs/{id}`.
 
-Shelving therefore **pins the video**: the phone's normal auto-delete-at-watched
-is skipped for passive episodes so the file survives for the Listen loop. The
-decision is offered at the close-out — the prep view's **"🎧 + listen"** button
-(in the after-watching row) marks watched, shelves passive, and keeps the mp4
-in one tap (vs. plain "Mark watched", which deletes it). Shelving *after* the fact from the queue's
-watched row still works, but the file was already reclaimed, so the Listen tab
-re-pulls it on demand (the `⬇` fallback).
+The downloaded mp4 survives for the Listen loop for free: **the phone never
+auto-deletes videos** (revised 2026-07-09 — the eager delete-at-mark-watched was
+removed; it broke passive listening and blocked rewatch). Videos stay on the
+device until you delete them explicitly (swipe-delete on a queue or Listen row).
+So both passive entry points keep the file with no re-download: the prep view's
+**"🎧 + listen"** button (marks watched + shelves passive in one tap) and
+shelving *after* the fact from the queue's watched **"🎧 passive"** button. The
+`⬇` fallback on the Listen tab only appears if the episode was never downloaded
+(or was manually deleted).
 
 *(Revised 2026-07-05: taps are pre-watch feedback — known-taps correct the
 ledger, ★ high-interest taps steer card selection — so `reconciled` now
@@ -191,8 +193,8 @@ Thin HTTP over `ledgerctl` verbs + the queue. (Verbs: `materialize-known`, `comp
 | `GET /video/{id}` | staged file | **resumable** (HTTP range) — available at `prepared` |
 | `GET /video/{id}/subs` | staged file | subtitle sidecar |
 | `GET /prep/{id}` | prep-doc JSON | available at `staged`; pre-tokenized sentences w/ readings + glosses |
-| `GET /transcript/{id}` | staged coverage | **every** sentence w/ start/end + tokens (prep ships only the i+1 subset) — drives the in-app player's tap-able subtitle overlay; available at `prepared`. tokens carry `t` (aligned start seconds, engine/word_align.py — word/segment granularity for ASR, cue granularity for hand-subs) pacing the player's roll-up window; absent on pre-alignment episodes, where the player falls back to proportional pacing |
-| `GET /definitions/{id}` | jmdict.db | JMdict entries for every content lemma in the episode (the player's any-word popup); keyed by the Sudachi lemma already on each token, so no client deinflection. `{}` until `tools.jmdict build` has run |
+| `GET /transcript/{id}` | staged coverage | **every** sentence w/ start/end + tokens (prep ships only the i+1 subset) — drives the in-app player's tap-able subtitle overlay; available at `prepared`. tokens carry `t` (aligned start seconds, engine/word_align.py — word/segment granularity for ASR, cue granularity for hand-subs) pacing the player's roll-up window; absent on pre-alignment episodes, where the player falls back to proportional pacing. Top-level `curated` = the curate pass's grammar/phrase notes are aboard; the app downloads its sidecars at video-download time (usually `prepared`) and refreshes them once the episode turns up staged (`refreshSidecars`) |
+| `GET /definitions/{id}` | jmdict.db + curate.json | JMdict entries for every content lemma in the episode (the player's any-word popup); keyed by the Sudachi lemma already on each token, so no client deinflection. `{}` until `tools.jmdict build` has run. Curate-authored `defs` rows (words JMdict lacks — worklist from `tools.jmdict missing`) merge in flagged `ai`; a JMdict entry always wins over an `ai` one |
 | `POST /taps` | `apply-taps` + `tools.select` | `{episode_id, batch_id, taps:[[lemma,"k"\|"h"],…]}`; pre-watch feedback: "k"→ledger, "h"→card priority; runs final card selection; does NOT imply watched |
 | `POST /watched/{id}` | `mark-watched` + `tools.deck` | post-watch close-out: activates exposures immediately, then **pushes the selected cards to Anki in a background thread** (responds with `{cards: {queued: N}}`; the job row narrates progress via state `pushing` and flips to `watched`, carrying any push error); re-POST retries a failed push. Body `{cards: false}` = watched-but-disliked: exposures still activate, no cards pushed |
 | `POST /episodes/{id}/rating` | `record-rating` | `{rating: 1-5\|null, tags:[…]}` star rating + optional taste tags, appended to the append-only `taste_events` log (DESIGN.md — Taste metadata); tags ∈ `already_knew·over_my_head·didnt_grab·format_miss·fascinating·loved_format`; re-POST appends a new review (on-read verdict takes the latest), null rating clears; ratings ride back on `GET /jobs`. Ratable pre-watch; a rated-but-unwatched episode keeps its rating through `DELETE /jobs/{id}` (rating-only ledger tombstone) |
@@ -211,9 +213,10 @@ Thin HTTP over `ledgerctl` verbs + the queue. (Verbs: `materialize-known`, `comp
 - **Retention — both sides** (video maintenance is a first-class concern):
   - *PC:* a staged video may be purged once the phone confirms pull **and** the episode is
     `reconciled`.
-  - *Phone:* auto-delete after `watched` **and** `reconciled`; **shelving to passive listening pins
-    the file** (that *is* the "pin to keep" override — the Listen loop plays it directly); a visible
-    storage-used readout; a size cap so a large queue can't fill the device.
+  - *Phone:* **no automatic deletion** (revised 2026-07-09) — videos are kept after `watched` for
+    rewatch and passive listening, and removed only by an explicit swipe-delete. *Planned:* a visible
+    storage-used readout and an opt-in size cap (LRU over non-passive watched videos) so a large
+    queue can't fill the device; until then, reclaim space by deleting rows by hand.
 
 ---
 
