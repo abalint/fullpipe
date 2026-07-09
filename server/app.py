@@ -95,8 +95,12 @@ def create_app(cfg, start_worker=True):
         return lc.query_enjoyment(ledger_conn())
 
     def _taste(verdict):
-        return {"rating": verdict["rating"] if verdict else None,
-                "tags": verdict["tags"] if verdict else []}
+        # Survey axes + follow ride back so the app can pre-fill a re-review
+        # (SURVEY.md). rating/tags stay top-level for the existing contract.
+        if not verdict:
+            return {"rating": None, "tags": [], "axes": {}, "follow": None}
+        return {"rating": verdict["rating"], "tags": verdict["tags"],
+                "axes": verdict.get("axes", {}), "follow": verdict.get("follow")}
 
     durations = {}  # episode_id → seconds; staged artifacts never change in place
     comps = {}  # episode_id → token_comprehensibility; same never-changes contract
@@ -508,16 +512,20 @@ def create_app(cfg, start_worker=True):
 
     @app.post("/episodes/{episode_id}/rating", dependencies=[Depends(auth)])
     def post_rating(episode_id: str, body: dict):
-        """1-5 star rating + optional taste tags (null rating clears) — appended
-        to the append-only taste_events log (DESIGN.md — Taste metadata). Body:
-        {"rating": 1-5|null, "tags": ["over_my_head", ...]}. Re-POST appends a
-        new review; the on-read verdict takes the latest. An optional client
-        "review_id" makes the POST idempotent (offline-outbox replays dedupe
-        instead of double-appending)."""
+        """Post-watch survey → append-only taste_events (DESIGN.md — Taste
+        metadata; SURVEY.md — the survey). Body:
+        {"rating": 1-5|null, "tags": [...], "axes": {"topic_pull": 1-5, ...},
+         "follow": "block|less|neutral|more", "note": "...", "review_id"?}.
+        Re-POST appends a new review (the on-read verdict takes the latest);
+        `follow` is a channel intent kept even when rating is null. An optional
+        client "review_id" makes the POST idempotent (offline-outbox replays
+        dedupe instead of double-appending)."""
         try:
             return lc.record_rating(ledger_conn(), episode_id,
                                     body.get("rating"), body.get("tags"),
-                                    review_id=body.get("review_id"))
+                                    review_id=body.get("review_id"),
+                                    axes=body.get("axes"), follow=body.get("follow"),
+                                    note=body.get("note"))
         except ValueError as e:
             raise HTTPException(422, str(e))
         except KeyError as e:

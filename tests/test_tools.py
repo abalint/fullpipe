@@ -528,5 +528,59 @@ class JmdictMissingTest(unittest.TestCase):
                           "s": [{"pos": [], "g": ["puffily"]}], "ai": True})
 
 
+class HarvestSeedTest(unittest.TestCase):
+    """gather_seeds surfaces the survey axes + channel follow-state/profile and
+    honours the block veto (SURVEY.md)."""
+
+    def setUp(self):
+        from tools import harvest
+        self.harvest = harvest
+        self.db = tempfile.mktemp(suffix=".db")
+        conn = lc.open_db(self.db)
+        # a followed-but-mediocre channel (the founding "3/5 but more" case)
+        lc.update_episode_meta(conn, "yt_follow",
+                               columns={"channel": "Cozy", "channel_id": "UCcozy"})
+        lc.record_rating(conn, "yt_follow", 3,
+                         axes={"topic_pull": 3, "presenter": 5, "difficulty": 2},
+                         follow="more")
+        lc.set_presenter_profile(conn, "UCcozy", "Cozy",
+                                 {"characterization": "Warm slow vlogger",
+                                  "provenance": {"observations": 2}})
+        # a blocked channel
+        lc.update_episode_meta(conn, "yt_block",
+                               columns={"channel": "TTS", "channel_id": "UCtts"})
+        lc.record_rating(conn, "yt_block", 2, follow="block")
+        # a plain high-rated channel, never followed
+        lc.update_episode_meta(conn, "yt_hi",
+                               columns={"channel": "Docu", "channel_id": "UCdocu"})
+        lc.record_rating(conn, "yt_hi", 5, axes={"topic_pull": 5})
+        conn.close()
+        self.seeds = self.harvest.gather_seeds({"ledger_db": self.db})
+
+    def tearDown(self):
+        for suffix in ("", "-wal", "-shm"):
+            Path(self.db + suffix).unlink(missing_ok=True)
+
+    def test_block_is_a_veto(self):
+        cids = [c["channel_id"] for c in self.seeds["channels"]]
+        self.assertNotIn("UCtts", cids)
+        self.assertEqual(self.seeds["blocked_channel_ids"], ["UCtts"])
+
+    def test_followed_channel_ranks_first(self):
+        # follow=more outranks a higher-rated channel you never chose to follow
+        self.assertEqual(self.seeds["channels"][0]["channel_id"], "UCcozy")
+        self.assertEqual(self.seeds["channels"][0]["profile"]["characterization"],
+                         "Warm slow vlogger")
+
+    def test_followed_video_is_expansion_seed(self):
+        # the 3/5-but-followed video still seeds related-rail expansion
+        self.assertIn("follow", self.seeds["liked_video_ids"])
+
+    def test_axes_and_verdict_ride_along(self):
+        row = next(r for r in self.seeds["rated"] if r["video_id"] == "follow")
+        self.assertEqual(row["axes"]["presenter"], 5)
+        self.assertEqual(row["follow"], "more")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -8,7 +8,9 @@
     apply-taps           ← phone corrections; implies mark-watched; polls lapses (P6)
     promote              → recompute projection from evidence (the state machine)
     confirm / defer      ← answer the exposure prompt (known 'yes' / snooze 'not yet')
-    rate                 ← 1-5 star rating + taste tags → append-only taste_events
+    rate                 ← post-watch survey (star + axes + tags + follow) → taste_events
+    set-follow           ← set a channel's follow intent (block|less|neutral|more)
+    presenter-get/-set   ← read/store a channel's presenter fingerprint (SURVEY.md §4c)
     record-curation      ← /immerse curation block (genre/format/topics/difficulty)
     query                → coverage %, needs_review queue, evidence audits, ratings
 
@@ -59,12 +61,38 @@ _EPISODE_META_COLUMNS = frozenset((
 ))
 
 # The six taste tags (DESIGN.md — "The tags"). Confound-breakers + attributors.
+# These are the categorical chips the graded axes below can't hold; the free
+# 'note' event is the pressure valve for anything outside this set.
 RATING_TAGS = frozenset((
     "already_knew", "over_my_head", "didnt_grab", "format_miss",  # negatives
     "fascinating", "loved_format",                                # positives
 ))
-# Over-my-head censors the taste label: a difficulty-driven low star is not a
-# taste-low, so it's excluded from the taste manifold (taste_valid=0).
+
+# Graded 1-5 survey axes beyond the overall star (SURVEY.md §2). Each is its own
+# taste_events kind; `scale` governs how the verdict projects it:
+#   monotonic — higher = better; a soft per-axis weight for the recommender.
+#   target    — a sweet spot, not a max; `difficulty` never enters the taste
+#               weight — it censors (below) and level-matches instead.
+# comprehension_dependent axes are the ones a too-hard video invalidates: you
+# can't judge whether a topic gripped you if you couldn't follow it, but you can
+# still love the performers' act (the manzai case, SURVEY.md §2). Censoring is
+# therefore PER-AXIS, not per-review.
+SURVEY_AXES = {
+    "topic_pull":     {"scale": "monotonic", "comprehension_dependent": True},
+    "presenter":      {"scale": "monotonic", "comprehension_dependent": False},
+    "audio_fidelity": {"scale": "monotonic", "comprehension_dependent": False},
+    "speech_clarity": {"scale": "monotonic", "comprehension_dependent": False},
+    "difficulty":     {"scale": "target",    "comprehension_dependent": False},
+}
+# Channel-follow is a state with a veto floor (block), not a graded axis —
+# decoupled from any single video's score (SURVEY.md §4a).
+FOLLOW_STATES = ("block", "less", "neutral", "more")
+
+# Difficulty at/above this censors the comprehension-dependent axes + the overall
+# taste label. A projection parameter (verdict is computed on read), re-tunable
+# with no re-rating (SURVEY.md §6). The legacy `over_my_head` tag is the
+# pre-survey way of asserting the same thing and still censors, for old reviews.
+DIFFICULTY_CENSOR = 5
 _DIFFICULTY_TAG = "over_my_head"
 
 # Frequency prior: per-lemma exposure threshold θ and episode-spread k,
@@ -342,21 +370,31 @@ def mark_watched(conn, episode_id):
     return {"episode_id": episode_id, "watched": True}
 
 
-def record_rating(conn, episode_id, rating, tags=None, review_id=None):
-    """Append a taste-review event batch (DESIGN.md — Taste metadata).
+def record_rating(conn, episode_id, rating, tags=None, review_id=None,
+                  axes=None, follow=None, note=None):
+    """Append a post-watch survey review as one taste_events batch (DESIGN.md —
+    Taste metadata; SURVEY.md — the survey).
 
-    One review = a 'rating' row + one 'tag' row per selected tag, sharing a
-    review_id. Append-only: re-rating adds a NEW batch (drift preserved,
-    nothing overwritten); the enjoyment verdict is computed on read
-    (query_enjoyment). rating: int 1–5, or None to clear (records a 'clear'
-    event; tags ignored). tags: subset of RATING_TAGS.
+    One review shares a review_id and emits: a 'rating' row (the overall star) +
+    one row per graded axis in `axes` + one 'tag' row per chip + optional
+    'follow'/'note' rows. Append-only: re-rating adds a NEW batch (drift
+    preserved); the verdict is computed on read (query_enjoyment).
 
-    review_id: normally minted here, but an offline client may supply its own
-    so an outbox re-flush after a flaky connection doesn't append the same
-    review twice — a replayed review_id is a no-op ({"duplicate": True}).
+      rating : int 1–5, or None to clear (records a 'clear' event; tags/axes/note
+               ignored — see below on follow).
+      tags   : subset of RATING_TAGS (categorical chips).
+      axes   : {axis_name: int 1–5} over SURVEY_AXES (topic_pull, presenter,
+               audio_fidelity, speech_clarity, difficulty).
+      follow : one of FOLLOW_STATES — a per-CHANNEL intent decoupled from this
+               video's score; also upserted onto channels.follow_state. Recorded
+               even on a rating clear, since it's about the channel, not the video.
+      note   : free text; the judge parses it to fill any axis you didn't tap.
 
-    episodes.rating/rated_at are kept as a denormalized latest-rating cache for
-    cheap reads (server /jobs) — the append-only taste_events log is the truth.
+    review_id: normally minted here, but an offline client may supply its own so
+    an outbox re-flush doesn't double-append — a replayed review_id is a no-op.
+
+    episodes.rating/rated_at are a denormalized latest-rating cache for cheap
+    reads (server /jobs); the append-only log is the truth.
     """
     if rating is not None and (isinstance(rating, bool) or not isinstance(rating, int)
                                or not 1 <= rating <= 5):
@@ -365,30 +403,117 @@ def record_rating(conn, episode_id, rating, tags=None, review_id=None):
     bad = [t for t in tags if t not in RATING_TAGS]
     if bad:
         raise ValueError(f"unknown taste tag(s): {bad}; allowed: {sorted(RATING_TAGS)}")
-    if not conn.execute("SELECT 1 FROM episodes WHERE id = ?", (episode_id,)).fetchone():
+    axes = dict(axes or {})
+    bad_axes = [a for a in axes if a not in SURVEY_AXES]
+    if bad_axes:
+        raise ValueError(f"unknown survey axis/axes: {bad_axes}; "
+                         f"allowed: {sorted(SURVEY_AXES)}")
+    for a, v in axes.items():
+        if isinstance(v, bool) or not isinstance(v, int) or not 1 <= v <= 5:
+            raise ValueError(f"survey axis {a!r} must be 1-5, got {v!r}")
+    if follow is not None and follow not in FOLLOW_STATES:
+        raise ValueError(f"follow must be one of {FOLLOW_STATES}, got {follow!r}")
+    row = conn.execute(
+        "SELECT channel_id, channel FROM episodes WHERE id = ?", (episode_id,)).fetchone()
+    if not row:
         raise KeyError(f"episode not found in ledger: {episode_id}")
     if review_id and conn.execute(
             "SELECT 1 FROM taste_events WHERE review_id = ?", (review_id,)).fetchone():
         return {"episode_id": episode_id, "review_id": review_id, "rating": rating,
-                "tags": tags if rating is not None else [], "duplicate": True}
+                "tags": tags if rating is not None else [],
+                "axes": axes if rating is not None else {},
+                "follow": follow, "duplicate": True}
 
     ts = now_iso()
     review_id = review_id or uuid.uuid4().hex
-    conn.execute(
-        "INSERT INTO taste_events (episode_id, review_id, kind, value, ts) "
-        "VALUES (?, ?, 'rating', ?, ?)",
-        (episode_id, review_id, "clear" if rating is None else str(rating), ts))
+
+    def _ev(kind, value):
+        conn.execute(
+            "INSERT INTO taste_events (episode_id, review_id, kind, value, ts) "
+            "VALUES (?, ?, ?, ?, ?)", (episode_id, review_id, kind, str(value), ts))
+
+    _ev("rating", "clear" if rating is None else rating)
     if rating is not None:
         for tag in tags:
-            conn.execute(
-                "INSERT INTO taste_events (episode_id, review_id, kind, value, ts) "
-                "VALUES (?, ?, 'tag', ?, ?)", (episode_id, review_id, tag, ts))
+            _ev("tag", tag)
+        for axis, val in axes.items():
+            _ev(axis, val)
+        if note:
+            _ev("note", note)
+    # Follow is a channel intent, not a video verdict — survives a rating clear.
+    if follow is not None:
+        _ev("follow", follow)
+        set_follow(conn, row["channel_id"], row["channel"], follow, ts=ts)
+
     conn.execute(
         "UPDATE episodes SET rating = ?, rated_at = ? WHERE id = ?",
         (rating, ts if rating is not None else None, episode_id))
     conn.commit()
     return {"episode_id": episode_id, "review_id": review_id, "rating": rating,
-            "tags": tags if rating is not None else []}
+            "tags": tags if rating is not None else [],
+            "axes": axes if rating is not None else {}, "follow": follow}
+
+
+def set_follow(conn, channel_id, channel, state, ts=None):
+    """Upsert a channel's follow intent (SURVEY.md §4a). `block` is a hard veto
+    the recommender drops from seeds; `more` keeps a channel a strong seed even
+    when the video that prompted it was mediocre. No-op without a channel_id
+    (local files, provenance-less sources)."""
+    if not channel_id:
+        return {"channel_id": None, "follow_state": state, "stored": False}
+    if state not in FOLLOW_STATES:
+        raise ValueError(f"follow must be one of {FOLLOW_STATES}, got {state!r}")
+    ts = ts or now_iso()
+    conn.execute(
+        """INSERT INTO channels (channel_id, channel, follow_state, updated_at)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(channel_id) DO UPDATE SET
+               follow_state = excluded.follow_state,
+               channel = COALESCE(excluded.channel, channels.channel),
+               updated_at = excluded.updated_at""",
+        (channel_id, channel, state, ts))
+    conn.commit()
+    return {"channel_id": channel_id, "follow_state": state, "stored": True}
+
+
+def get_presenter_profile(conn, channel_id):
+    """The current presenter fingerprint for a channel, or None (SURVEY.md §4c).
+    Read this before a curate pass to feed the incremental merge — the profile is
+    the durable memory of a presenter that the ephemeral transcript folds into."""
+    if not channel_id:
+        return None
+    row = conn.execute(
+        "SELECT profile FROM channels WHERE channel_id = ?", (channel_id,)).fetchone()
+    if not row or not row["profile"]:
+        return None
+    try:
+        return json.loads(row["profile"])
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
+def set_presenter_profile(conn, channel_id, channel, profile):
+    """Store a channel's presenter fingerprint (SURVEY.md §4c). `profile` is the
+    already-merged dict the curate step produced from (this transcript + the
+    prior profile) — this function only persists it; the LLM does the merge.
+    Stamps provenance.updated_at. No-op without a channel_id."""
+    if not channel_id:
+        return {"channel_id": None, "stored": False}
+    profile = dict(profile or {})
+    prov = dict(profile.get("provenance") or {})
+    prov["updated_at"] = now_iso()
+    profile["provenance"] = prov
+    conn.execute(
+        """INSERT INTO channels (channel_id, channel, profile, updated_at)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(channel_id) DO UPDATE SET
+               profile = excluded.profile,
+               channel = COALESCE(excluded.channel, channels.channel),
+               updated_at = excluded.updated_at""",
+        (channel_id, channel, json.dumps(profile, ensure_ascii=False), prov["updated_at"]))
+    conn.commit()
+    return {"channel_id": channel_id, "observations": prov.get("observations"),
+            "stored": True}
 
 
 def set_rating(conn, episode_id, rating):
@@ -1120,21 +1245,46 @@ def query_unwatched(conn):
 
 def _enjoyment_from_events(rows):
     """rows: one episode's taste_events ordered by id. Verdict = the latest
-    review (highest-id rating event + the tags sharing its review_id)."""
+    review (highest-id rating event + the axis/tag/note rows sharing its
+    review_id), plus the latest follow intent across all reviews.
+
+    Censoring is PER-AXIS (SURVEY.md §2): when the review is too hard
+    (difficulty ≥ DIFFICULTY_CENSOR, or the legacy over_my_head tag), the
+    comprehension-DEPENDENT axes (topic_pull) and the overall taste label are
+    invalidated — but comprehension-INDEPENDENT axes (presenter, audio_fidelity,
+    speech_clarity) survive: you can love the act without following a word."""
     ratings = [r for r in rows if r["kind"] == "rating"]
+    follow = next((r["value"] for r in reversed(rows) if r["kind"] == "follow"), None)
     if not ratings:
-        return None
+        if follow is None:
+            return None
+        return {"rating": None, "tags": [], "taste_valid": None,
+                "adjusted_enjoyment": None, "axes": {}, "axis_valid": {},
+                "difficulty": None, "note": None, "follow": follow}
     latest = ratings[-1]
+    rid = latest["review_id"]
     if latest["value"] == "clear":
         return {"rating": None, "tags": [], "taste_valid": None,
-                "adjusted_enjoyment": None}
+                "adjusted_enjoyment": None, "axes": {}, "axis_valid": {},
+                "difficulty": None, "note": None, "follow": follow}
     rating = int(latest["value"])
-    tags = [r["value"] for r in rows
-            if r["kind"] == "tag" and r["review_id"] == latest["review_id"]]
-    # Over-my-head decouples the star from the taste label (DESIGN.md).
-    taste_valid = _DIFFICULTY_TAG not in tags
+    batch = [r for r in rows if r["review_id"] == rid]
+    tags = [r["value"] for r in batch if r["kind"] == "tag"]
+    axes = {r["kind"]: int(r["value"]) for r in batch if r["kind"] in SURVEY_AXES}
+    note = next((r["value"] for r in batch if r["kind"] == "note"), None)
+
+    difficulty = axes.get("difficulty")
+    # Too-hard censor: the graded difficulty axis OR the legacy over_my_head tag.
+    censored = (difficulty is not None and difficulty >= DIFFICULTY_CENSOR) \
+        or _DIFFICULTY_TAG in tags
+    axis_valid = {a: not (censored and SURVEY_AXES[a]["comprehension_dependent"])
+                  for a in axes if a != "difficulty"}
+    # The overall star is a comprehension-dependent content proxy → censored too.
+    taste_valid = not censored
     return {"rating": rating, "tags": tags, "taste_valid": taste_valid,
-            "adjusted_enjoyment": rating if taste_valid else None}
+            "adjusted_enjoyment": rating if taste_valid else None,
+            "axes": axes, "axis_valid": axis_valid, "difficulty": difficulty,
+            "note": note, "follow": follow}
 
 
 def query_enjoyment(conn, episode_id=None):
@@ -1225,20 +1375,38 @@ def main(argv=None):
                        help="deliberately track a non-JMdict phrase (reviewed path)")
     p.add_argument("canonical")
     p.add_argument("--reading")
-    p = sub.add_parser("rate", help="rate an episode 1-5 stars + optional taste tags")
+    p = sub.add_parser("rate", help="post-watch survey: overall star + axes + tags + follow")
     p.add_argument("episode_id")
     p.add_argument("rating", help="1-5, or 'clear' to unrate")
     p.add_argument("--tag", action="append", default=[], choices=sorted(RATING_TAGS),
-                   metavar="TAG", help="taste tag (repeatable): "
+                   metavar="TAG", help="taste chip (repeatable): "
                    "already_knew|over_my_head|didnt_grab|format_miss|"
                    "fascinating|loved_format")
+    for axis in sorted(SURVEY_AXES):
+        p.add_argument(f"--{axis.replace('_', '-')}", dest=axis, type=int,
+                       choices=[1, 2, 3, 4, 5], metavar="1-5",
+                       help=f"{axis} survey axis (1-5)")
+    p.add_argument("--follow", choices=FOLLOW_STATES,
+                   help="channel intent (decoupled from this video's score)")
+    p.add_argument("--note", help="free-text reaction; the judge parses it")
+    p = sub.add_parser("set-follow", help="set a channel's follow intent directly")
+    p.add_argument("channel_id")
+    p.add_argument("state", choices=FOLLOW_STATES)
+    p.add_argument("--channel", help="display name")
+    p = sub.add_parser("presenter-get", help="print a channel's presenter fingerprint (JSON)")
+    p.add_argument("channel_id")
+    p = sub.add_parser("presenter-set",
+                       help="store a channel's merged presenter fingerprint (SURVEY.md §4c)")
+    p.add_argument("channel_id")
+    p.add_argument("profile_json", help="path to the merged profile JSON")
+    p.add_argument("--channel", help="display name")
     p = sub.add_parser("record-curation",
                        help="persist /immerse curation metadata (genre/format/topics/difficulty)")
     p.add_argument("episode_id")
     p.add_argument("curate_json", help="path to the episode's curate.json")
     p = sub.add_parser("query", help="read the ledger")
     p.add_argument("what", choices=["summary", "needs-review", "confirm-queue",
-                                    "why", "unwatched", "ratings",
+                                    "why", "unwatched", "ratings", "channels",
                                     "grammar-proposed"])
     p.add_argument("lemma", nargs="?")
 
@@ -1310,7 +1478,17 @@ def main(argv=None):
         _json_out(add_phrase(conn, args.canonical, reading=args.reading))
     elif args.verb == "rate":
         rating = None if args.rating == "clear" else int(args.rating)
-        _json_out(record_rating(conn, args.episode_id, rating, args.tag))
+        axes = {a: getattr(args, a) for a in SURVEY_AXES
+                if getattr(args, a) is not None}
+        _json_out(record_rating(conn, args.episode_id, rating, args.tag,
+                                axes=axes, follow=args.follow, note=args.note))
+    elif args.verb == "set-follow":
+        _json_out(set_follow(conn, args.channel_id, args.channel, args.state))
+    elif args.verb == "presenter-get":
+        _json_out(get_presenter_profile(conn, args.channel_id))
+    elif args.verb == "presenter-set":
+        profile = json.loads(Path(args.profile_json).read_text(encoding="utf-8"))
+        _json_out(set_presenter_profile(conn, args.channel_id, args.channel, profile))
     elif args.verb == "record-curation":
         curation = json.loads(Path(args.curate_json).read_text(encoding="utf-8"))
         result = record_curation(conn, args.episode_id, curation)
@@ -1342,6 +1520,12 @@ def main(argv=None):
             _json_out(query_unwatched(conn))
         elif args.what == "ratings":
             _json_out(query_ratings(conn))
+        elif args.what == "channels":
+            _json_out([{**dict(r),
+                        "profile": json.loads(r["profile"]) if r["profile"] else None}
+                       for r in conn.execute(
+                           "SELECT channel_id, channel, follow_state, profile, updated_at "
+                           "FROM channels ORDER BY updated_at DESC")])
         elif args.what == "grammar-proposed":
             _json_out([dict(r) for r in conn.execute(
                 "SELECT * FROM grammar_proposed ORDER BY seen DESC, first_seen")])

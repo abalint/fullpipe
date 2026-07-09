@@ -52,22 +52,45 @@ material. (rec-system research 2026-07-06.)
 ## Step 1 — read the taste (seeds)
 
 ```sh
-$PY -m tools.harvest seeds        # JSON: rated[], channels[], liked_video_ids[], watched_count
+$PY -m tools.harvest seeds   # rated[], channels[], liked_video_ids[], blocked_channel_ids[], watched_count
 ```
 
 Read it, plus `taste.md` if it exists. Build a working model of the taste from:
 
-- **rated[]** — `{title, channel, rating, tags[], genre, format, topics[]}`, best
-  first. Titles + tags carry most of the signal today (genre/format/topics are
-  null on older episodes — provenance was added recently and backfills going
-  forward). Read the **tags** carefully, they break the confounds:
-  - `fascinating` / `loved_format` (+) — what drove a high score (topic vs format).
-  - `didnt_grab` (−) genuine miss → move off that cluster.
-  - `already_knew` (−) expertise → down-rank that domain (may generalize).
-  - **`over_my_head` is NOT a taste-negative** — it's difficulty. A `5★ · over_my_head`
-    means *loved it, was a stretch*; keep the topic, don't avoid it (revisit-when-stronger).
-- **channels[]** — the strongest single taste predictor and your RSS + related seeds.
-- **liked_video_ids[]** (rating ≥ 4) — the seeds whose related-rails you'll walk.
+- **rated[]** — the post-watch survey per episode (SURVEY.md): `{title, channel,
+  rating, tags[], genre, format, topics[], axes{}, axis_valid{}, difficulty,
+  taste_valid, adjusted_enjoyment, follow, note}`, best first. How to read it:
+  - **`axes`** are graded 1–5 on their own vectors — `topic_pull` (did the subject
+    grip me), `presenter` (did I enjoy listening to this person), `audio_fidelity`
+    (recording), `speech_clarity` (delivery — fast/slurred vs clean), `difficulty`.
+    Don't average them; each steers a different lever.
+  - **`axis_valid` is the censor** (SURVEY.md §2). When a video was too hard
+    (`difficulty` 5), the comprehension-dependent axes are marked `false` — trust
+    only the `true` ones. The classic case: understood-nothing manzai where
+    `presenter`=5 is valid but `topic_pull` is not → learn "more of this performer,"
+    NOT "more of that topic." `taste_valid=false` / `adjusted_enjoyment=null` says
+    the same about the overall star: keep the topic, don't read the low score as a
+    taste-negative (revisit-when-stronger).
+  - **`follow`** is a per-channel intent decoupled from the star — `more` means keep
+    this channel a strong seed even on a mediocre video; treat it as a positive
+    channel signal regardless of `rating`.
+  - **`note`** is free text — parse it to fill any axis the user didn't tap.
+  - **chips (`tags`)**: `fascinating`/`loved_format` (+), `didnt_grab` (−, move off
+    the cluster), `already_knew` (−, down-rank domain). `over_my_head` is the legacy
+    difficulty flag (same as `difficulty`=5).
+- **channels[]** — `{channel, channel_id, best_rating, follow_state, profile}`,
+  followed-first. The strongest single taste predictor and your RSS + related seeds.
+  **`profile`** is the presenter fingerprint (SURVEY.md §4c) — a prose
+  `characterization` + attributes (dialect, register, energy, humor, speaking rate…).
+  Roll the profiles of your liked channels into a **taste-in-presenters** ("calm,
+  clear, mid-register solo explainers with dry humor") and match *that* against a
+  candidate's channel/title to discover **unknown** channels, not just resurface known
+  ones. A not-parasocial user won't binge on their own, so a `follow=more` / high
+  `presenter` means deliberately re-surface that speaker's OTHER videos too (repeat
+  exposure is a top listening booster).
+- **liked_video_ids[]** — rating ≥ 4 **or** `follow=more`; the related-rail seeds.
+- **blocked_channel_ids[]** — `follow=block`. A hard veto: never recommend these, and
+  drop any candidate whose `channel_id` is in the list.
 
 If `taste.md` is missing or stale, note it — you'll offer to write one in Step 6.
 
@@ -118,7 +141,14 @@ upload date.
 This is the LLM-judge, running as **you**. Score each candidate against the taste
 model and the objective function (`ytSearch/DESIGN.md`):
 
-- **relevance** — title/channel/topic fit to what they rate high,
+- **relevance** — title/channel/topic fit to what they rate high (use the *valid*
+  axes only — a censored `topic_pull` is not evidence about topic),
+- **presenter-fit** — does the candidate's channel/title match the rolled-up
+  taste-in-presenters (dialect, register, energy, delivery from the fingerprints)?
+  This is how an unknown channel earns a slot,
+- **follow pull** — `follow=more` channels get their own uploads + related surfaced
+  (manufactured repeat-exposure); `follow=block` channels and their candidates are
+  dropped outright,
 - **novelty** — topical distance from recently-watched: **rewarded, not penalized**
   (push away from the centroid while staying glancingly-intellectual),
 - **− expertise-redundancy** — down-rank domains tagged `already_knew` or rated low,

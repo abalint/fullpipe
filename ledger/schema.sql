@@ -102,19 +102,37 @@ CREATE TABLE IF NOT EXISTS episodes (
 );
 
 -- Append-only taste log (DESIGN.md — Taste metadata: "enjoyment is a
--- projection, not a column"). One review = one 'rating' row + one 'tag' row per
--- selected tag, sharing review_id. Re-rating appends a NEW batch (drift
--- preserved, nothing overwritten); the enjoyment verdict is computed on read
--- (query_enjoyment) — no materialized cache, taste volume doesn't warrant one.
+-- projection, not a column"; SURVEY.md — the multi-axis post-watch survey).
+-- One review = one 'rating' row + one row per graded survey axis + one 'tag'
+-- row per chip + optional 'follow'/'note', all sharing review_id. Re-rating
+-- appends a NEW batch (drift preserved, nothing overwritten); the enjoyment
+-- verdict is computed on read (query_enjoyment) — no materialized cache.
 CREATE TABLE IF NOT EXISTS taste_events (
     id         INTEGER PRIMARY KEY,
     episode_id TEXT NOT NULL,
-    review_id  TEXT NOT NULL,   -- groups the rating + its tags into one review act
-    kind       TEXT NOT NULL,   -- rating|tag
-    value      TEXT NOT NULL,   -- rating: '1'..'5' | 'clear'  ·  tag: slug
+    review_id  TEXT NOT NULL,   -- groups a review act's rows
+    kind       TEXT NOT NULL,   -- rating | tag | <survey axis> | follow | note
+    value      TEXT NOT NULL,   -- rating/axis: '1'..'5' (rating also 'clear') ·
+                                -- tag: slug · follow: block|less|neutral|more · note: text
     ts         TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_taste_episode ON taste_events(episode_id);
+
+-- Per-presenter durable state (SURVEY.md §4). Channels were previously derived
+-- from episodes.channel_id with MAX(rating) as their only signal; this table
+-- gives them two things that don't belong on a video: a follow intent decoupled
+-- from any single video's score, and an accumulated presenter fingerprint.
+-- The fingerprint is built INCREMENTALLY at curate time because raw transcripts
+-- are purged after watch — the profile is the durable memory, the transcript is
+-- ephemeral. Verdicts are NOT stored here (joined from taste_events by
+-- channel_id); this is purely the content-derived feature track.
+CREATE TABLE IF NOT EXISTS channels (
+    channel_id   TEXT PRIMARY KEY,
+    channel      TEXT,
+    follow_state TEXT,     -- block|less|neutral|more (latest; NULL = never set)
+    profile      TEXT,     -- JSON presenter fingerprint (SURVEY.md §4c); NULL until curated
+    updated_at   TEXT
+);
 
 -- Minted cards: enables graduation/lapse feedback + prevents re-mining.
 -- anki_note_id is set when the card is pushed via AnkiConnect (the primary

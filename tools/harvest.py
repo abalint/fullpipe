@@ -258,30 +258,20 @@ def known_video_ids(cfg):
 
 
 def gather_seeds(cfg):
-    """The ledger-derived bootstrap the skill reasons over: the rated history
-    (for taste + ranking), the channels behind it (RSS seeds), and liked video
-    ids (related-video expansion seeds)."""
+    """The ledger-derived bootstrap the skill reasons over (SURVEY.md): the rated
+    history with its survey axes (taste + ranking), the channels behind it with
+    their follow-state + presenter fingerprint (RSS seeds), liked video ids
+    (related-video expansion), and blocked channel ids the judge must drop."""
+    import sqlite3
+    from ledger import ledgerctl as lc
     con = _ledger_conn(cfg)
     if con is None:
-        return {"rated": [], "channels": [], "liked_video_ids": [], "watched_count": 0}
+        return {"rated": [], "channels": [], "liked_video_ids": [],
+                "blocked_channel_ids": [], "watched_count": 0}
+    con.row_factory = sqlite3.Row
     try:
-        # Latest tag set per episode (re-rating appends a new review_id batch).
-        latest_reviews = {
-            ep: rid for ep, rid in con.execute(
-                "SELECT episode_id, review_id FROM taste_events "
-                "WHERE kind='rating' AND id IN "
-                "(SELECT MAX(id) FROM taste_events WHERE kind='rating' GROUP BY episode_id)")
-        }
-        tags_by_ep = {}
-        if latest_reviews:
-            qs = ",".join("?" * len(latest_reviews))
-            for rid, val in con.execute(
-                    f"SELECT review_id, value FROM taste_events "
-                    f"WHERE kind='tag' AND review_id IN ({qs})",
-                    tuple(latest_reviews.values())):
-                ep = next((e for e, r in latest_reviews.items() if r == rid), None)
-                if ep:
-                    tags_by_ep.setdefault(ep, []).append(val)
+        # The per-axis verdict (censor logic + follow/note) lives in one place.
+        verdicts = lc.query_enjoyment(con)  # {episode_id: verdict|None}
 
         rated = []
         for row in con.execute(
@@ -290,29 +280,62 @@ def gather_seeds(cfg):
                 "FROM episodes WHERE rating IS NOT NULL "
                 "ORDER BY rating DESC, processed_at DESC"):
             topics = []
-            if row[7]:
+            if row["topics"]:
                 try:
-                    topics = json.loads(row[7])
+                    topics = json.loads(row["topics"])
                 except (json.JSONDecodeError, TypeError):
                     topics = []
+            v = verdicts.get(row["id"]) or {}
+            eid = row["id"]
             rated.append({
-                "video_id": row[0][3:] if row[0].startswith("yt_") else row[0],
-                "title": row[1], "channel": row[2], "channel_id": row[3],
-                "rating": row[4], "tags": tags_by_ep.get(row[0], []),
-                "genre": row[5], "format": row[6], "topics": topics})
+                "video_id": eid[3:] if eid.startswith("yt_") else eid,
+                "title": row["title"], "channel": row["channel"],
+                "channel_id": row["channel_id"], "rating": row["rating"],
+                "tags": v.get("tags", []), "genre": row["genre"],
+                "format": row["format"], "topics": topics,
+                # survey axes + the censor-aware verdict
+                "axes": v.get("axes", {}), "axis_valid": v.get("axis_valid", {}),
+                "difficulty": v.get("difficulty"),
+                "taste_valid": v.get("taste_valid"),
+                "adjusted_enjoyment": v.get("adjusted_enjoyment"),
+                "follow": v.get("follow"), "note": v.get("note")})
 
-        channels = []
-        for ch, cid, best in con.execute(
-                "SELECT channel, channel_id, MAX(rating) FROM episodes "
-                "WHERE channel_id IS NOT NULL GROUP BY channel_id "
-                "ORDER BY MAX(rating) DESC NULLS LAST"):
-            channels.append({"channel": ch, "channel_id": cid, "best_rating": best})
+        # Channels: the derived MAX(rating) joined with the per-channel state
+        # table (follow intent + presenter fingerprint). Blocked channels are a
+        # hard veto — dropped from seeds and surfaced for candidate filtering.
+        follow_rank = {"more": 0, "neutral": 1, "less": 2}
+        channels, blocked = [], []
+        for r in con.execute(
+                "SELECT e.channel, e.channel_id, MAX(e.rating) AS best, "
+                "c.follow_state, c.profile "
+                "FROM episodes e LEFT JOIN channels c ON c.channel_id = e.channel_id "
+                "WHERE e.channel_id IS NOT NULL GROUP BY e.channel_id"):
+            if r["follow_state"] == "block":
+                blocked.append(r["channel_id"])
+                continue
+            profile = None
+            if r["profile"]:
+                try:
+                    profile = json.loads(r["profile"])
+                except (json.JSONDecodeError, TypeError):
+                    profile = None
+            channels.append({
+                "channel": r["channel"], "channel_id": r["channel_id"],
+                "best_rating": r["best"], "follow_state": r["follow_state"],
+                "profile": profile})
+        # follow=more first, then by best_rating (a mediocre-but-followed channel
+        # outranks a higher-rated one you never chose to follow).
+        channels.sort(key=lambda c: (c["best_rating"] or -1), reverse=True)
+        channels.sort(key=lambda c: follow_rank.get(c["follow_state"], 1))
 
-        liked = [r["video_id"] for r in rated if (r["rating"] or 0) >= 4]
+        # A followed channel's videos are expansion seeds even if the video that
+        # earned the follow was only a 3 (the founding "3/5 but want more" case).
+        liked = [r["video_id"] for r in rated
+                 if r["follow"] == "more" or (r["rating"] or 0) >= 4]
         (watched_count,) = con.execute(
             "SELECT COUNT(*) FROM episodes WHERE watched=1").fetchone()
         return {"rated": rated, "channels": channels, "liked_video_ids": liked,
-                "watched_count": watched_count}
+                "blocked_channel_ids": blocked, "watched_count": watched_count}
     finally:
         con.close()
 

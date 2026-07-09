@@ -332,6 +332,48 @@ GRAMMAR.md). The output reports `items.phrases.rejected` and
 `items.grammar.proposed` — relay both to the user rather than silently moving
 on. Idempotent: safe to re-run if you revise `curate.json`.
 
+**Update the presenter fingerprint** (SURVEY.md §4c) — only for sources with a
+`channel_id` (skip local files / provenance-less sources). This is the ONE place
+the fingerprint can be built: the transcript is in front of you now and gets
+**purged after watch**, so the stored profile is the durable memory of a
+presenter and must accumulate incrementally.
+
+```sh
+$PY -m ledger.ledgerctl presenter-get <CHANNEL_ID>   # prior profile JSON, or null
+```
+
+Read the prior profile (if any), then — from **this** transcript — write the
+*merged* fingerprint to `<episode_dir>/presenter.json` and store it:
+
+```sh
+$PY -m ledger.ledgerctl presenter-set <CHANNEL_ID> <episode_dir>/presenter.json --channel "<name>"
+```
+
+The profile is the **feature track** (machine-observed traits) — never put the
+user's ratings in it. Shape (all fields optional; `characterization` is the
+load-bearing one the recommender reads):
+
+```json
+{
+  "characterization": "Calm solo explainer. Standard Tokyo dialect, polite-plain register. Slow, over-articulated delivery — learner-friendly. Dry humor; warm but not effusive. Gravitates to daily-life essays and light tech.",
+  "cast": "single",            // single|duo|ensemble|rotating|narration
+  "presenters": null,          // name(s) if known
+  "dialect": ["standard"], "register": "polite-plain",
+  "energy": 2, "warmth": 4, "humor": ["dry"], "scaffolding": 4,
+  "topics_gravitated": ["daily-life", "tech-light"], "formats": ["monologue"],
+  "measured": { "wpm": {"mean": 180, "range": [150, 210]} },
+  "variance": "Usually calm; reaction videos spike energy.",
+  "provenance": { "observations": 3 }
+}
+```
+
+Merge, don't replace: fold this video's observation into the prior — refine
+`characterization`, widen `measured`/`variance`, **increment
+`provenance.observations`** (`presenter-set` stamps `updated_at`). Degenerate
+styles are fine and must never block curation: a duo/panel → `cast` + a prose
+`characterization` of the ensemble; a faceless narrator → thin traits; no clear
+presenter → skip. The fingerprint is optional enrichment, never load-bearing.
+
 And in `<episode_dir>/picks.json`, the card **pool** (workflow decided
 2026-07-05: the user's phone feedback makes the final cut, not you):
 

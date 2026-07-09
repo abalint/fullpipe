@@ -524,6 +524,86 @@ class LedgerTest(unittest.TestCase):
         self.assertEqual(self.conn.execute(
             "SELECT COUNT(*) FROM taste_events WHERE episode_id='eu'").fetchone()[0], 0)
 
+    # --- post-watch survey (SURVEY.md) ---------------------------------------
+
+    def test_survey_axes_round_trip(self):
+        self._episode()
+        r = lc.record_rating(self.conn, "er", 4, ["fascinating"],
+                             axes={"topic_pull": 5, "presenter": 5,
+                                   "audio_fidelity": 4, "speech_clarity": 3,
+                                   "difficulty": 3},
+                             note="calm explainer")
+        self.assertEqual(r["axes"]["topic_pull"], 5)
+        v = lc.query_enjoyment(self.conn, "er")
+        self.assertEqual(v["axes"]["speech_clarity"], 3)
+        self.assertEqual(v["note"], "calm explainer")
+        self.assertTrue(v["taste_valid"])
+        # comfortable difficulty → every axis valid
+        self.assertTrue(all(v["axis_valid"].values()))
+
+    def test_difficulty_5_censors_per_axis_not_whole_review(self):
+        # The manzai case: understood nothing (difficulty 5) but loved the act.
+        self._episode()
+        lc.record_rating(self.conn, "er", 4,
+                         axes={"topic_pull": 2, "presenter": 5,
+                               "audio_fidelity": 5, "difficulty": 5})
+        v = lc.query_enjoyment(self.conn, "er")
+        self.assertFalse(v["taste_valid"])            # overall censored
+        self.assertIsNone(v["adjusted_enjoyment"])
+        self.assertFalse(v["axis_valid"]["topic_pull"])   # comprehension-dependent
+        self.assertTrue(v["axis_valid"]["presenter"])     # SURVIVES
+        self.assertTrue(v["axis_valid"]["audio_fidelity"])
+
+    def test_difficulty_4_does_not_censor(self):
+        self._episode()
+        lc.record_rating(self.conn, "er", 4,
+                         axes={"topic_pull": 4, "difficulty": 4})
+        v = lc.query_enjoyment(self.conn, "er")
+        self.assertTrue(v["taste_valid"])
+        self.assertTrue(v["axis_valid"]["topic_pull"])
+
+    def test_survey_axis_validation(self):
+        self._episode()
+        with self.assertRaises(ValueError):
+            lc.record_rating(self.conn, "er", 4, axes={"topic_pull": 9})
+        with self.assertRaises(ValueError):
+            lc.record_rating(self.conn, "er", 4, axes={"bogus": 3})
+        with self.assertRaises(ValueError):
+            lc.record_rating(self.conn, "er", 4, follow="subscribe")
+
+    def test_follow_persists_through_rating_clear(self):
+        # Follow is a channel intent, not a video verdict — a clear keeps it.
+        lc.update_episode_meta(self.conn, "er",
+                               columns={"channel": "Guy", "channel_id": "UCg"})
+        lc.record_rating(self.conn, "er", 3, follow="more")
+        self.assertEqual(self.conn.execute(
+            "SELECT follow_state FROM channels WHERE channel_id='UCg'").fetchone()[0],
+            "more")
+        lc.record_rating(self.conn, "er", None)  # clear the star
+        v = lc.query_enjoyment(self.conn, "er")
+        self.assertIsNone(v["rating"])
+        self.assertEqual(v["follow"], "more")
+
+    def test_set_follow_block_and_direct(self):
+        lc.update_episode_meta(self.conn, "er",
+                               columns={"channel": "TTS", "channel_id": "UCt"})
+        lc.set_follow(self.conn, "UCt", "TTS", "block")
+        self.assertEqual(self.conn.execute(
+            "SELECT follow_state FROM channels WHERE channel_id='UCt'").fetchone()[0],
+            "block")
+        # no channel_id → no-op, no crash
+        self.assertFalse(lc.set_follow(self.conn, None, "x", "more")["stored"])
+
+    def test_presenter_profile_round_trip(self):
+        prof = {"characterization": "Calm solo explainer.", "cast": "single",
+                "energy": 2, "provenance": {"observations": 3}}
+        lc.set_presenter_profile(self.conn, "UCg", "Guy", prof)
+        got = lc.get_presenter_profile(self.conn, "UCg")
+        self.assertEqual(got["characterization"], "Calm solo explainer.")
+        self.assertEqual(got["provenance"]["observations"], 3)
+        self.assertTrue(got["provenance"]["updated_at"])  # stamped on write
+        self.assertIsNone(lc.get_presenter_profile(self.conn, "UCnone"))
+
 
 # --- phrases & grammar (GRAMMAR.md — one ledger, three item kinds) -------------
 

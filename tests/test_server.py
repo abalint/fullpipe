@@ -563,6 +563,46 @@ class TestRoutes(ServerTestBase):
         self.assertIsNone(self.client.get(f"/jobs/{EP}", headers=self.auth)
                           .json()["rating"])
 
+    def test_survey_roundtrip(self):
+        """Full survey over HTTP → axes + follow persist and ride back on /jobs."""
+        self.stage_episode()
+        self._enqueue_at("watched")
+        lconn = lc.open_db(self.cfg["ledger_db"])
+        lc.update_episode_meta(lconn, EP,
+                               columns={"channel": "Guy", "channel_id": "UCsurvey"})
+        lconn.close()
+
+        r = self.client.post(
+            f"/episodes/{EP}/rating",
+            json={"rating": 4, "tags": ["fascinating"],
+                  "axes": {"topic_pull": 5, "presenter": 5, "difficulty": 5},
+                  "follow": "more", "note": "loved the act"},
+            headers=self.auth)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["axes"]["presenter"], 5)
+
+        job = self.client.get(f"/jobs/{EP}", headers=self.auth).json()
+        self.assertEqual(job["axes"]["topic_pull"], 5)
+        self.assertEqual(job["follow"], "more")
+
+        lconn = lc.open_db(self.cfg["ledger_db"])
+        # follow upserted onto the channel; manzai censor holds through HTTP
+        self.assertEqual(lconn.execute(
+            "SELECT follow_state FROM channels WHERE channel_id='UCsurvey'"
+        ).fetchone()[0], "more")
+        v = lc.query_enjoyment(lconn, EP)
+        self.assertFalse(v["axis_valid"]["topic_pull"])  # censored at difficulty 5
+        self.assertTrue(v["axis_valid"]["presenter"])     # survives
+        lconn.close()
+
+        # bad axis / follow → 422
+        self.assertEqual(self.client.post(
+            f"/episodes/{EP}/rating", json={"rating": 4, "axes": {"topic_pull": 9}},
+            headers=self.auth).status_code, 422)
+        self.assertEqual(self.client.post(
+            f"/episodes/{EP}/rating", json={"rating": 4, "follow": "subscribe"},
+            headers=self.auth).status_code, 422)
+
     def test_rating_review_id_replay_is_idempotent(self):
         """The offline outbox re-flushes with the same review_id — one review."""
         self.stage_episode()
