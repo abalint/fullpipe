@@ -15,3 +15,6 @@ known_morphs-*.csv
 
 # GPU service launcher holds the shared token (like config.json)
 gpu_service/run_service.bat
+
+# Server runtime log (hand-started uvicorn)
+server.log
