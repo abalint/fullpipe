@@ -7,7 +7,11 @@ variant-aware known matching (こもる counts as known when 籠る is known —
 normalize to 籠もる), and kanji-stem matching to expand the known set.
 
 POS filters and card-worthiness rules come from the sentence-mining skill,
-where they are already validated against real mined decks.
+where they are already validated against real mined decks. Vocabulary
+membership additionally excludes proper nouns, numerals, and auxiliary-
+position 非自立可能 verbs (vocab_indices) — Sudachi tags all three, and
+counting them as unknown "words" was the dominant noise source in coverage
+(presenter surnames were the corpus's two most frequent unknowns).
 """
 
 import re
@@ -20,6 +24,22 @@ from collections import namedtuple
 CONTENT_POS_PREFIXES = ("名詞", "動詞", "形容詞", "形状詞", "副詞", "連体詞", "感動詞")
 SKIP_POS_PREFIXES = ("助詞", "助動詞", "補助記号", "記号", "空白", "接尾辞", "接頭辞", "代名詞", "フィラー")
 
+# part_of_speech()[1] subtypes that are never learnable vocabulary. Names
+# (固有名詞) were the corpus's top "unknown words" — 深井/樋口 alone
+# misclassified hundreds of sentences — and numerals (数詞: 90万, 30) carry
+# no vocab signal. Counters stay (助数詞可能 is pos[2]; ヶ月/度 are learnable).
+NON_VOCAB_POS2 = ("固有名詞", "数詞")
+
+# 動詞,非自立可能 — verbs that double as grammar. In auxiliary position
+# (immediately after て/で or an auxiliary: やってくれる, 夢でございます,
+# 食べてしまう) they are grammar, not vocabulary; as main verbs
+# (ジャガイモくれた, 時間がかかる) they still count.
+AUX_CAPABLE_POS2 = "非自立可能"
+# Always grammar regardless of position: ございます/ではございません is
+# politeness morphology, and the preceding token varies too much (感動詞,
+# 係助詞…) for the positional rule to catch it.
+GRAMMAR_VERB_LEMMAS = frozenset({"ござる"})
+
 PURE_DIGITS = re.compile(r"^[0-9０-９]+$")
 PURE_ASCII = re.compile(r"^[A-Za-z]+$")
 PUNCT_ONLY = re.compile(r"^[!?！？。、,\.…\-—~〜]+$")
@@ -31,7 +51,8 @@ KANJI_RE = re.compile(r"[一-鿿々]+")
 HTML_TAG_RE = re.compile(r"<[^>]+>")
 FURIGANA_RE = re.compile(r"([一-龯々]+)\[([ぁ-ゖァ-ヺー]+)\]")
 
-Token = namedtuple("Token", "surface lemma normalized reading pos")
+Token = namedtuple("Token", "surface lemma normalized reading pos pos2",
+                   defaults=[""])
 
 _sudachi_tokenizer = None
 _sudachi_split = None
@@ -51,21 +72,24 @@ def tokenize(text):
     """Tokenize with SudachiPy (SplitMode C — keeps meaningful compounds whole,
     e.g. 警察官/被写体 as single words rather than 警察+官).
 
-    Returns Token(surface, lemma, normalized, reading, pos) per token:
+    Returns Token(surface, lemma, normalized, reading, pos, pos2) per token:
       lemma      = dictionary_form()   (走った→走る; keeps surface orthography)
       normalized = normalized_form()   (collapses spelling variants: こもる/籠る→籠もる)
       reading    = reading_form()      (katakana)
       pos        = part_of_speech()[0] (top-level category, e.g. 名詞/動詞)
+      pos2       = part_of_speech()[1] (subtype: 固有名詞/数詞/非自立可能/普通名詞…)
     """
     tok, mode = _sudachi()
     out = []
     for m in tok.tokenize(text, mode):
+        p = m.part_of_speech()
         out.append(Token(
             m.surface(),
             m.dictionary_form(),
             m.normalized_form(),
             m.reading_form(),
-            m.part_of_speech()[0],
+            p[0],
+            p[1],
         ))
     return out
 
@@ -80,8 +104,10 @@ def strip_furigana(s):
     return FURIGANA_RE.sub(r"\1", s)
 
 
-def is_content_word(pos):
+def is_content_word(pos, pos2=""):
     if any(pos.startswith(p) for p in SKIP_POS_PREFIXES):
+        return False
+    if pos2 in NON_VOCAB_POS2:
         return False
     return any(pos.startswith(p) for p in CONTENT_POS_PREFIXES)
 
@@ -166,10 +192,38 @@ def extract_kanji_stem(lemma):
     return m.group(0) if m else ""
 
 
+def _is_aux_position(tokens, i):
+    """True when a 非自立可能 verb at index i is functioning as grammar:
+    a hard-listed grammar verb, or directly after て/で (接続助詞) or an
+    auxiliary (でございます' で lemmatizes to 助動詞 だ)."""
+    if tokens[i].lemma in GRAMMAR_VERB_LEMMAS:
+        return True
+    if i == 0:
+        return False
+    prev = tokens[i - 1]
+    return (prev.pos.startswith("助動詞")
+            or (prev.pos.startswith("助詞") and prev.pos2 == "接続助詞"))
+
+
+def vocab_indices(tokens, non_vocab=frozenset()):
+    """Indices of tokens that count as learnable vocabulary: content POS,
+    card-worthy lemma, not a proper noun / numeral (NON_VOCAB_POS2), and not
+    an auxiliary-capable verb in auxiliary position. Positional — pass the
+    FULL token sequence of the sentence, not a pre-filtered one.
+
+    non_vocab: episode-level exclusions by lemma or surface — the AI repair
+    pass's adjudications (names Sudachi's dictionary doesn't know, ASR
+    non-words), loaded from repair.json by coverage."""
+    return [i for i, t in enumerate(tokens)
+            if is_content_word(t.pos, t.pos2) and is_card_worthy(t.lemma)
+            and t.lemma not in non_vocab and t.surface not in non_vocab
+            and not (t.pos2 == AUX_CAPABLE_POS2 and _is_aux_position(tokens, i))]
+
+
 def content_tokens(text):
     """Content-word, card-worthy tokens of *text* — the vocabulary signal."""
-    return [t for t in tokenize(text)
-            if is_content_word(t.pos) and is_card_worthy(t.lemma)]
+    toks = tokenize(text)
+    return [toks[i] for i in vocab_indices(toks)]
 
 
 class KnownSet:
@@ -237,7 +291,7 @@ class KnownSet:
         return units
 
 
-def analyze_sentence(text, known_set, learning=frozenset()):
+def analyze_sentence(text, known_set, learning=frozenset(), non_vocab=frozenset()):
     """Classify one sentence against the materialized known set.
 
     Args:
@@ -245,6 +299,7 @@ def analyze_sentence(text, known_set, learning=frozenset()):
         known_set: a KnownSet (or anything supporting `token in x`)
         learning: set of lemmas currently in 'learning' (counts as not-known
                   for i+1, but flags the sentence as reinforcement)
+        non_vocab: lemmas/surfaces adjudicated non-vocabulary (repair.json)
 
     Returns dict with tokens, unknown lists, known_ratio, and the four-way
     classification DESIGN.md's coverage analysis uses:
@@ -261,8 +316,7 @@ def analyze_sentence(text, known_set, learning=frozenset()):
     are unit-level (phrase keys included).
     """
     all_tokens = tokenize(text)
-    content_idx = [i for i, t in enumerate(all_tokens)
-                   if is_content_word(t.pos) and is_card_worthy(t.lemma)]
+    content_idx = vocab_indices(all_tokens, non_vocab)
     tokens = [all_tokens[i] for i in content_idx]
     unknown = [t for t in tokens if t not in known_set]
 
@@ -305,13 +359,15 @@ def analyze_sentence(text, known_set, learning=frozenset()):
     }
 
 
-def analyze_transcript(sentences, known_set, learning=frozenset()):
+def analyze_transcript(sentences, known_set, learning=frozenset(),
+                       non_vocab=frozenset()):
     """Analyze all sentences of an episode for coverage.
 
     Args:
         sentences: list of (start_sec, end_sec, text) from the SRT parser
         known_set: KnownSet from ledger materialize-known
         learning: lemmas in 'learning' status
+        non_vocab: lemmas/surfaces adjudicated non-vocabulary (repair.json)
 
     Returns dict with per-sentence details (each carries index/start/end and
     the analyze_sentence fields) plus summary stats and the exposure payload
@@ -325,7 +381,7 @@ def analyze_transcript(sentences, known_set, learning=frozenset()):
     exposures = {}  # lemma -> best (lowest other_unknown_count) context
 
     for idx, (start, end, text) in enumerate(sentences):
-        d = analyze_sentence(text, known_set, learning)
+        d = analyze_sentence(text, known_set, learning, non_vocab)
         d["index"] = idx
         d["start"] = start
         d["end"] = end

@@ -162,6 +162,40 @@ class LemmaTest(unittest.TestCase):
         self.assertNotIn("が", lemmas)
         self.assertNotIn("た", lemmas)
 
+    def test_proper_nouns_are_not_vocab(self):
+        # 深井/樋口 are 名詞,固有名詞 — names must not surface as unknown
+        # vocabulary (they were the corpus's top two "unknowns")
+        ks = L.KnownSet(known={"話す"})
+        d = L.analyze_sentence("深井さんと樋口さんが話す。", ks)
+        self.assertEqual(d["classification"], "comprehensible")
+        self.assertEqual(d["unknown_lemmas"], [])
+
+    def test_numerals_are_not_vocab_but_counters_are(self):
+        ks = L.KnownSet(known=set())
+        d = L.analyze_sentence("3ヶ月で90万ぐらい貯めた。", ks)
+        self.assertNotIn("90万", d["unknown_lemmas"])  # 数詞
+        self.assertNotIn("3", d["unknown_lemmas"])
+        self.assertIn("ヶ月", d["unknown_lemmas"])  # counters stay learnable
+        self.assertIn("貯める", d["unknown_lemmas"])
+
+    def test_gozaru_is_grammar_not_vocab(self):
+        ks = L.KnownSet(known={"おめでとう", "夢"})
+        for text in ("おめでとうございます。", "夢でございます。",
+                     "夢ではございません。"):
+            d = L.analyze_sentence(text, ks)
+            self.assertEqual(d["unknown_lemmas"], [], text)
+
+    def test_aux_verb_position_disambiguates(self):
+        ks = L.KnownSet(known={"やる", "ジャガイモ", "食べる"})
+        # after て the 非自立可能 verb is grammar…
+        d = L.analyze_sentence("やってくれた。", ks)
+        self.assertEqual(d["unknown_lemmas"], [])
+        d = L.analyze_sentence("食べてしまった。", ks)
+        self.assertEqual(d["unknown_lemmas"], [])
+        # …but as the main verb it still counts as vocabulary
+        d = L.analyze_sentence("ジャガイモくれた。", ks)
+        self.assertEqual(d["unknown_lemmas"], ["くれる"])
+
     def test_known_set_normalized_variant(self):
         # こもる is known when 籠る is known — both normalize to 籠もる.
         base = L.tokenize("籠る")[0]

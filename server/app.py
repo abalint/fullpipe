@@ -330,8 +330,9 @@ def create_app(cfg, start_worker=True):
         """JMdict entries for every content lemma in the episode — the
         player's any-word dictionary popup. Keyed by the Sudachi lemma the
         transcript tokens already carry, so the client needs no deinflection.
-        Curate-authored `defs` (words JMdict lacks: names, onomatopoeia,
-        compounds — glossed by the curate pass) merge in, flagged `ai`.
+        Curate-authored `defs` merge in flagged `ai`: sole entry for words
+        JMdict lacks (names, onomatopoeia, compounds), prepended episode-
+        sense entry for words it has (context-first popup).
         {} until `tools.jmdict build` has produced <work_dir>/jmdict.db."""
         try:
             coverage = load_coverage(cfg, episode_id)

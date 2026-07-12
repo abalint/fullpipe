@@ -40,13 +40,15 @@ def lemma_reading(lemma):
 
 
 def analyze(transcript, known_bundle, freq=None, already_carded=frozenset(),
-            words=None):
+            words=None, non_vocab=frozenset()):
     """Pure coverage analysis. Returns the coverage.json payload (unrecorded).
 
     known_bundle: dict from ledgerctl.materialize_known (known / learning /
     norm_known / known_stems). freq: {lemma: rank}. words: the episode's raw
     ASR timed words (words.json), used to attach a per-token start time "t"
     that paces the player's subtitle roll-up; None/misaligned → no "t".
+    non_vocab: the repair pass's adjudicated non-vocabulary keys (repair.json)
+    — names Sudachi's dictionary misses, ASR non-words.
     """
     freq = freq or {}
     ks = L.KnownSet(known_bundle["known"], known_bundle.get("norm_known", ()),
@@ -55,7 +57,7 @@ def analyze(transcript, known_bundle, freq=None, already_carded=frozenset(),
     learning = set(known_bundle.get("learning", ()))
 
     sentences = [(s["start"], s["end"], s["text"]) for s in transcript["sentences"]]
-    result = L.analyze_transcript(sentences, ks, learning)
+    result = L.analyze_transcript(sentences, ks, learning, non_vocab)
 
     char_times = WA.sentence_char_times(
         [s["text"] for s in transcript["sentences"]], WA.char_timeline(words),
@@ -68,12 +70,14 @@ def analyze(transcript, known_bundle, freq=None, already_carded=frozenset(),
         times = char_times[d["index"]] if char_times else None
         pos = 0  # cursor over the sentence's content chars
         toks = []
-        for t in L.tokenize(d["text"]):
+        all_toks = L.tokenize(d["text"])
+        vocab = set(L.vocab_indices(all_toks, non_vocab))
+        for ti, t in enumerate(all_toks):
             tok = {
                 "s": t.surface,
                 "l": t.lemma,
                 "r": L.kata_to_hira(t.reading),
-                "c": L.is_content_word(t.pos) and L.is_card_worthy(t.lemma),
+                "c": ti in vocab,
                 "k": t in ks,
             }
             if times is not None:
@@ -191,7 +195,11 @@ def run_coverage(cfg, episode_id, refresh_known=False, record=True, conn=None):
     words_path = episode_dir(cfg, episode_id) / "words.json"
     words = read_json(words_path).get("words") if words_path.exists() else None
 
-    cov = analyze(transcript, known_bundle, freq, carded, words=words)
+    from tools.repair import load_non_vocab
+    non_vocab = load_non_vocab(cfg, episode_id)
+
+    cov = analyze(transcript, known_bundle, freq, carded, words=words,
+                  non_vocab=non_vocab)
     cov["known_sources"] = known_bundle["sources"]
 
     if record:

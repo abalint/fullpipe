@@ -96,9 +96,10 @@ block, then decide together what this session does:
 For each episode chosen: `$PY -m server.jobqueue set-state <id> curating`,
 then run the **punctuation gate (Step 2.5)** — a worker that ran without
 `OPENAI_API_KEY` leaves choppy, unpunctuated sentences you should fix before
-reading — and only then continue with Step 3 (its transcript + coverage already
-exist). Curate episodes **one at a time**, completing each through Step 6
-before the next.
+reading — then the **repair gate (Step 2.6)**, and only then continue with
+Step 3 (its transcript + coverage already exist; re-run coverage if either
+gate changed anything). Curate episodes **one at a time**, completing each
+through Step 6 before the next.
 
 ## Step 2 — acquire + coverage (direct mode / missing artifacts only)
 
@@ -107,8 +108,9 @@ Skip this entirely when `<episode_dir>/transcript.json` **and**
 
 ```sh
 $PY -m tools.acquire "<url-or-file>" --no-punct-restore   # stdout = episode_id
-# → run the punctuation gate (Step 2.5) here, BEFORE coverage —
-#   re-segmenting changes sentence indices coverage depends on
+# → run the punctuation gate (Step 2.5), then the repair gate (Step 2.6),
+#   BEFORE coverage — re-segmenting changes sentence indices, and repairing
+#   the text first keeps mistranscribed lemmas out of the recorded exposures
 $PY -m tools.coverage EPISODE_ID            # stdout = path to coverage.json
 ```
 
@@ -184,9 +186,64 @@ $PY -m tools.punctuate check EPISODE_ID     # stdout = blocks path, or empty
   stressing *exactly one entry per input block, same order*.
 
 - **After `apply`, coverage is stale** — sentence indices changed. Re-run it:
-  direct path, this IS the Step 2 coverage call (run it now, after the gate);
-  queue path, re-run `$PY -m tools.coverage EPISODE_ID` before Step 3 (offer
-  `--refresh-known` if the worker prepared it long ago).
+  direct path, this IS the Step 2 coverage call (run it now, after BOTH
+  gates); queue path, re-run `$PY -m tools.coverage EPISODE_ID` before Step 3
+  (offer `--refresh-known` if the worker prepared it long ago).
+
+## Step 2.6 — repair gate (subagent transcript repair + adjudication)
+
+ASR damage no tokenizer can catch: homophone mistranscriptions
+(合法なりまして for 号砲鳴りまして) mint fake unknown lemmas, garbled runs
+(ワンタイン) become "words", and names Sudachi's dictionary doesn't know
+(いぶき) surface as mining candidates. Reading the sentences in context —
+subagent work — is the only fix. Run the gate on every episode, both entry
+paths, ALWAYS AFTER the punctuation gate (its apply would clobber repairs):
+
+```sh
+$PY -m tools.repair check EPISODE_ID        # stdout = blocks path, or empty
+```
+
+- **Empty stdout** → already repaired; move on.
+- **A path on stdout** (`<episode_dir>/repair_blocks.json`: the transcript
+  sentences, plus `suspects` — unknown lemmas with their sentences, no
+  `freq_rank` = classic mistranscription signature — when coverage already
+  exists). **Spawn a subagent** (Agent tool, `general-purpose`):
+
+  > Read `<episode_dir>/repair_blocks.json` — `sentences` is a Japanese
+  > speech transcript (ASR or auto-subs), `suspects` (if present) lists
+  > odd-looking words with the sentence they came from. Find, using full
+  > context: (1) **mistranscriptions** — homophone/kanji errors and garbled
+  > runs where the surrounding context makes the intended text clear
+  > (e.g. 合法なりまして at a race start is 号砲鳴りまして); (2) **names** —
+  > person/place/brand names that a dictionary tokenizer would misread as
+  > ordinary words; (3) **non-words** — ASR artifacts that are not Japanese
+  > words at all and not fixable with confidence. Write to
+  > `<episode_dir>/repair_out.json`:
+  > `{"edits": [{"idx", "old", "new", "why"}], "names": [{"surface",
+  > "kind", "note"}], "nonwords": ["…"]}` and reply with that path only.
+  > Rules: edits are LOCAL fixes — replace a short wrong span with a short
+  > right one inside the same sentence; never merge/split/reorder sentences,
+  > never "improve" phrasing, never edit on a guess (an unfixed error is
+  > recoverable, a wrong "fix" is not). `old` must appear verbatim in
+  > sentence `idx`. Empty lists are a fine answer for a clean transcript.
+
+  Then validate-and-apply (bounded edits; rewrites `transcript.json` +
+  `sentences.srt` in place, sentence count/timing untouched; persists the
+  name/non-word adjudications to `repair.json`, which every future coverage
+  run folds into its non-vocab set):
+
+  ```sh
+  $PY -m tools.repair apply EPISODE_ID <episode_dir>/repair_out.json
+  ```
+
+  Relay rejected edits to the user if any look like real fixes the guardrail
+  blocked (they stay listed in `repair.json` → `edits_rejected`).
+
+- **After `apply`, re-run coverage** if it reported changes (direct path:
+  this is the normal Step 2 coverage call, which comes after this gate
+  anyway). Names the subagent flagged are prime `defs` material in Step 3 —
+  gloss the orienting ones (who/what they are); they no longer pollute
+  candidates or exposures.
 
 ## Step 3 — curate (the live intelligence; this is your job, not a tool's)
 
@@ -304,8 +361,15 @@ Then produce, in `<episode_dir>/curate.json`:
   are, e.g. "Takeda-o: abandoned JR station on the old Fukuchiyama line").
   The gloss is the sense used in this episode, ≤6 words. Skip bare numbers
   (1万) and ASR garbage — garbage goes in `exclude`, never gets a def. The
-  server merges `defs` into `/definitions` flagged `ai`, JMdict always wins
-  on conflict, so an entry here can't corrupt a real lookup.
+  server merges `defs` into `/definitions` flagged `ai`: for words JMdict
+  lacks it's the only entry; for words JMdict HAS, your entry is
+  **prepended** — the popup leads with the episode's sense, dictionary
+  entries after. So also write a def when JMdict's first sense would
+  mislead in this context (甘い glossed "sweet" in an episode using it as
+  "naive") — worth doing for focal points and any polysemous keyword; a
+  wrong gloss can demote but never hide the real entry. Names the repair
+  gate flagged (Step 2.6, `repair.json` → `names`) are the other defs
+  worklist — gloss the orienting ones.
 
 - Write valid JSON, `ensure_ascii` irrelevant — just write UTF-8.
 

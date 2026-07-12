@@ -73,9 +73,9 @@ def load_known_intervals(sources, url="http://localhost:8765"):
                 text = L.strip_html(L.strip_furigana(fobj.get("value", "")))
                 if not text:
                     continue
-                for t in L.tokenize(text):
-                    if not L.is_content_word(t.pos) or not L.is_card_worthy(t.lemma):
-                        continue
+                toks = L.tokenize(text)
+                for ti in L.vocab_indices(toks):
+                    t = toks[ti]
                     if ivl > intervals.get(t.lemma, -(10 ** 9)):
                         intervals[t.lemma] = ivl
                     if t.normalized and ivl > norm_intervals.get(t.normalized, -(10 ** 9)):

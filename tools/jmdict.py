@@ -163,12 +163,22 @@ def ai_entry(d):
 
 
 def merge_curate_defs(result, curate):
-    """Fold curate.json's `defs` into a lookup_many result, JMdict first:
-    curate only glosses words the dictionary lacks, so an AI entry never
-    shadows a real one."""
+    """Fold curate.json's `defs` into a lookup_many result.
+
+    Words JMdict lacks get the AI entry as their only entry. Words JMdict
+    HAS get the AI entry PREPENDED: curate wrote it from the episode's
+    actual context, so the popup leads with the sense the viewer just heard
+    — full dictionary entries follow, so a wrong AI gloss can demote but
+    never hide the real lookup."""
     for d in curate.get("defs", []):
         word = d.get("word")
-        if word and d.get("gloss") and word not in result:
+        if not word or not d.get("gloss"):
+            continue
+        entries = result.get(word)
+        if entries:
+            if not any(e.get("ai") for e in entries):
+                result[word] = [ai_entry(d)] + entries
+        else:
             result[word] = [ai_entry(d)]
     return result
 

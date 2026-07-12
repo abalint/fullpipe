@@ -372,7 +372,8 @@ class TestRoutes(ServerTestBase):
 
     def test_definitions_merge_curate_authored_defs(self):
         # words JMdict lacks get their gloss from the curate pass (`defs` in
-        # curate.json), flagged ai — and never shadow a real JMdict entry
+        # curate.json) as the sole entry; words JMdict HAS get the episode-
+        # sense entry PREPENDED (context-first popup, dictionary after)
         import sqlite3
 
         from tools import jmdict
@@ -390,7 +391,7 @@ class TestRoutes(ServerTestBase):
                 {"word": "犬", "reading": "いぬ", "gloss": "dog",
                  "pos": "noun"},
                 {"word": "公園", "reading": "こうえん",
-                 "gloss": "must not shadow JMdict"},
+                 "gloss": "the park near the studio"},
                 {"word": "ノイズ"},  # glossless row is dropped, not a 500
             ],
         })
@@ -398,7 +399,13 @@ class TestRoutes(ServerTestBase):
         self.assertEqual(data["犬"], [{"k": ["犬"], "r": ["いぬ"],
                                       "s": [{"pos": ["noun"], "g": ["dog"]}],
                                       "ai": True}])
-        self.assertNotIn("ai", data["公園"][0])  # JMdict wins
+        # episode sense first, real dictionary entry preserved after
+        self.assertEqual(len(data["公園"]), 2)
+        self.assertTrue(data["公園"][0]["ai"])
+        self.assertEqual(data["公園"][0]["s"][0]["g"],
+                         ["the park near the studio"])
+        self.assertNotIn("ai", data["公園"][1])
+        self.assertEqual(data["公園"][1]["s"][0]["g"], ["(public) park"])
         self.assertNotIn("ノイズ", data)
 
     def test_video_and_subs(self):
