@@ -65,7 +65,7 @@ transcription engine selected via `asr.gpu_url` in `config.json`.
 
 In `config.json`:
 ```json
-"asr": { "engine": "auto", "gpu_url": "http://100.72.37.37:8422", "gpu_token": "" }
+"asr": { "engine": "auto", "gpu_url": "http://100.x.x.x:8422", "gpu_token": "" }
 ```
 `auto` prefers this service for Japanese, and transparently falls back to CPU
 ReazonSpeech / ElevenLabs when the desktop is off.
