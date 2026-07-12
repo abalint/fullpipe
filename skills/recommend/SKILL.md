@@ -32,7 +32,7 @@ material. (rec-system research 2026-07-06.)
 - `FULLPIPE` = project root (resolve this skill's symlink, go two dirs up). On
   this machine: `~/Documents/code/anki/fullPipe`.
 - `PY = $FULLPIPE/.venv/bin/python` (3.12). Run every command **from `$FULLPIPE`**.
-- Tool: `$PY -m tools.harvest {seeds | run | list | set-status}`.
+- Tool: `$PY -m tools.harvest {seeds | run | list | gate-speech | estimate-coverage | set-status}`.
 - Discovery store: `<work_dir>/discover.db` — separate from `ledger.db` by
   design, so crawl junk never pollutes the event-sourced ledger. Harvesting
   writes only here.
@@ -48,6 +48,24 @@ material. (rec-system research 2026-07-06.)
 2. **Topic?** `/recommend about <topic>` → focused mode (Step 2 seeds from the
    topic). Bare `/recommend` → open mode. Note the count if they asked for one
    ("recommend 5"); default to **6–8 picks**.
+3. **Comprehensibility mode?** If the ask reaches for *easy-to-follow* content —
+   `/recommend comprehensible`, "highly comprehensible", "stuff I can actually
+   follow", "made for natives but easy", "low difficulty" — flip on
+   **comprehensibility mode**. It composes with topic/open: it does **not**
+   narrow the subject, it re-weights *toward what the learner can parse right
+   now*. Three things change: Step 2 biases the query clusters toward easy-but-
+   native genres (below), the speech gate runs **earlier and harder** (silent
+   content is doubly useless here), and the Step 4.6 coverage estimate becomes a
+   **ranking driver**, not just a displayed number. Crucial distinction the user
+   drew: they want **native-audience** content that happens to be easy — *not*
+   learner/graded material (slow-Japanese-for-learners channels, JLPT drills).
+   High estimated coverage is necessary but not sufficient; a graded-reader
+   channel scores high and is still a miss. Keep the native-viewer bar from
+   Step 4.
+   In the default (non-comprehensibility) pass the estimate is still **computed
+   and shown** — it's cheap and informative — but novelty stays primary and you
+   don't filter on it ([[recommend-novelty-over-centroid]]: taste is a guardrail,
+   not gravity; comprehensibility is a *calibrator*, honored hard only when asked).
 
 ## Step 1 — read the taste (seeds)
 
@@ -108,6 +126,18 @@ niche-finder):
   `秘境 旅`, `廃墟 探訪`, `限界ニュータウン` — read what they actually rated high).
 - **Focused mode** (`about <topic>`): seed from the topic but keep novelty — emit
   ~5 *different angles* on it (native format variants), not 5 near-duplicates.
+- **Comprehensibility mode** (Step 0.3): bias the clusters toward genres that
+  skew *easy but still native* — one clear speaker, everyday register, concrete
+  visually-scaffolded topics (the debrief pattern: "follows the pictures" content
+  lands, dense narration-only doesn't — [[debrief-calibration-baseline]]). Good
+  veins: 日常 vlog / ルーティン, 一人暮らし, 簡単料理 / 作り置き (talking-to-camera
+  cooking), 商店街・食べ歩き, ペット / 猫 vlog, カフェ 作業, ゆるい 雑談 / soft
+  spoken talk-to-camera. Steer *away from* the hard-to-parse end: dense
+  documentary narration, fast 漫才 / お笑い, heavy-dialect content, technical
+  解説 lecture, overlapping-crosstalk variety. Still emit these as native search
+  strings, still spread across clusters — you're shifting the *difficulty prior*,
+  not abandoning breadth. Do **not** add learner/graded terms (`日本語 学習`,
+  `やさしい日本語`, JLPT) — those surface the learner content the user rejects.
 
 Breadth is the policy: jump between subcultures, don't drill one.
 
@@ -177,8 +207,12 @@ say so in the pick's line rather than silently including it. (If the user ever
 wants to see what got auto-filtered: `harvest list --status filtered`; to tune
 the list, edit `discover.format_blocklist` then `harvest refilter`.)
 
-Comprehensibility / coverage is **not** computed here — it's the on-ramp in
-`/immerse`, lazily, once a pick is committed. Selection is pure metadata.
+The *final* comprehensibility number is still `/immerse`'s job (computed on the
+cleaned, punctuation-restored, repaired transcript once a pick is committed).
+But a **ranking-grade estimate** is now available at selection time from the free
+ASR caption — Step 4.6. In comprehensibility mode it's a ranking driver; in the
+default pass it's a shown-but-not-decisive annotation. Everything else in this
+step is still pure metadata.
 
 ## Step 4.5 — speech gate (mandatory, before you present)
 
@@ -219,12 +253,56 @@ trust your judgment and note it.)
 > wrongly drop the wider breadth of caption-less-but-spoken videos. See
 > `DESIGN.md → The speech gate` for the full note.
 
+## Step 4.6 — comprehensibility estimate (always run on the shortlist)
+
+The selection-time answer to "will I actually be able to follow this?" Run it on
+the speech-gated shortlist (the `ja` survivors), always — it's cheap and the
+number is worth showing even in an open pass:
+
+```sh
+$PY -m tools.harvest estimate-coverage <id> <id> <id> ...
+```
+
+It pulls each candidate's `ja-orig` ASR caption (no video download — tens of KB),
+tokenizes it with the **same** `engine.lemma` the real coverage pass uses, and
+scores it against the **live ledger known-set**, returning per id:
+
+- `pct` — estimated token comprehensibility (0–1), on the *same scale as
+  `coverage.json`*. `iplus1` — count of one-unknown-away lines (mining yield).
+  `tokens` — content tokens seen. Cached in `meta.coverage_est`; re-runs are free.
+- `verdict='no_caption'`, `pct=null` — no `ja-orig` track to score (uploader
+  disabled auto-subs, or it slipped the speech gate). Don't invent a number;
+  present it as "coverage unknown" or drop it in comprehensibility mode.
+
+**Read the number honestly — it is a floor, not a promise.** It's raw ASR with
+no punctuation-restore or repair pass, so ASR non-words and un-adjudicated names
+count *against* the learner (the cross-episode name registry claws some back, but
+fresh names still cost). So the real coverage.json usually lands **at or above**
+the estimate, and lived comprehension lands well below either: the first
+/debrief mapped a 54% coverage.json to ~35% real comprehension
+([[debrief-calibration-baseline]]). Use it to **compare candidates** and set a
+floor, not to predict the watch.
+
+How to use it:
+
+- **Comprehensibility mode** (Step 0.3): make it a primary ranking key. Sort the
+  taste-worthy, speech-passed shortlist by `pct` descending, drop `no_caption`,
+  and prefer picks in a genuinely-followable band (roughly `pct ≳ 0.75` given the
+  downward bias and the ~35%-of-54% comprehension mapping — adjust as debriefs
+  recalibrate). A high `iplus1` alongside high `pct` is the sweet spot: followable
+  *and* still teaching. Present the % on every pick.
+- **Default / open pass**: still run it, still show `pct` on each pick's line, but
+  keep novelty the ranker — a fascinating 55% wildcard belongs in an open pass;
+  it just belongs *labelled*.
+
 ## Step 5 — present + hand off
 
-Present the ranked picks as one compact block — per pick: **title · channel**, a
-one-line *why* (the relevance/novelty rationale, and the edge if telling — "same
-walking-vlog neighborhood as ★5 ガマランド" / "new cluster: wildcard"), and the URL
-`https://www.youtube.com/watch?v=<video_id>`.
+Present the ranked picks as one compact block — per pick: **title · channel**,
+the **est. coverage** (`~NN%` from Step 4.6, or "coverage unknown" for a
+`no_caption`), a one-line *why* (the relevance/novelty rationale, and the edge if
+telling — "same walking-vlog neighborhood as ★5 ガマランド" / "new cluster:
+wildcard"), and the URL `https://www.youtube.com/watch?v=<video_id>`. Show the %
+even in an open pass; in comprehensibility mode it's the sort key so lead with it.
 
 Then offer the handoff (AskUserQuestion when interactive — which to take):
 
@@ -283,4 +361,6 @@ the data; don't invent preferences the ratings don't show.
 | `related` returns nothing for a seed | InnerTube `/next` shape changed or bot-checked | fine — search + rss still carry the run; if persistent, bump `INNERTUBE_CLIENT_VERSION` in `tools/harvest.py` |
 | `search` empty for a query | yt-dlp bot-check or too-narrow query | broaden the query; if all queries fail, the IP may be flagged — try later |
 | `gate-speech` → most picks `silent`/`unknown` | yt-dlp bot-check / IP flagged (extraction failing), not genuinely silent | verify one by hand; if extraction is broken, gate can't vouch — say so and lean on judgment, don't drop everything |
+| `estimate-coverage` → all `no_caption` | yt-dlp bot-check / IP flagged (caption fetch failing), not genuinely caption-less | same as above — the estimate can't vouch; fall back to judgment and say the number's missing, don't drop everything |
+| `estimate-coverage` `pct` reads implausibly low | raw-ASR bias (names/ASR-garble counted unknown) on a name-dense or noisy-audio video | expected floor behavior — the real coverage.json lands higher; note it, don't treat the estimate as the verdict |
 | a pick fails in `/immerse` later | source gone / region-locked / needs cookies | that's `/immerse`'s failure path, not this one — `set-status <id> dismissed` and move on |

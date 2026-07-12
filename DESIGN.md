@@ -463,19 +463,34 @@ ledger still undercounts, sharpening into a real difficulty predictor as `tap_kn
 enjoyment features: card-review performance and card yield are language-difficulty
 signal, never taste.
 
+### Measured comprehension — the /debrief signal (built 2026-07-11)
+
+The "comprehension quiz" that was deferred here landed as **/debrief**, a live
+post-watch interview rather than a prerendered quiz (better: it adapts, probes
+partials, and grades against a native-viewer bar — no question survives that a
+native casual viewer wouldn't retain a day later). Coverage measures
+*vocabulary overlap*; the debrief measures the real target, *did you actually
+follow it* — and splits it in two, because visuals subsidize comprehension:
+
+- `comprehension_pct` — airtime-weighted rubric total over the whole spine
+  (did the *episode* land)
+- `language_pct` — the audio-only-probe subtotal (did the *Japanese* land)
+
+Persistence mirrors taste: an append-only **`debriefs`** table is the truth
+(one row per interview, scored rubric JSON included; re-debriefs append), with
+the latest scores cached onto `episodes.comprehension_pct/language_pct/
+debriefed_at` — so the video-history row carries the *prediction*
+(`coverage_pct`, `difficulty_felt`) and the *measurement* side by side.
+`ledgerctl record-debrief` writes it; `ledgerctl query debriefs` is the
+improvement curve (oldest first, prediction joined to measurement). The
+long-game payoffs stand as written: ground truth for the `over_my_head`
+decoupling, and — as rows accumulate — calibrating the coverage→comprehension
+mapping itself (retuning the `promote` θ thresholds). First calibration point
+(2026-07-11): 54% measured coverage ≈ 0.35–0.40 comprehension, with an
+on-screen/audio-only split as the dominant miss pattern.
+
 **Deferred signals:**
 
-- **Comprehension quiz.** Coverage measures *vocabulary overlap* — a proxy for the
-  real target, *did you actually follow it*. A short (~5-question) LLM-generated
-  comprehension quiz, prerendered at curate time and offered *after* `watched`
-  (post-watch, no spoiler), would measure that target directly. Two payoffs: it's
-  ground-truth that sharpens the `over_my_head` decoupling beyond self-report, and —
-  the bigger one — scoring it against predicted coverage over time **calibrates the
-  coverage→comprehension mapping itself** (retunes the `promote` θ thresholds), so
-  the quiz trains the *ledger*, not just the episode record. Content is *meaning*
-  comprehension (main point, key facts), not vocab recall (taps/cards own that).
-  Higher friction than a tag, so keep it optional and likely only near the i+1
-  frontier where the difficulty signal matters most. **Not now.**
 - **Watch-completion granularity** (watch %, bail point) waits for an in-app video
   player; a `file://` handoff can't measure it honestly. Behavioral signal today is
   still the binary `watched` gate.
@@ -518,7 +533,7 @@ session**, not an API (the user prefers CLI/agent over cloud; precedent: the
   `ytsearchN:` — where the skill's JP query-expansion lands), `rss`
   (`feeds/videos.xml` fresh uploads from known channels). Dedupes against the
   ledger + the store, writes to `discover.db`. Verbs: `seeds · run · list ·
-  set-status · refilter · gate-speech`.
+  set-status · refilter · gate-speech · estimate-coverage`.
 - **`/recommend`** (smart) — reads `harvest seeds` (rated history + channels +
   liked ids) and `taste.md`, **expands taste into ~15–20 native JP queries**
   (the single highest-leverage AI step — the genre vocabulary is cultural, not
@@ -566,6 +581,31 @@ text on a silent video — neither counts).
 > transcriber's own speech/no-speech verdict — and `probe_speech()` in
 > `tools/harvest.py` + Step 4.5 in `skills/recommend/SKILL.md` should be updated
 > together. Keep this note in sync with whichever route ships.
+
+### The comprehensibility estimate (selection-time coverage)
+
+Selection used to be pure metadata — comprehensibility was computed only in
+`/immerse`, after a pick was committed. So "find me content I can actually
+follow" had no quantitative signal to rank on, and the speech gate's binary
+has-speech verdict was the only pre-commit read on difficulty. `harvest
+estimate-coverage` closes that: it reuses the **same** `ja-orig` ASR caption the
+speech gate already relies on (no video download), tokenizes it with the **same**
+`engine.lemma`, and scores it against the **live ledger known-set** via the same
+`analyze_transcript → token_comprehensibility` the real coverage pass uses — so
+the estimate lands on the `coverage.json` scale. It's a **ranking signal, not a
+gate**: no status change, no ledger write, cached in `meta.coverage_est`.
+`/recommend` Step 4.6 runs it on the speech-gated shortlist always (shown even in
+an open pass) and treats it as a primary sort key only in comprehensibility mode
+(Step 0.3) — honoring the asymmetry that comprehensibility is a *calibrator* to
+lean on when asked, not echo-chamber gravity to always-apply.
+
+The number is a deliberate **floor**: raw ASR with no punctuation-restore or
+repair pass, so ASR non-words and un-adjudicated names count against the learner
+(the cross-episode name registry claws some back). Real coverage.json usually
+lands at or above it; lived comprehension lands below (first debrief: 54%
+coverage → ~35% comprehension). It shares the speech gate's fate above — when the
+no-subtitle acquisition route ships, a caption-less-but-spoken video will read as
+`no_caption` and needs the same audio-based fallback to be scored.
 
 ### Account risk & the (deferred) keep-warm layer
 

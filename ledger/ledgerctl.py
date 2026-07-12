@@ -159,6 +159,9 @@ def _migrate(conn):
         ("coverage_pct", "coverage_pct REAL"),
         ("iplus1_count", "iplus1_count INTEGER"),
         ("known_set_size", "known_set_size INTEGER"),
+        ("comprehension_pct", "comprehension_pct REAL"),
+        ("language_pct", "language_pct REAL"),
+        ("debriefed_at", "debriefed_at TEXT"),
         ("metadata", "metadata TEXT"),
     ):
         if col not in have:
@@ -529,6 +532,83 @@ def record_curation(conn, episode_id, curation):
     columns = {k: curation.get(k) for k in ("genre", "format", "difficulty_felt")}
     metadata = {"topics": curation["topics"]} if curation.get("topics") is not None else {}
     return update_episode_meta(conn, episode_id, columns=columns, metadata=metadata)
+
+
+def record_debrief(conn, episode_id, payload, debrief_id=None):
+    """Append a /debrief comprehension interview's result (DESIGN.md —
+    Measured comprehension). The debrief skill's rubric produces two scores:
+
+      comprehension_pct : 0..1 — airtime-weighted total over all spine
+                          questions (did the episode land)
+      language_pct      : 0..1 — subtotal over the audio-only probes (did the
+                          *Japanese* land, visuals subtracted); None if the
+                          conversation never reached one
+      lag_days          : watch → debrief gap the scores are conditioned on
+      questions         : the scored rubric, [{q, weight, score, audio_only,
+                          note}, …] — kept verbatim for later re-analysis
+
+    Append-only like taste_events: a re-debrief adds a NEW row (the drift IS
+    the improvement signal); episodes.comprehension_pct/language_pct/
+    debriefed_at cache the latest for cheap history reads next to
+    coverage_pct — prediction and measurement on the same row.
+
+    debrief_id: normally minted here; a caller may supply its own so a replay
+    is a no-op (same contract as record_rating's review_id).
+    """
+    comp = payload.get("comprehension_pct")
+    lang = payload.get("language_pct")
+    lag = payload.get("lag_days")
+    for name, val, required in (("comprehension_pct", comp, True),
+                                ("language_pct", lang, False)):
+        if val is None:
+            if required:
+                raise ValueError(f"{name} is required")
+            continue
+        if isinstance(val, bool) or not isinstance(val, (int, float)) \
+                or not 0 <= val <= 1:
+            raise ValueError(f"{name} must be 0..1, got {val!r}")
+    if not conn.execute("SELECT 1 FROM episodes WHERE id = ?",
+                        (episode_id,)).fetchone():
+        raise KeyError(f"episode not found in ledger: {episode_id}")
+    if debrief_id and conn.execute(
+            "SELECT 1 FROM debriefs WHERE debrief_id = ?", (debrief_id,)).fetchone():
+        return {"episode_id": episode_id, "debrief_id": debrief_id,
+                "comprehension_pct": comp, "language_pct": lang,
+                "duplicate": True}
+
+    ts = now_iso()
+    debrief_id = debrief_id or uuid.uuid4().hex
+    questions = payload.get("questions")
+    conn.execute(
+        """INSERT INTO debriefs (episode_id, debrief_id, comprehension_pct,
+                                 language_pct, lag_days, questions, ts)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (episode_id, debrief_id, comp, lang, lag,
+         json.dumps(questions, ensure_ascii=False) if questions is not None else None,
+         ts))
+    conn.execute(
+        "UPDATE episodes SET comprehension_pct = ?, language_pct = ?, "
+        "debriefed_at = ? WHERE id = ?",
+        (comp, lang, ts, episode_id))
+    conn.commit()
+    return {"episode_id": episode_id, "debrief_id": debrief_id,
+            "comprehension_pct": comp, "language_pct": lang,
+            "lag_days": lag, "ts": ts}
+
+
+def query_debriefs(conn):
+    """The full debrief history, oldest first — the improvement curve. Each row
+    pairs the ledger's difficulty *prediction* at watch time (coverage_pct,
+    difficulty_felt) with the *measured* outcome (comprehension_pct,
+    language_pct), so the trend to watch is the measured line rising at a
+    given coverage level — and the prediction→measurement gap is the coverage
+    model's calibration error (DESIGN.md — Measured comprehension)."""
+    return [dict(r) for r in conn.execute(
+        """SELECT d.ts, d.episode_id, e.title, e.channel, e.duration,
+                  e.coverage_pct, e.difficulty_felt,
+                  d.comprehension_pct, d.language_pct, d.lag_days
+           FROM debriefs d LEFT JOIN episodes e ON e.id = d.episode_id
+           ORDER BY d.ts""")]
 
 
 def record_curate_items(conn, episode_id, curation, jmdict_conn=None):
@@ -1441,10 +1521,16 @@ def main(argv=None):
                        help="persist /immerse curation metadata (genre/format/topics/difficulty)")
     p.add_argument("episode_id")
     p.add_argument("curate_json", help="path to the episode's curate.json")
+    p = sub.add_parser("record-debrief",
+                       help="persist a /debrief interview's rubric scores")
+    p.add_argument("episode_id")
+    p.add_argument("debrief_json",
+                   help="JSON file: {comprehension_pct, language_pct?, "
+                        "lag_days?, questions?, debrief_id?}")
     p = sub.add_parser("query", help="read the ledger")
     p.add_argument("what", choices=["summary", "needs-review", "confirm-queue",
                                     "why", "unwatched", "ratings", "channels",
-                                    "grammar-proposed", "non-vocab"])
+                                    "grammar-proposed", "non-vocab", "debriefs"])
     p.add_argument("lemma", nargs="?")
 
     args = ap.parse_args(argv)
@@ -1544,6 +1630,10 @@ def main(argv=None):
                 jconn.close()
         result["promote"] = promote(conn)
         _json_out(result)
+    elif args.verb == "record-debrief":
+        payload = json.loads(Path(args.debrief_json).read_text(encoding="utf-8"))
+        _json_out(record_debrief(conn, args.episode_id, payload,
+                                 debrief_id=payload.get("debrief_id")))
     elif args.verb == "query":
         if args.what == "summary":
             _json_out(query_summary(conn))
@@ -1572,6 +1662,8 @@ def main(argv=None):
             _json_out([dict(r) for r in conn.execute(
                 "SELECT key, kind, note, origin, ts FROM non_vocab "
                 "ORDER BY ts DESC, key")])
+        elif args.what == "debriefs":
+            _json_out(query_debriefs(conn))
 
 
 if __name__ == "__main__":

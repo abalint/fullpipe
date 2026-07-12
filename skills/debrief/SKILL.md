@@ -1,6 +1,6 @@
 ---
 name: debrief
-description: Post-watch comprehension conversation for the fullPipe Immersion Workstation. Bare `/debrief` works the phone's debrief queue — episodes the user flagged with the app's 🗣 button — falling back to the most recently watched episode (asking when there's a choice); `/debrief <episode|title>` targets one. Runs an English conversation that tests what the user actually understood — main idea → key details → targeted probes of focal vocab/grammar quoted from the transcript — then answers the exposure-confirmation queue from the knowledge the user demonstrated (confirm/defer), clears the episode's debrief flag (re-arming delete), and closes with an honest read of what was and wasn't caught. Use for "/debrief", "quiz me on what I watched", "comprehension test", "test my understanding of that episode", "did I actually understand that", "post-watch check".
+description: Post-watch comprehension conversation for the fullPipe Immersion Workstation. Bare `/debrief` works the phone's debrief queue — episodes the user flagged with the app's 🗣 button — falling back to the most recently watched episode (asking when there's a choice); `/debrief <episode|title>` targets one. Runs a free-recall retell (scored against a hidden, weighted idea-unit map) plus a short non-leading gap pass to measure what the user actually understood — reported as two axes, event/content recall vs reflective/meaning recall — then answers the exposure-confirmation queue from the knowledge the user demonstrated (confirm/defer), clears the episode's debrief flag (re-arming delete), and closes with an honest read of what was and wasn't caught. Use for "/debrief", "quiz me on what I watched", "comprehension test", "test my understanding of that episode", "did I actually understand that", "post-watch check".
 ---
 
 # /debrief — post-watch comprehension conversation
@@ -12,10 +12,31 @@ actually landed — then converts the demonstrated knowledge into ledger answers
 for the exposure-confirmation queue, which is far higher-fidelity evidence
 than the phone's yes/no confirm taps.
 
-**Questions in English, content in Japanese.** The user chose English-mode
-testing on purpose: an answer limited by Japanese *production* skill would
-mask real comprehension. Ask in English; quote the episode's Japanese lines
-freely (that's re-exposure, a feature); accept answers in either language.
+**Free recall, not a quiz.** Learned the hard way (2026-07-12): a spine of
+posed questions inflates the score and is gameable — a viewer who understood
+nothing can still guess "comedian revisits mean-boss job and grows up" from
+the premise, and any hint in the question leaks the answer. So the primary
+instrument is an **unprompted retell**: the user narrates what they remember,
+you score only what they *volunteer* against a hidden idea-unit map. Producing
+specific content is the thing a non-watcher can't fake; that's what makes it
+honest. Posed questions come **after** the retell, sparingly, and only to
+probe or re-expose gaps — never as the main measurement.
+
+**English only in the prompts; no Japanese in the questions.** The user chose
+English-mode testing on purpose (an answer bottlenecked by Japanese
+*production* would mask comprehension) and asked that questions carry **no
+Japanese script or romaji** — describe the scene/line in English instead of
+quoting it. Save Japanese lines for the **close-out**, where quoting the
+missed line back is welcome re-exposure. One consequence to accept: this boxes
+out confirm-queue *vocab* checks, which need the target word named — leave
+those items untested (they stay queued) unless the user opts in to naming a
+single word. Answers in English or Japanese both count.
+
+**Know the user's profile.** Standing finding (memory
+`reflective-comprehension-weakness`): event/fact recall is strong, reflective/
+inferential/emotional content barely lands. Expect and *measure* that split;
+don't be surprised by it, and don't grind aimed questions at the reflective
+gap once it's confirmed absent — surface and discuss it instead (see Step 3).
 
 **Timing matters:** episode artifacts (`transcript.json`, `curate.json`,
 `coverage.json`) survive mark-watched but are deleted when the user
@@ -49,7 +70,7 @@ clear un-protects an episode they still want tested.
 
 If `$FULLPIPE/config.json` is missing, stop (same rule as /immerse: tell the
 user to copy `config.example.json`, don't invent one). Nothing else — this
-skill only reads artifacts and writes ledger confirmations.
+skill only reads artifacts and writes ledger confirmations + debrief scores.
 
 ## Step 1 — pick the episode
 
@@ -84,7 +105,7 @@ Gate before starting:
   pushes cards. Do **not** mark it watched yourself (that fires the whole
   card-push close-out; it's the phone's move).
 
-## Step 2 — prepare the spine (silently, before the first question)
+## Step 2 — build the idea-unit map (silently, before the first prompt)
 
 Read everything **up front, in one pass** — mid-conversation re-reads risk
 pasting answers into view and break the flow:
@@ -107,45 +128,75 @@ pasting answers into view and break the flow:
    and the rest, which you leave alone (mention the global queue size in the
    close-out if it's large).
 
-Then draft a hidden checklist — never show it:
+Then build a hidden **idea-unit map** — never show it. Segment the episode
+into its distinct idea units (a proposition, event, or claim the viewer could
+have taken away), and for each record:
 
-- **Gist** (1 question): premise / main arc, open-ended.
-- **Key details** (3–5): specific content questions spread across the
-  runtime — beginning, middle, end — so a doze-off in the second half shows
-  up. Prefer details that matter to the arc over trivia.
-- **Targeted probes**: the curate pass's focal points and any confirm-queue
-  items, each anchored to its actual line — quote the Japanese and ask what
-  it meant there, or describe the moment and ask what word/pattern the
-  presenter used. Grammar items: quote the sentence, ask what the pattern
-  contributes to it.
-- **Inference** (1–2): a why/so-what question that only someone who followed
-  the thread can answer (speaker's stance, the joke's setup, what happens
-  next and why).
+- a short label (what it is),
+- a **weight** ≈ its importance/airtime (the map is the scoring rubric, so a
+  throwaway one-liner weighs ~0.5, the thesis weighs 2–3),
+- a **tag**: `concrete` (an event or a stated fact — what happened, who,
+  numbers) vs `reflective` (an argument, stance, the emotional throughline,
+  the so-what). This tag is the axis that matters — see the two scores below.
 
-Scale to the episode: ~6–10 spine questions for a 20-minute video; fewer for
-a short. Every this-episode confirm-queue item gets covered — woven in where
-natural, else in a quick lightning round at the end ("a few quick word
-checks: what did 縄張り mean in this one?").
+Aim for completeness, not curation: the map is what the retell is checked
+*against*, so include the small units too (you just weight them low). Use
+coverage.json's per-sentence classifications to sanity-check which lines the
+model expected to be comprehensible.
+
+**The native-viewer bar** governs *weighting and grading*, not inclusion:
+weight toward what a native who watched once could still recall (story beats,
+the thesis, striking facts, cause-and-effect) and keep incidental figures/
+dates/counts/names low. When grading the retell, never dock the user for
+omitting a number or a fine contrast a native wouldn't have kept either.
+
+Confirm-queue items ride along in the map (tag them so you remember to try
+them), but note the no-Japanese constraint above usually leaves vocab checks
+untested — that's expected, not a failure.
 
 ## Step 3 — the conversation
 
-Plain conversational turns — one question at a time, wait for the answer,
-follow up. (AskUserQuestion is wrong here: answers are free-form.)
+Two phases. Plain conversational turns throughout (AskUserQuestion is wrong
+here: answers are free-form). The user can bail any time ("that's enough") →
+jump to Step 4 with whatever was covered.
 
-Rules of engagement:
+### Phase A — free recall (the measurement)
 
-- **Never leak the answer in the question.** "What was the shrine dog
-  guarding?" not "Why was the dog guarding its territory (縄張り)?"
-- **Follow up on partials** before moving on — "close; what happened right
-  after?" A second chance distinguishes shaky from absent.
-- **Adapt live.** Nailing everything → skip ahead to inference and the
-  hardest probes. Struggling → step down to scaffolded questions (offer the
-  scene, ask for the meaning) and shorten the spine; a failed test should
-  end kindly but honestly, not grind on.
-- Answers in English or Japanese both count; grade the *comprehension*, not
-  the phrasing.
-- The user can bail any time ("that's enough") → jump to Step 4 with
-  whatever was covered.
+Open with a single un-framed prompt: *"tell me everything you remember about
+that episode, in whatever order it comes."* Then **say nothing that seeds
+content** — no "and what about the machine?", no topic list. Let them run.
+A short "anything else?" to drain the well is fine; a nudge that names a
+segment is not (it converts recall into recognition and inflates the score).
+
+As they talk, check what they *volunteer* against the idea-unit map:
+
+- Score each unit **1 / 0.5 / 0** — reproduced clearly / vague or partial /
+  absent. Match on *content*, not phrasing or language; a rough English gloss
+  of an event counts as recall of that event.
+- The map's weights are pre-registered, so the two scores are arithmetic:
+  **event/content recall** = Σ(weight·score) over `concrete` units ÷ their
+  total weight; **reflective/meaning recall** = the same over `reflective`
+  units. Report both; the blended figure is the least useful of the three
+  because it hides the split.
+
+### Phase B — the gap pass (probe + re-expose)
+
+*After* the retell, work the units they left out — but purpose-first:
+
+- **If a gap might be omission not absence** (they narrate events but rarely
+  volunteer themes — most people don't), aim one *non-leading* probe at the
+  segment: describe the moment in English and ask what the point of it was.
+  Producing it now = it was there (score it, note "cued"); a blank or a
+  premise-level guess = a real gap.
+- **Once the reflective gap is confirmed** (see the user's standing profile —
+  aimed questions there mostly don't help him), stop testing it and switch to
+  **re-exposure**: walk the missed thread back to them plainly ("here's the
+  arc you didn't catch — he argued X, and the closing point was Y"). This is
+  the actionable half of the debrief, and it matters more the longer the
+  video; scale it up accordingly and keep it a short *conversation*, not an
+  interrogation.
+- Grade the *comprehension*, not the phrasing; answers in either language
+  count.
 
 **Grading confirm-queue items** — the bar for `confirm` is a demonstrated,
 specific knowledge claim (the docstring calls it "as strong as a tap"):
@@ -169,6 +220,31 @@ $PY -m ledger.ledgerctl defer   <KEY> --kind word|phrase|grammar   # tested, not
 (`confirm` promotes to known; `defer` snoozes until a fresh qualifying
 exposure. Both recompute the projection.)
 
+**Persist the rubric** — the scores outlive the episode dir (swipe-delete
+purges artifacts; the ledger is the durable side of the
+coverage→comprehension calibration). Write the scored rubric to a JSON file
+(scratchpad is fine) and record it:
+
+```sh
+$PY -m ledger.ledgerctl record-debrief <episode_id> <debrief.json>
+```
+
+The payload: `comprehension_pct` (0..1, the blended airtime-weighted total over
+the whole map — required), `language_pct` (0..1, **repurposed** as the
+**reflective/meaning-recall** subtotal — the `reflective`-tagged units only;
+this is the diagnostic axis, so record it whenever the map had reflective
+units), `lag_days` (watch → debrief gap, from the queue row's watched
+timestamp; omit if unknowable), and `questions` (the scored idea-unit map
+verbatim: `[{q, weight, score, audio_only, note}, …]` — reuse `audio_only`
+loosely for the concrete/reflective split and spell out `concrete`/`reflective`
+in each `note`). Re-debriefs append — the drift is the improvement signal, and
+a corrected pass supersedes a flawed one via a `METHOD NOTE` unit rather than a
+delete. Skip the write only when the debrief didn't happen
+(same bar as the flag clear below). `query debriefs` shows the history —
+prediction (`coverage_pct`) next to measurement, oldest first; consult it in
+Step 2 when a baseline exists ("last few debriefs at ~55% coverage measured
+~0.4 — is this one on trend?").
+
 **Clear the debrief flag** — the episode is tested, so re-arm delete on the
 phone (do this even for episodes that weren't flagged-but-debriefed anyway:
 `set-debrief off` on an unflagged job is a harmless no-op):
@@ -187,7 +263,12 @@ Then report, one tight block:
   with the actual lines for anything missed. An encouraging-but-false "you
   got it all!" defeats the entire point of the skill; so does rubbing it in.
   If the miss pattern is structural (everything after minute 12, every line
-  from the fast speaker), name it — that's actionable.
+  from the fast speaker, everything not on screen), name it — that's
+  actionable.
+- **The two scores** — from the idea-unit map: **event/content recall** and
+  **reflective/meaning recall**. Lead with the split (it's the finding); the
+  blended number is secondary. State the watch→debrief lag next to them — a
+  stale watch deflates both, and the reader should know how much salt to add.
 - **Confirm outcomes** — N confirmed known, M deferred, K left untested (and
   the global queue size if items from other episodes are piling up).
 - **Suggestions when earned** — a segment worth rewatching, a word worth a ★
@@ -200,9 +281,9 @@ Then report, one tight block:
 |---|---|---|
 | no `watched` jobs and no arg | nothing to debrief | say so; offer to debrief a `staged`/`reconciled` episode conversation-only (see Step 1 gate) |
 | episode dir missing / no transcript.json | swipe-deleted on the phone — artifacts purged | stop for that episode; nothing to test from |
-| `query confirm-queue` → `[]` or no items from this episode | exposures haven't cleared the bar (or not yet marked watched) | fine — run the conversation, skip the ledger writes |
+| `query confirm-queue` → `[]` or no items from this episode | exposures haven't cleared the bar (or not yet marked watched) | fine — run the conversation, skip confirm/defer; `record-debrief` still happens (needs an episodes row — record-exposure creates it, so any prepared episode has one) |
 | no queue.db | mobile layer unused here | direct mode: ask for the episode id, read from `<work_dir>/episodes/` |
-| episode watched long ago, user remembers little | memory test, not comprehension test | say so, shorten the spine to gist + focal vocab; grade confirm items normally (knowing a word survives forgetting the plot) |
+| episode watched long ago, user remembers little | memory test, not comprehension test | say so, keep the retell short and don't push the gap pass; grade confirm items normally (knowing a word survives forgetting the plot) |
 
 ## Notes
 

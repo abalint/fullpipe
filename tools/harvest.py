@@ -21,6 +21,7 @@ CLI (run from $FULLPIPE with .venv/bin/python):
     python -m tools.harvest run [--related VID ...] [--search Q ...] [--rss CID ...]
     python -m tools.harvest list [--status new]
     python -m tools.harvest gate-speech VIDEO_ID ...   (drop speechless picks)
+    python -m tools.harvest estimate-coverage VIDEO_ID ...  (comprehensibility %)
     python -m tools.harvest set-status VIDEO_ID {new|queued|dismissed|picked}
 """
 
@@ -465,6 +466,122 @@ def gate_speech(conn, video_ids, recheck=False):
     return out
 
 
+def caption_text(video_id, timeout=120):
+    """The video's ASR transcript as plain text, or None — for the comprehen-
+    sibility estimate. Pulls *only* the `ja-orig` automatic-caption track: that
+    is YouTube's ASR of what it actually *heard* in Japanese (the same signal
+    the speech gate keys on), NOT a plain `ja` auto-*translation* of foreign
+    narration and NOT uploader-added manual subs. No video is downloaded — just
+    the caption file (tens of KB). Never raises; returns None on any failure so
+    the caller degrades to 'no_caption' rather than crashing.
+
+    YouTube emits a rolling caption where each spoken line is re-printed as it
+    scrolls, so consecutive duplicates are collapsed. The text is only ASR
+    (no punctuation, ASR errors, names un-adjudicated) — good enough for a
+    ranking-grade coverage estimate, not the final coverage.json number.
+    """
+    import re
+    import tempfile
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    with tempfile.TemporaryDirectory() as td:
+        out = str(Path(td) / "cap.%(ext)s")
+        cmd = [ytdlp_path(), *ytdlp_extra_args(), "-t", "sleep",
+               "--skip-download", "--write-auto-subs", "--sub-langs", "ja-orig",
+               "--sub-format", "vtt", "--no-warnings", "-o", out, url]
+        try:
+            subprocess.run(cmd, capture_output=True, text=True,
+                           timeout=timeout, **_NOWWIN)
+        except (subprocess.TimeoutExpired, OSError):
+            return None
+        vtts = list(Path(td).glob("*.vtt"))
+        if not vtts:
+            return None
+        try:
+            raw = vtts[0].read_text(encoding="utf-8")
+        except OSError:
+            return None
+    lines = []
+    for ln in raw.splitlines():
+        if "-->" in ln or not ln.strip() or ln.startswith(("WEBVTT", "Kind:", "Language:")):
+            continue
+        ln = re.sub(r"<[^>]+>", "", ln).strip()   # strip inline timing tags
+        if ln and (not lines or lines[-1] != ln):
+            lines.append(ln)
+    return lines or None
+
+
+def estimate_coverage(conn, cfg, video_ids, recheck=False):
+    """Annotate each candidate with an estimated comprehensibility % — the
+    fraction of its ASR transcript's content tokens the learner already knows,
+    scored against the live ledger known-set with the *same* engine
+    (`analyze_transcript` → token_comprehensibility) that /immerse's coverage
+    pass uses. This is the selection-time comprehensibility signal /recommend
+    ranks on; it is NOT a gate (nothing is dropped, status is untouched) and it
+    does NOT write to the ledger.
+
+    Honest caveats baked into the number (all bias it *downward* vs the eventual
+    coverage.json): the transcript is raw ASR (no punctuation-restore / repair
+    pass), so ASR non-words and un-adjudicated names count as unknown content.
+    The cross-episode non-vocab registry is folded in to claw back names already
+    flagged in past episodes, but fresh ones still cost. Treat it as a floor and
+    a comparator between candidates, not an exact prediction. Calibration point:
+    coverage.json ~54% mapped to ~35% real comprehension in the first /debrief.
+
+    Cached in meta.coverage_est so re-runs are free; pass recheck=True to redo.
+    Returns a per-video list of {video_id, pct, iplus1, tokens, ...}.
+    """
+    from engine import lemma as L
+    from ledger import ledgerctl as lc
+
+    led = lc.open_db(cfg["ledger_db"])
+    try:
+        kb = lc.materialize_known(led, cfg)
+        ks = L.KnownSet(kb["known"], kb.get("norm_known", ()),
+                        kb.get("known_stems", ()), phrases=kb.get("phrases"))
+        learning = set(kb.get("learning", ()))
+        non_vocab = lc.get_non_vocab(led)
+        known_set_size = len(ks)
+    finally:
+        led.close()
+
+    out = []
+    ts = now_iso()
+    for vid in video_ids:
+        row = conn.execute("SELECT meta FROM candidates WHERE video_id=?",
+                           (vid,)).fetchone()
+        if row is None:
+            out.append({"video_id": vid, "verdict": "not_in_pool"})
+            continue
+        try:
+            meta = json.loads(row["meta"]) if row["meta"] else {}
+        except json.JSONDecodeError:
+            meta = {}
+        cached = meta.get("coverage_est")
+        if cached and not recheck:
+            out.append({"video_id": vid, **cached, "cached": True})
+            continue
+        lines = caption_text(vid)
+        if not lines:
+            est = {"verdict": "no_caption", "pct": None, "checked": ts}
+        else:
+            sentences = [(0.0, 0.0, ln) for ln in lines]
+            res = L.analyze_transcript(sentences, ks, learning, non_vocab)
+            est = {
+                "verdict": "ok",
+                "pct": round(res["token_comprehensibility"], 4),
+                "iplus1": res["counts"]["i_plus_1"],
+                "tokens": res["total_tokens"],
+                "known_set_size": known_set_size,
+                "checked": ts,
+            }
+        meta["coverage_est"] = est
+        conn.execute("UPDATE candidates SET meta=? WHERE video_id=?",
+                     (json.dumps(meta, ensure_ascii=False), vid))
+        out.append({"video_id": vid, **est})
+    conn.commit()
+    return out
+
+
 def refilter(conn, blocklist):
     """Re-apply the blocklist to the existing pool: any 'new' candidate that now
     matches gets moved to 'filtered'. Use after editing discover.format_blocklist.
@@ -532,6 +649,14 @@ def main(argv=None):
     p.add_argument("--recheck", action="store_true",
                    help="re-probe even if a cached verdict exists")
 
+    p = sub.add_parser("estimate-coverage", help="estimate each candidate's "
+                       "comprehensibility %% from its ASR caption vs the ledger "
+                       "known-set (a ranking signal, not a gate)")
+    p.add_argument("video_id", nargs="+", metavar="VIDEO_ID",
+                   help="candidate ids to score (run on your ranked shortlist)")
+    p.add_argument("--recheck", action="store_true",
+                   help="re-score even if a cached estimate exists")
+
     p = sub.add_parser("set-status", help="move a candidate's status")
     p.add_argument("video_id")
     p.add_argument("status", choices=STATUSES)
@@ -573,6 +698,15 @@ def main(argv=None):
         print(f"speech-gated {len(verdicts)} · {kept} ja · {dropped} → no_speech",
               file=sys.stderr)
         print(json.dumps(verdicts, ensure_ascii=False, indent=2))
+
+    elif args.verb == "estimate-coverage":
+        ests = estimate_coverage(conn, cfg, args.video_id, recheck=args.recheck)
+        scored = [e for e in ests if e.get("pct") is not None]
+        avg = sum(e["pct"] for e in scored) / len(scored) if scored else 0.0
+        no_cap = sum(1 for e in ests if e.get("verdict") == "no_caption")
+        print(f"coverage-estimated {len(ests)} · {len(scored)} scored "
+              f"(avg {avg:.0%}) · {no_cap} no-caption", file=sys.stderr)
+        print(json.dumps(ests, ensure_ascii=False, indent=2))
 
     elif args.verb == "list":
         print(json.dumps(list_candidates(conn, args.status), ensure_ascii=False, indent=2))
