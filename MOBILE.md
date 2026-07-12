@@ -110,6 +110,15 @@ the native player reads the same on-device file the in-app watch/rewatch uses
 phone already has. Un-shelving flips the flag back; delete from the Listen tab
 is the same `DELETE /jobs/{id}`.
 
+Also orthogonal: a `debrief` flag (`POST /jobs/{id}/debrief`, the queue row's
+**"🗣 debrief"** button, allowed from `staged` onward) queues an episode for a
+post-watch comprehension conversation — the PC-side `/debrief` skill treats
+flagged jobs as its worklist and clears the flag when the conversation is done
+(`jobqueue set-debrief <id> off`). While the flag is set, `DELETE /jobs/{id}`
+is refused (409) and the app blocks swipe-delete with an explainer: the
+conversation reads the episode's transcript, which delete would destroy. The
+row shows a `🗣 debrief` chip on both the Queue and Listen tabs.
+
 The Listen tab's now-playing bar carries mp3-player transport (2026-07-10):
 scrubber + elapsed/duration clock (also on the lock screen — the MediaSession
 publishes duration + `SEEK_TO`), ±10 s skips, speed, and a native sleep timer
@@ -201,6 +210,7 @@ Thin HTTP over `ledgerctl` verbs + the queue. (Verbs: `materialize-known`, `comp
 | `GET /jobs` · `GET /jobs/{id}` | queue read | lifecycle state + progress; annotated with `duration` (seconds) and `comprehensibility` (coverage's token_comprehensibility, 0..1) for the queue's sort/display |
 | `POST /jobs/{id}/curate` | launch Stage 2 | kicks the live `/immerse` curate over one/many `prepared` jobs |
 | `POST /jobs/{id}/passive` | shelve to Listen tab | `{passive: bool}` — flags a `watched` episode as passive-listening material (409 otherwise; un-shelving always allowed). Pure flag flip: state/artifacts/ledger untouched; `passive` rides back on `GET /jobs` |
+| `POST /jobs/{id}/debrief` | queue for /debrief | `{debrief: bool}` — flags an episode (`staged`/`reconciled`/`pushing`/`watched`; 409 earlier) for the PC-side post-watch comprehension conversation; unflagging always allowed. Pure flag flip, but **while set `DELETE /jobs/{id}` is refused** — the debrief needs the transcript. The `/debrief` skill reads flagged jobs as its worklist and unflags on completion; `debrief` rides back on `GET /jobs` |
 | `GET /video/{id}` | staged file | **resumable** (HTTP range) — available at `prepared` |
 | `GET /video/{id}/subs` | staged file | subtitle sidecar |
 | `GET /prep/{id}` | prep-doc JSON | available at `staged`; pre-tokenized sentences w/ readings + glosses |

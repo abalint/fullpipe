@@ -66,6 +66,9 @@ skills/     /immerse (built) · next: /reconcile · /generate · /replace · /se
   immerse/SKILL.md        pre-watch orchestrator: acquire → coverage → live
                           curation (synopsis/glosses/focal points/picks) →
                           render → deck; discovered via ../.claude/skills/
+  debrief/SKILL.md        post-watch comprehension conversation (English
+                          questions over the watched transcript) → answers
+                          the exposure-confirmation queue (confirm/defer)
   scripts/ensure_anki.sh  launch Anki + wait for stable AnkiConnect (preflight)
 render/     template.html (P9 tap/copy/share loop, ruby furigana, masked
             definitions w/ per-row peek + show-all) + demo-prep.html sample

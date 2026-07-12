@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     title        TEXT,
     state        TEXT NOT NULL DEFAULT 'queued',
     passive      INTEGER NOT NULL DEFAULT 0, -- in the passive-listening collection
+    debrief      INTEGER NOT NULL DEFAULT 0, -- queued for a /debrief conversation
     progress_msg TEXT,
     error        TEXT,
     created_at   TEXT NOT NULL,
@@ -50,11 +51,12 @@ def open_queue(db_path):
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
-    # pre-passive databases: CREATE IF NOT EXISTS won't touch them
+    # pre-flag databases: CREATE IF NOT EXISTS won't touch them
     cols = {r[1] for r in conn.execute("PRAGMA table_info(jobs)")}
-    if "passive" not in cols:
-        conn.execute("ALTER TABLE jobs ADD COLUMN passive INTEGER NOT NULL DEFAULT 0")
-        conn.commit()
+    for flag in ("passive", "debrief"):
+        if flag not in cols:
+            conn.execute(f"ALTER TABLE jobs ADD COLUMN {flag} INTEGER NOT NULL DEFAULT 0")
+            conn.commit()
     return conn
 
 
@@ -77,6 +79,7 @@ def job_dict(row):
     # is the best identifier we have, so present it as such.
     d["episode_id"] = d["episode_id"] or d["id"]
     d["passive"] = bool(d.get("passive"))
+    d["debrief"] = bool(d.get("debrief"))
     return d
 
 
@@ -142,6 +145,16 @@ def set_passive(conn, job_id, passive):
     state and artifacts are untouched, only which phone list shows it."""
     conn.execute("UPDATE jobs SET passive=?, updated_at=? WHERE id=?",
                  (1 if passive else 0, now_iso(), job_id))
+    conn.commit()
+
+
+def set_debrief(conn, job_id, debrief):
+    """Flag a job as queued for a post-watch /debrief conversation (or clear
+    the flag once the debrief ran). Pure flag flip like passive — state and
+    artifacts untouched. While set, the server refuses DELETE for the job:
+    the debrief needs the transcript, and deletion would destroy it."""
+    conn.execute("UPDATE jobs SET debrief=?, updated_at=? WHERE id=?",
+                 (1 if debrief else 0, now_iso(), job_id))
     conn.commit()
 
 
@@ -228,6 +241,10 @@ def main(argv=None):
     p.add_argument("state", choices=STATES)
     p = sub.add_parser("delete", help="drop a queue row (row only — artifacts stay)")
     p.add_argument("id", help="job id or episode_id")
+    p = sub.add_parser("set-debrief",
+                       help="flag/unflag a job for a /debrief conversation")
+    p.add_argument("id", help="job id or episode_id")
+    p.add_argument("flag", choices=["on", "off"])
     args = ap.parse_args(argv)
 
     cfg = load_config(args.config)
@@ -251,6 +268,12 @@ def main(argv=None):
             ap.error(f"no such job: {args.id}")
         delete_job(conn, job["id"])
         print(json.dumps({"deleted": job["id"]}, ensure_ascii=False, indent=2))
+    elif args.verb == "set-debrief":
+        job = get_job(conn, args.id)
+        if not job:
+            ap.error(f"no such job: {args.id}")
+        set_debrief(conn, job["id"], args.flag == "on")
+        print(json.dumps(get_job(conn, job["id"]), ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

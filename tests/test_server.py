@@ -170,6 +170,15 @@ class TestQueue(unittest.TestCase):
         conn.close()
         migrated = q.open_queue(db)
         self.assertIs(q.get_job(migrated, "yt_x")["passive"], False)
+        self.assertIs(q.get_job(migrated, "yt_x")["debrief"], False)
+
+    def test_debrief_flag_roundtrip(self):
+        job, _ = q.enqueue(self.conn, "https://youtu.be/abcDEF12345")
+        self.assertIs(job["debrief"], False)  # default, as a real bool
+        q.set_debrief(self.conn, job["id"], True)
+        self.assertIs(q.get_job(self.conn, job["id"])["debrief"], True)
+        q.set_debrief(self.conn, job["id"], False)
+        self.assertIs(q.get_job(self.conn, job["id"])["debrief"], False)
 
     def test_episode_id_falls_back_to_job_id(self):
         job, _ = q.enqueue(self.conn, "https://example.com/some/episode")
@@ -255,6 +264,29 @@ class TestRoutes(ServerTestBase):
         r = self.client.post(f"/jobs/{job_id}/passive", json={"passive": False},
                              headers=self.auth)
         self.assertIs(r.json()["passive"], False)
+
+    def test_debrief_flag_and_delete_guard(self):
+        r = self.client.post("/jobs", json={"source": "https://youtu.be/abcDEF12345"},
+                             headers=self.auth)
+        job_id = r.json()["id"]
+        # nothing curated yet → refused
+        self.assertEqual(self.client.post(f"/jobs/{job_id}/debrief", json={},
+                                          headers=self.auth).status_code, 409)
+        conn = q.open_queue(queue_db_path(self.cfg))
+        q.set_state(conn, job_id, "watched")
+        r = self.client.post(f"/jobs/{job_id}/debrief", json={}, headers=self.auth)
+        self.assertIs(r.json()["debrief"], True)
+        self.assertIs(self.client.get("/jobs", headers=self.auth)
+                      .json()[0]["debrief"], True)
+        # flagged → DELETE refuses: the debrief still needs the transcript
+        self.assertEqual(self.client.delete(f"/jobs/{job_id}",
+                                            headers=self.auth).status_code, 409)
+        # unflagging is always allowed, and re-arms DELETE
+        r = self.client.post(f"/jobs/{job_id}/debrief", json={"debrief": False},
+                             headers=self.auth)
+        self.assertIs(r.json()["debrief"], False)
+        self.assertEqual(self.client.delete(f"/jobs/{job_id}",
+                                            headers=self.auth).status_code, 200)
 
     def test_jobs_annotated_with_duration(self):
         # before Stage 1 there is nothing to measure

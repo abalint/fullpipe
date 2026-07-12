@@ -826,7 +826,7 @@ fullPipe/                     # ✅ = built 2026-07-05 (see README.md for usage)
 ├── tools/                    # ✅ dumb CLI: acquire, coverage, deck, render, harvest (discovery)
 │   └── (prime deferred with the interleaver)
 ├── tests/                    # ✅ 93 unittest cases (ledger/tools/server/engine)
-├── skills/                   # ✅ /immerse, /prepare, /recommend (+ scripts/ensure_anki.sh); NEXT: /reconcile, /setup, /generate, /replace
+├── skills/                   # ✅ /immerse, /prepare, /recommend, /debrief (+ scripts/ensure_anki.sh); NEXT: /reconcile, /setup, /generate, /replace
 ├── render/                   # ✅ template.html + demo-prep.html (also hydrated by GET /prep)
 ├── server/                   # ✅ FastAPI queue + ledgerctl verbs over Tailscale (MOBILE.md); taste tags on /rating
 └── (mobile client)           # ✅ Capacitor Android app → sibling repo anki/mobile/ (MOBILE.md); stars + taste-tag picker
