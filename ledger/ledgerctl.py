@@ -674,6 +674,40 @@ def add_phrase(conn, canonical, reading=None):
     return {"phrase": canonical, "tracked": True}
 
 
+def add_non_vocab(conn, entries, origin=None):
+    """Register repair-gate adjudications in the cross-episode registry.
+
+    entries: [{key, kind, note?}] — kind ∈ name|nonword. First flag wins
+    (INSERT OR IGNORE): a key's origin records the episode that discovered
+    it, and re-flagging from later episodes is a no-op."""
+    ts = now_iso()
+    n = 0
+    for e in entries:
+        key = (e.get("key") or "").strip()
+        if not key:
+            continue
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO non_vocab (key, kind, note, origin, ts) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (key, e.get("kind") or "name", e.get("note"), origin, ts))
+        n += cur.rowcount
+    conn.commit()
+    return {"added": n, "total": conn.execute(
+        "SELECT COUNT(*) FROM non_vocab").fetchone()[0]}
+
+
+def get_non_vocab(conn):
+    """All registered non-vocab keys, for coverage's exclusion set."""
+    return frozenset(r[0] for r in conn.execute("SELECT key FROM non_vocab"))
+
+
+def remove_non_vocab(conn, key):
+    """Un-register a key the repair gate over-flagged (it was a real word)."""
+    cur = conn.execute("DELETE FROM non_vocab WHERE key = ?", (key,))
+    conn.commit()
+    return {"key": key, "removed": cur.rowcount}
+
+
 def purge_episode(conn, episode_id):
     """Unwind an episode's ledger footprint: evidence (inert exposures,
     pre-watch taps), minted-card records, tap batches, the episodes row —
@@ -1371,6 +1405,9 @@ def main(argv=None):
     p.add_argument("--level", type=int, choices=[1, 2, 3, 4, 5],
                    help="JLPT tier 5=N5 … 1=N1 (omitted = strictest θ)")
     p.add_argument("--gloss")
+    p = sub.add_parser("non-vocab-remove",
+                       help="un-register an over-flagged non-vocab key")
+    p.add_argument("key")
     p = sub.add_parser("phrase-add",
                        help="deliberately track a non-JMdict phrase (reviewed path)")
     p.add_argument("canonical")
@@ -1407,7 +1444,7 @@ def main(argv=None):
     p = sub.add_parser("query", help="read the ledger")
     p.add_argument("what", choices=["summary", "needs-review", "confirm-queue",
                                     "why", "unwatched", "ratings", "channels",
-                                    "grammar-proposed"])
+                                    "grammar-proposed", "non-vocab"])
     p.add_argument("lemma", nargs="?")
 
     args = ap.parse_args(argv)
@@ -1476,6 +1513,8 @@ def main(argv=None):
         _json_out(result)
     elif args.verb == "phrase-add":
         _json_out(add_phrase(conn, args.canonical, reading=args.reading))
+    elif args.verb == "non-vocab-remove":
+        _json_out(remove_non_vocab(conn, args.key))
     elif args.verb == "rate":
         rating = None if args.rating == "clear" else int(args.rating)
         axes = {a: getattr(args, a) for a in SURVEY_AXES
@@ -1529,6 +1568,10 @@ def main(argv=None):
         elif args.what == "grammar-proposed":
             _json_out([dict(r) for r in conn.execute(
                 "SELECT * FROM grammar_proposed ORDER BY seen DESC, first_seen")])
+        elif args.what == "non-vocab":
+            _json_out([dict(r) for r in conn.execute(
+                "SELECT key, kind, note, origin, ts FROM non_vocab "
+                "ORDER BY ts DESC, key")])
 
 
 if __name__ == "__main__":

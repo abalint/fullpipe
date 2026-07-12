@@ -195,8 +195,10 @@ def run_coverage(cfg, episode_id, refresh_known=False, record=True, conn=None):
     words_path = episode_dir(cfg, episode_id) / "words.json"
     words = read_json(words_path).get("words") if words_path.exists() else None
 
+    # Non-vocab = this episode's repair adjudications ∪ the ledger's
+    # cross-episode registry (names flagged in ANY past episode).
     from tools.repair import load_non_vocab
-    non_vocab = load_non_vocab(cfg, episode_id)
+    non_vocab = load_non_vocab(cfg, episode_id) | lc.get_non_vocab(conn)
 
     cov = analyze(transcript, known_bundle, freq, carded, words=words,
                   non_vocab=non_vocab)

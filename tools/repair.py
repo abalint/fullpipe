@@ -17,8 +17,10 @@ Step 2.6) is the intelligent half.
                          span-preserving — sentence count and timings never
                          change), rewrite sentences.srt + transcript.json,
                          and persist the name/non-word adjudications to
-                         repair.json, which coverage folds into its
-                         non-vocab set on every run.
+                         repair.json AND the ledger's cross-episode
+                         non_vocab registry — coverage folds both into its
+                         exclusion set on every run, so a name flagged once
+                         is handled in every future episode too.
 
 Run order matters: the punctuation gate (tools.punctuate) re-derives
 sentences from the raw subtitle blocks, so it must run BEFORE repair —
@@ -189,6 +191,24 @@ def cmd_apply(cfg, episode_id, repair_json, log):
         "non_vocab": non_vocab,
     })
     (ep_dir / BLOCKS_FILE).unlink(missing_ok=True)
+
+    # Promote the adjudications to the ledger's cross-episode registry —
+    # a presenter flagged here never pollutes another episode's coverage,
+    # including the worker's first parse of future episodes.
+    if non_vocab and cfg.get("ledger_db"):
+        from ledger import ledgerctl as lc
+        note_by_src = {}
+        for n in data.get("names") or []:
+            if isinstance(n, dict) and n.get("surface"):
+                note_by_src[n["surface"]] = n.get("note")
+        entries = []
+        for key in non_vocab:
+            kind = "nonword" if key in nonwords else "name"
+            entries.append({"key": key, "kind": kind,
+                            "note": note_by_src.get(key)})
+        reg = lc.add_non_vocab(lc.open_db(cfg["ledger_db"]), entries,
+                               origin=episode_id)
+        log(f"registry: +{reg['added']} keys ({reg['total']} total)")
 
     log(f"applied {len(edits)} edits ({len(rejected)} rejected), "
         f"{len(non_vocab)} non-vocab keys ({ep_dir / REPAIR_FILE})")

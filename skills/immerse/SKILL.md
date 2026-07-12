@@ -229,8 +229,12 @@ $PY -m tools.repair check EPISODE_ID        # stdout = blocks path, or empty
 
   Then validate-and-apply (bounded edits; rewrites `transcript.json` +
   `sentences.srt` in place, sentence count/timing untouched; persists the
-  name/non-word adjudications to `repair.json`, which every future coverage
-  run folds into its non-vocab set):
+  name/non-word adjudications to `repair.json` AND the ledger's
+  cross-episode `non_vocab` registry — a presenter flagged once is excluded
+  from every future episode's coverage automatically, so the subagent only
+  needs to flag names that still show up in `suspects`; over-flagged real
+  words are reversible via `ledgerctl non-vocab-remove KEY`, audit with
+  `ledgerctl query non-vocab`):
 
   ```sh
   $PY -m tools.repair apply EPISODE_ID <episode_dir>/repair_out.json

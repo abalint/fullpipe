@@ -167,3 +167,16 @@ CREATE TABLE IF NOT EXISTS tap_batches (
     episode_id TEXT,
     applied_at TEXT NOT NULL
 );
+
+-- Cross-episode non-vocabulary registry (the repair gate's adjudications):
+-- names ASR/Sudachi misread as ordinary words (いぶき, ともしげ) and ASR
+-- non-words. Every coverage run excludes these keys (matched against token
+-- lemma AND surface), so a presenter flagged once never pollutes another
+-- episode's unknowns — including the worker's first parse of a new episode.
+CREATE TABLE IF NOT EXISTS non_vocab (
+    key    TEXT PRIMARY KEY,  -- lemma or surface to exclude
+    kind   TEXT NOT NULL,     -- name | nonword
+    note   TEXT,              -- who/what it is (the subagent's note)
+    origin TEXT,              -- episode_id that first flagged it
+    ts     TEXT NOT NULL
+);

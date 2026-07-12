@@ -108,6 +108,30 @@ class RepairApplyTest(unittest.TestCase):
         # multi-token name contributes component lemmas too
         self.assertIn("ヒカル", nv)
 
+    def test_adjudications_promote_to_ledger_registry(self):
+        from ledger import ledgerctl as lc
+        self.cfg["ledger_db"] = str(Path(self.tmp.name) / "ledger.db")
+        self.apply({"names": [{"surface": "いぶき", "kind": "person",
+                               "note": "racer given name"}],
+                    "nonwords": ["ワンタイン"]})
+        conn = lc.open_db(self.cfg["ledger_db"])
+        reg = lc.get_non_vocab(conn)
+        self.assertIn("いぶき", reg)
+        self.assertIn("ワンタイン", reg)
+        rows = {r["key"]: dict(r) for r in
+                conn.execute("SELECT * FROM non_vocab")}
+        self.assertEqual(rows["いぶき"]["kind"], "name")
+        self.assertEqual(rows["いぶき"]["note"], "racer given name")
+        self.assertEqual(rows["いぶき"]["origin"], EP)
+        self.assertEqual(rows["ワンタイン"]["kind"], "nonword")
+        # re-registering from another episode is a no-op, first flag wins
+        again = lc.add_non_vocab(conn, [{"key": "いぶき", "kind": "name"}],
+                                 origin="other_ep")
+        self.assertEqual(again["added"], 0)
+        # over-flag reversal
+        self.assertEqual(lc.remove_non_vocab(conn, "ワンタイン")["removed"], 1)
+        self.assertNotIn("ワンタイン", lc.get_non_vocab(conn))
+
     def test_load_non_vocab_empty_without_repair(self):
         self.assertEqual(R.load_non_vocab({"work_dir": self.tmp.name}, "nope"),
                          frozenset())
