@@ -349,9 +349,13 @@ def create_app(cfg, start_worker=True):
 
     @app.get("/definitions/{episode_id}", dependencies=[Depends(auth)])
     def get_definitions(episode_id: str):
-        """JMdict entries for every content lemma in the episode — the
-        player's any-word dictionary popup. Keyed by the Sudachi lemma the
-        transcript tokens already carry, so the client needs no deinflection.
+        """JMdict entries for EVERY lemma in the episode — the player's
+        any-word dictionary popup. Keyed by the Sudachi lemma the transcript
+        tokens already carry, so the client needs no deinflection. All
+        tokens, not just content/vocab ones: the popup answers "what did the
+        user tap", and taps land on particles, pronouns, aux-position verbs
+        and names just as often as on card-worthy vocabulary (JMdict covers
+        most function words; junk keys simply find nothing).
         Curate-authored `defs` merge in flagged `ai`: sole entry for words
         JMdict lacks (names, onomatopoeia, compounds), prepended episode-
         sense entry for words it has (context-first popup).
@@ -362,15 +366,24 @@ def create_app(cfg, start_worker=True):
             raise HTTPException(404, str(e))
         curate_path = episode_dir(cfg, episode_id) / "curate.json"
         curate = read_json(curate_path) if curate_path.exists() else {}
+        repair_path = episode_dir(cfg, episode_id) / "repair.json"
+        repair = read_json(repair_path) if repair_path.exists() else {}
         path = jmdict.db_path(cfg)
         if not path.exists():
-            return jmdict.merge_curate_defs({}, curate)
+            return jmdict.merge_repair_names(
+                jmdict.merge_curate_defs({}, curate), repair)
         lemmas = {t["l"] for s in coverage["sentences"]
-                  for t in s["tokens"] if t.get("c") and t.get("l")}
+                  for t in s["tokens"] if t.get("l")}
         conn = jmdict.open_db(path)  # per-request: sqlite handles are thread-bound
         try:
-            return jmdict.merge_curate_defs(
-                jmdict.lookup_many(conn, lemmas), curate)
+            result = jmdict.lookup_many(conn, lemmas)
+            # spans Sudachi splits (帝王切開, そういう, 気を付ける) — keyed by
+            # the joined run; the player reconstructs the key on tap
+            for key, entries in jmdict.compound_entries(
+                    conn, coverage["sentences"]).items():
+                result.setdefault(key, entries)
+            return jmdict.merge_repair_names(
+                jmdict.merge_curate_defs(result, curate), repair)
         finally:
             conn.close()
 

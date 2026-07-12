@@ -40,10 +40,13 @@ COVERAGE = {
     "sentences": [
         {"idx": 0, "start": 0.0, "end": 2.0, "text": "犬が走る。",
          "classification": "comprehensible", "known_ratio": 1.0, "unknown": [],
-         "tokens": [{"s": "犬", "l": "犬", "r": "いぬ", "c": True, "k": True}]},
+         "tokens": [{"s": "犬", "l": "犬", "r": "いぬ", "c": True, "k": True},
+                    {"s": "が", "l": "が", "r": "が", "c": False, "k": True}]},
         {"idx": 1, "start": 2.0, "end": 4.0, "text": "公園へ行く。",
          "classification": "i_plus_1", "known_ratio": 0.8, "unknown": ["公園"],
-         "tokens": [{"s": "公園", "l": "公園", "r": "こうえん", "c": True, "k": False}]},
+         "tokens": [{"s": "公園", "l": "公園", "r": "こうえん", "c": True, "k": False},
+                    {"s": "と", "l": "と", "r": "と", "c": False, "k": True},
+                    {"s": "いう", "l": "いう", "r": "いう", "c": False, "k": True}]},
     ],
     "candidates": [{
         "lemma": "公園", "reading": "こうえん", "surface": "公園", "pos": "名詞",
@@ -392,15 +395,40 @@ class TestRoutes(ServerTestBase):
             (2, {"公園", "こうえん"},
              {"k": ["公園"], "r": ["こうえん"],
               "s": [{"pos": ["noun"], "g": ["(public) park"]}]}),
+            (1, {"が"},
+             {"k": [], "r": ["が"],
+              "s": [{"pos": ["particle"], "g": ["subject marker"]}]}),
+            (1, {"と言う", "という"},
+             {"k": ["と言う"], "r": ["という"],
+              "s": [{"pos": ["particle"], "g": ["called; named"]}]}),
         ]))
         conn.close()
         data = self.client.get(f"/definitions/{EP}", headers=self.auth).json()
         self.assertIn("公園", data)  # content lemma with an entry
-        self.assertNotIn("犬", data)  # content lemma, no dict entry
+        self.assertIn("が", data)  # any-word popup: non-content lemmas too
+        self.assertNotIn("犬", data)  # lemma with no dict entry
+        # adjacent と+いう run → compound key served alongside the lemmas
+        self.assertEqual(data["という"][0]["s"][0]["g"], ["called; named"])
         self.assertEqual(data["公園"][0]["s"][0]["g"], ["(public) park"])
         self.assertEqual(self.client.get("/definitions/nope", headers=self.auth)
                          .status_code, 404)
         self.assertEqual(self.client.get(f"/definitions/{EP}").status_code, 401)
+
+    def test_definitions_merge_repair_gate_names(self):
+        # the repair gate's name adjudications (surface + kind + note) serve
+        # the popup for name taps — no curate pass needed
+        ep_dir = self.stage_episode()
+        write_json(ep_dir / "repair.json", {
+            "names": [{"surface": "犬", "kind": "person",
+                       "note": "the show's dog, Inu"},
+                      {"surface": "謎", "kind": "person"},  # noteless → skipped
+                      "bare-string"],  # legacy shape → skipped, not a 500
+        })
+        data = self.client.get(f"/definitions/{EP}", headers=self.auth).json()
+        self.assertEqual(data["犬"][0]["s"][0]["g"], ["the show's dog, Inu"])
+        self.assertEqual(data["犬"][0]["s"][0]["pos"], ["name (person)"])
+        self.assertTrue(data["犬"][0]["ai"])
+        self.assertNotIn("謎", data)
 
     def test_definitions_merge_curate_authored_defs(self):
         # words JMdict lacks get their gloss from the curate pass (`defs` in

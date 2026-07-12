@@ -345,9 +345,13 @@ Then produce, in `<episode_dir>/curate.json`:
   `{"proposed_pattern": "...", "gloss": "...", "example": "..."}` — it lands
   in the review queue (`ledgerctl query grammar-proposed` →
   `grammar-approve`), never straight into the taxonomy. `form_note` carries
-  the word-form structure worth showing (食べさせられた = causative-passive
-  of 食べる). Tag what a learner would *notice*: the N+1-ish patterns, keigo
-  shifts, contractions — not every 〜ます in the episode.
+  the word-form structure worth showing, in **plain English** — say what the
+  speaker is doing with the form, never a bare linguistics term (the player
+  popup shows this note verbatim; "causative-passive" tells the user
+  nothing). Good: "食べさせられた = 食べる: someone made them eat it, told
+  from the eater's side". Bad: "causative-passive of 食べる". Tag what a
+  learner would *notice*: the N+1-ish patterns, keigo shifts, contractions —
+  not every 〜ます in the episode.
 - **defs — dictionary entries for the words JMdict doesn't have.** The
   player's tap-a-word popup is JMdict-backed; whatever JMdict misses shows
   "no dictionary entry" — a dead tap. Get the worklist:
@@ -356,8 +360,10 @@ Then produce, in `<episode_dir>/curate.json`:
   $PY -m tools.jmdict missing EPISODE_ID
   ```
 
-  (content lemmas with no entry even after the normalized-form fallback, most
-  frequent first, one example line each). Write a `defs` row —
+  (ALL lemmas with no entry even after the normalized-form and full-width
+  fallbacks — the popup serves every token, not just vocab, so the worklist
+  does too — most frequent first, one example line each; junk and the
+  repair gate's adjudications are pre-filtered). Write a `defs` row —
   `{"word", "reading" (hiragana), "gloss", "pos"?}` — for everything a
   viewer might genuinely tap: real words and compounds the dictionary lacks
   (廃線跡, 出し方, 作りたて), onomatopoeia (ぷくっ, ピタッ), and the
@@ -372,8 +378,9 @@ Then produce, in `<episode_dir>/curate.json`:
   mislead in this context (甘い glossed "sweet" in an episode using it as
   "naive") — worth doing for focal points and any polysemous keyword; a
   wrong gloss can demote but never hide the real entry. Names the repair
-  gate flagged (Step 2.6, `repair.json` → `names`) are the other defs
-  worklist — gloss the orienting ones.
+  gate flagged (Step 2.6, `repair.json` → `names`) auto-serve the popup
+  from their gate notes (they're excluded from the worklist); write a def
+  only when the gate note isn't what a viewer should see.
 
 - Write valid JSON, `ensure_ascii` irrelevant — just write UTF-8.
 
