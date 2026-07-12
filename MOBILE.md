@@ -110,6 +110,17 @@ the native player reads the same on-device file the in-app watch/rewatch uses
 phone already has. Un-shelving flips the flag back; delete from the Listen tab
 is the same `DELETE /jobs/{id}`.
 
+The Listen tab's now-playing bar carries mp3-player transport (2026-07-10):
+scrubber + elapsed/duration clock (also on the lock screen — the MediaSession
+publishes duration + `SEEK_TO`), ±10 s skips, speed, and a native sleep timer
+(15/30/45/60 min — armed in the service, so it fires with the webview dead).
+Per-episode resume positions persist in the service's SharedPreferences and
+mirror the video player's saved positions both ways, so a track picks up where
+either surface left it, even after a process kill; a finished track clears its
+resume point and the loop restarts it from the top. Headphone unplug pauses
+(`ACTION_AUDIO_BECOMING_NOISY`). The in-player 🎧 audio mode shares the same
+service and gained the live scrubber + cue-level ⏮/⏭ jumps.
+
 The downloaded mp4 survives for the Listen loop for free: **the phone never
 auto-deletes videos** (revised 2026-07-09 — the eager delete-at-mark-watched was
 removed; it broke passive listening and blocked rewatch). Videos stay on the
