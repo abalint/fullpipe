@@ -137,6 +137,16 @@ class DeckAndRenderTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    @staticmethod
+    def _glossed(*picks):
+        """Stamp the curation fields tools.deck now requires (english/notes/
+        context) onto bare test picks, so tests about ordering/gating/dedup
+        aren't all tripped by the completeness guard. Tests that exercise the
+        guard itself pass their picks through unstamped."""
+        return [{"english": "The dog guarded its territory.",
+                 "notes": "test note", "context": "test context", **p}
+                for p in picks]
+
     def _fake_anki(self, calls, note_ids=None, fail_lemmas=()):
         note_ids = iter(note_ids or [1001, 1002, 1003])
 
@@ -153,7 +163,7 @@ class DeckAndRenderTest(unittest.TestCase):
 
     def test_push_cards(self):
         calls = []
-        picks = [{"lemma": "縄張り", "sentence_idx": 1, "reading": "なわばり"}]
+        picks = self._glossed({"lemma": "縄張り", "sentence_idx": 1, "reading": "なわばり"})
         result = deck.push_cards(self.cfg, "test_ep", picks,
                                  anki_call=self._fake_anki(calls),
                                  conn=self.conn, log=lambda m: None)
@@ -189,7 +199,7 @@ class DeckAndRenderTest(unittest.TestCase):
     def test_push_attaches_frame_when_video_present(self):
         self._stage_video()
         calls = []
-        picks = [{"lemma": "縄張り", "sentence_idx": 1, "reading": "なわばり"}]
+        picks = self._glossed({"lemma": "縄張り", "sentence_idx": 1, "reading": "なわばり"})
         result = deck.push_cards(self.cfg, "test_ep", picks,
                                  anki_call=self._fake_anki(calls),
                                  conn=self.conn, log=lambda m: None)
@@ -206,7 +216,7 @@ class DeckAndRenderTest(unittest.TestCase):
     def test_push_without_video_leaves_image_empty(self):
         # No video.mp4 staged → card still mints, Image field is blank.
         calls = []
-        picks = [{"lemma": "縄張り", "sentence_idx": 1, "reading": "なわばり"}]
+        picks = self._glossed({"lemma": "縄張り", "sentence_idx": 1, "reading": "なわばり"})
         result = deck.push_cards(self.cfg, "test_ep", picks,
                                  anki_call=self._fake_anki(calls),
                                  conn=self.conn, log=lambda m: None)
@@ -240,8 +250,8 @@ class DeckAndRenderTest(unittest.TestCase):
 
     def test_push_skips_duplicates(self):
         calls = []
-        picks = [{"lemma": "縄張り", "sentence_idx": 1},
-                 {"lemma": "頑丈", "sentence_idx": 3}]
+        picks = self._glossed({"lemma": "縄張り", "sentence_idx": 1},
+                              {"lemma": "頑丈", "sentence_idx": 3})
         result = deck.push_cards(self.cfg, "test_ep", picks,
                                  anki_call=self._fake_anki(calls, fail_lemmas={"頑丈"}),
                                  conn=self.conn, log=lambda m: None)
@@ -349,12 +359,12 @@ class DeckAndRenderTest(unittest.TestCase):
         cfg = {**self.cfg, "deck": {"name": "X", "note_type": "Nope"}}
         with self.assertRaisesRegex(RuntimeError, "note type 'Nope' not found"):
             deck.push_cards(cfg, "test_ep",
-                            [{"lemma": "縄張り", "sentence_idx": 1}],
+                            self._glossed({"lemma": "縄張り", "sentence_idx": 1}),
                             anki_call=lambda action, **kw: [],
                             conn=self.conn, log=lambda m: None)
 
     def test_build_apkg(self):
-        picks = [{"lemma": "縄張り", "sentence_idx": 1, "reading": "なわばり"}]
+        picks = self._glossed({"lemma": "縄張り", "sentence_idx": 1, "reading": "なわばり"})
         result = deck.build_apkg(self.cfg, "test_ep", picks,
                                  conn=self.conn, log=lambda m: None)
         self.assertTrue(Path(result["apkg"]).exists())
@@ -374,19 +384,62 @@ class DeckAndRenderTest(unittest.TestCase):
 
     def test_no_cap_every_pick_pushes(self):
         # No numeric budget anywhere: the whole (quality-curated) pool mints.
-        picks = [{"lemma": "縄張り", "sentence_idx": 1},
-                 {"lemma": "設計", "sentence_idx": 2},
-                 {"lemma": "頑丈", "sentence_idx": 3}]
+        picks = self._glossed({"lemma": "縄張り", "sentence_idx": 1},
+                              {"lemma": "設計", "sentence_idx": 2},
+                              {"lemma": "頑丈", "sentence_idx": 3})
         result = deck.push_cards(self.cfg, "test_ep", picks,
                                  anki_call=self._fake_anki([]),
                                  conn=self.conn, log=lambda m: None)
         self.assertEqual(result["pushed"], 3)
 
+    def test_ungossed_picks_never_mint_a_card(self):
+        # Regression: a curate pass that skipped notes/context used to mint
+        # cards with a blank back — 108 of them reached the deck unnoticed.
+        picks = [{"lemma": "縄張り", "sentence_idx": 1},          # no gloss at all
+                 {"lemma": "設計", "sentence_idx": 2,
+                  "english": "I look at the design every day.",
+                  "notes": "", "context": "test context"}]       # notes blank
+        picks += self._glossed({"lemma": "頑丈", "sentence_idx": 3})
+        result = deck.push_cards(self.cfg, "test_ep", picks,
+                                 anki_call=self._fake_anki([]),
+                                 conn=self.conn, log=lambda m: None)
+        self.assertEqual(result["pushed"], 1)                    # only the glossed one
+        self.assertEqual(set(result["ungossed"]), {"縄張り", "設計"})
+        # Dropped picks leave no ledger trace — they were never cards.
+        self.assertIsNone(self.conn.execute(
+            "SELECT 1 FROM cards WHERE lemma='縄張り'").fetchone())
+
+    def test_rescued_interest_pick_is_reported_not_minted(self):
+        # tools.select rescues a wanted lemma it can't gloss; that must surface
+        # as `ungossed`, not as an English-less card.
+        rescued = [{"lemma": "縄張り", "sentence_idx": 1, "reading": "なわばり",
+                    "english": "", "rescued": True, "needs_gloss": True}]
+        result = deck.push_cards(self.cfg, "test_ep", rescued,
+                                 anki_call=self._fake_anki([]),
+                                 conn=self.conn, log=lambda m: None)
+        self.assertEqual(result["pushed"], 0)
+        self.assertEqual(result["ungossed"], ["縄張り"])
+
+    def test_gloss_guard_only_checks_mapped_fields(self):
+        # A note type without Notes/Context must not have every card blocked.
+        cfg = dict(self.cfg, deck={"name": "Test Mining",
+                                   "note_type": deck.MODEL_NAME,
+                                   "field_map": {"sentence": "Expression",
+                                                 "audio": "Audio",
+                                                 "lemma": "Lemma",
+                                                 "sequence": "Sequence"}})
+        result = deck.push_cards(cfg, "test_ep",
+                                 [{"lemma": "縄張り", "sentence_idx": 1}],
+                                 anki_call=self._fake_anki([]),
+                                 conn=self.conn, log=lambda m: None)
+        self.assertEqual(result["pushed"], 1)
+        self.assertEqual(result["ungossed"], [])
+
     def test_standing_interest_jumps_queue_at_push(self):
         self._mark_interest("頑丈")
         calls = []
-        picks = [{"lemma": "縄張り", "sentence_idx": 1},   # pool order first...
-                 {"lemma": "頑丈", "sentence_idx": 3}]     # ...but ★-marked
+        picks = self._glossed({"lemma": "縄張り", "sentence_idx": 1},  # pool order first...
+                              {"lemma": "頑丈", "sentence_idx": 3})    # ...but ★-marked
         result = deck.push_cards(self.cfg, "test_ep", picks,
                                  anki_call=self._fake_anki(calls),
                                  conn=self.conn, log=lambda m: None)
@@ -399,8 +452,8 @@ class DeckAndRenderTest(unittest.TestCase):
         gate = lambda clip, sentence: (  # noqa: E731
             (False, "clip audio doesn't match text") if "縄張り" in sentence
             else (True, "match 1.00"))
-        picks = [{"lemma": "縄張り", "sentence_idx": 1},
-                 {"lemma": "設計", "sentence_idx": 2}]
+        picks = self._glossed({"lemma": "縄張り", "sentence_idx": 1},
+                              {"lemma": "設計", "sentence_idx": 2})
         result = deck.push_cards(self.cfg, "test_ep", picks,
                                  anki_call=self._fake_anki([]),
                                  conn=self.conn, log=logs.append, gate=gate)
@@ -419,7 +472,7 @@ class DeckAndRenderTest(unittest.TestCase):
                    transcript)
         logs = []
         result = deck.push_cards(self.cfg, "test_ep2",
-                                 [{"lemma": "縄張り", "sentence_idx": 1}],
+                                 self._glossed({"lemma": "縄張り", "sentence_idx": 1}),
                                  anki_call=self._fake_anki([]),
                                  conn=self.conn, log=logs.append)
         self.assertEqual(result["pushed"], 0)

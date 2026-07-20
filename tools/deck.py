@@ -120,6 +120,16 @@ DEFAULT_FIELD_MAP = {
     "image": "Image", "notes": "Notes", "context": "Context",
 }
 
+# Curation fields that must be filled for a card to be worth minting — a
+# blank-backed card is a worse outcome than no card (the user's quality bar:
+# card volume is never the goal). Only enforced for fields the target note
+# type actually has, so a minimal field_map doesn't block every card.
+GLOSS_FIELDS = ("english", "notes", "context")
+
+
+def _required_gloss(field_map):
+    return tuple(f for f in GLOSS_FIELDS if f in field_map)
+
 
 _FURIGANA_BRACKETS = re.compile(r"\[[^\]]*\]")
 
@@ -266,15 +276,29 @@ def _clip_sentence(audio_path, sentence, clip_path, total_duration,
     return clip_path
 
 
+def missing_gloss(pick, required):
+    """Which required curation fields this pick is missing (empty/absent).
+
+    The curate pass authors english/notes/context per pool entry (immerse
+    SKILL.md — the pool schema). That was an instruction with nothing checking
+    it, so a curate run that skipped them minted blank-backed cards that
+    reached the deck silently. Rescued interest picks (tools.select) never
+    carry a gloss at all. Both are caught here."""
+    return [f for f in required if not (pick.get(f) or "").strip()]
+
+
 def _prepare_clips(cfg, episode_id, transcript, picks, log=print,
-                   on_progress=None, want_image=True, gate=None):
+                   on_progress=None, want_image=True, gate=None,
+                   require=()):
     """Cut one native-audio clip per pick. Returns enriched pick dicts.
     on_progress(msg) narrates the per-card work (an ffmpeg encode each) for
     live consumers like the server's queue row. want_image=False skips the
     frame grab entirely (the target note type has no image field).
     gate(clip_path, sentence) → (ok, detail) is the audio validation hook
     (see _GpuAudioGate); a rejected clip just drops its card — fewer, better
-    cards is the intended outcome, not a shortfall."""
+    cards is the intended outcome, not a shortfall.
+    require: curation fields a pick must carry to become a card (see
+    missing_gloss); checked before any ffmpeg/GPU work is spent on it."""
     audio = transcript["episode"]["audio"]
     total = probe_audio_duration(audio)
     if total is None:
@@ -291,10 +315,19 @@ def _prepare_clips(cfg, episode_id, transcript, picks, log=print,
     if video is not None:
         images_dir.mkdir(exist_ok=True)
 
-    prepared = []
+    prepared, ungossed = [], []
     for i, p in enumerate(picks, 1):
         if on_progress:
             on_progress(f"cutting clip {i}/{len(picks)}")
+        # Cheapest guard first — no point cutting and GPU-validating a clip
+        # for a card that can't carry its own back side.
+        gaps = missing_gloss(p, require)
+        if gaps:
+            log(f"  skip {p['lemma']}: no {'/'.join(gaps)} from the curate pass"
+                + (" (rescued interest pick — never glossed)"
+                   if p.get("rescued") else ""))
+            ungossed.append(p["lemma"])
+            continue
         sent = by_idx.get(p["sentence_idx"])
         if sent is None:
             log(f"  skip {p['lemma']}: sentence_idx {p['sentence_idx']} not in transcript")
@@ -350,7 +383,7 @@ def _prepare_clips(cfg, episode_id, transcript, picks, log=print,
             "image_path": image_path,
             "image": f'<img src="{image_name}">' if image_name else "",
         })
-    return prepared
+    return prepared, ungossed
 
 
 def _ensure_model(anki_call):
@@ -401,10 +434,12 @@ def push_cards(cfg, episode_id, picks, anki_call=None, conn=None, log=print,
     conn = conn or lc.open_db(cfg["ledger_db"])
     picks = _interest_first(conn, picks)
     # Only grab frames when the target note type actually has an image field.
-    prepared = _prepare_clips(cfg, episode_id, transcript, picks, log=log,
-                              on_progress=on_progress,
-                              want_image="image" in field_map,
-                              gate=gate or _resolve_audio_gate(cfg, log))
+    prepared, ungossed = _prepare_clips(
+        cfg, episode_id, transcript, picks, log=log,
+        on_progress=on_progress,
+        want_image="image" in field_map,
+        gate=gate or _resolve_audio_gate(cfg, log),
+        require=_required_gloss(field_map))
     anki_call = anki_call or partial(
         anki_request, url=cfg.get("anki_connect_url", "http://localhost:8765"))
 
@@ -442,7 +477,8 @@ def push_cards(cfg, episode_id, picks, anki_call=None, conn=None, log=print,
     if minted:
         lc.record_mined_cards(conn, episode_id, minted)
         lc.promote(conn)
-    return {"pushed": len(minted), "skipped": skipped, "deck": deck_name}
+    return {"pushed": len(minted), "skipped": skipped, "deck": deck_name,
+            "ungossed": ungossed}
 
 
 def build_apkg(cfg, episode_id, picks, conn=None, log=print, gate=None):
@@ -452,8 +488,11 @@ def build_apkg(cfg, episode_id, picks, conn=None, log=print, gate=None):
     transcript = load_transcript(cfg, episode_id)
     conn = conn or lc.open_db(cfg["ledger_db"])
     picks = _interest_first(conn, picks)
-    prepared = _prepare_clips(cfg, episode_id, transcript, picks, log=log,
-                              gate=gate or _resolve_audio_gate(cfg, log))
+    # The built-in model has Notes/Context but no English field.
+    prepared, ungossed = _prepare_clips(
+        cfg, episode_id, transcript, picks, log=log,
+        gate=gate or _resolve_audio_gate(cfg, log),
+        require=("notes", "context"))
     deck_name = cfg.get("deck", {}).get("name", "Immersion Mining")
     title = transcript["episode"].get("title", episode_id)
 
@@ -496,7 +535,8 @@ def build_apkg(cfg, episode_id, picks, conn=None, log=print, gate=None):
     if minted:
         lc.record_mined_cards(conn, episode_id, minted)
         lc.promote(conn)
-    return {"apkg": str(out), "cards": len(minted), "deck": deck_name}
+    return {"apkg": str(out), "cards": len(minted), "deck": deck_name,
+            "ungossed": ungossed}
 
 
 def main(argv=None):

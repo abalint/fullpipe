@@ -485,6 +485,13 @@ Likewise include `notes` and `context` (both **English**) on every pool entry
 whenever the field_map maps them — you have the full transcript in front of
 you now; nothing downstream can reconstruct this:
 
+> **This is enforced, not advisory.** `tools.deck` drops any pick missing a
+> mapped `english`/`notes`/`context` and reports it under `ungossed` — a
+> blank-backed card is worse than no card. A pool entry you don't gloss is a
+> card you don't get, so gloss every entry you actually want minted. (Skipping
+> this is exactly how 108 cards reached the deck with empty backs before the
+> guard existed.)
+
 - `notes` — a mini usage note on the **target word as used in this sentence**.
   Isolate the target word first (write it with its reading), then explain the
   nuance that matters here: which sense is in play, slang/colloquial register,

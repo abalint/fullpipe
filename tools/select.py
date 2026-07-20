@@ -14,8 +14,11 @@ volume is an outcome of the curation quality bar (SKILL.md — Selection bar),
 never of a count. Every quality survivor the user didn't prune gets a card.
 
 High-interest lemmas *outside* the pool are rescued from coverage candidates
-when a true i+1 sentence exists (other_unknown_count == 0, clip 1.5–15s) —
-those carry no curated english (flagged "rescued": true).
+when a true i+1 sentence exists (other_unknown_count == 0, clip 1.5–15s).
+Nothing here can gloss them — the curate pass never saw them — so they are
+flagged "rescued"/"needs_gloss" and tools.deck drops them rather than minting
+a card with a blank back, reporting them as `ungossed` so a later /immerse can
+gloss the word properly. They used to reach Anki as English-less cards.
 
 Writes <episode_dir>/feedback.json (the raw taps, audit trail) and
 <episode_dir>/final_picks.json (what deck pushes at mark-watched).
@@ -73,7 +76,7 @@ def select_picks(pool, coverage, taps, standing_interest=()):
             continue
         rescued.append({"lemma": lem, "sentence_idx": b["sentence_idx"],
                         "reading": c.get("reading"), "english": "",
-                        "rescued": True})
+                        "rescued": True, "needs_gloss": True})
 
     pri = {l: i for i, l in enumerate(interest)}
     ordered = sorted(

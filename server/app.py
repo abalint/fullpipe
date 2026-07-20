@@ -465,11 +465,13 @@ def create_app(cfg, start_worker=True):
                 q.set_progress(qconn, job["id"], msg)
 
         error = None
+        ungossed = []
         if picks:
             try:
                 from tools.deck import push_cards
-                push_cards(cfg, episode_id, picks, conn=lconn,
-                           log=lambda m: None, on_progress=progress)
+                res = push_cards(cfg, episode_id, picks, conn=lconn,
+                                 log=lambda m: None, on_progress=progress)
+                ungossed = res.get("ungossed") or []
             except Exception as e:
                 # watched still stands; the queue row surfaces this for retry
                 error = f"cards failed: {str(e)[:300]}"
@@ -485,6 +487,12 @@ def create_app(cfg, start_worker=True):
             lc.promote(lconn)
         except Exception as e:
             error = error or f"promote failed: {str(e)[:200]}"
+        if ungossed and not error:
+            # Not a failure — but silence here is what let blank-backed cards
+            # go unnoticed for weeks. Surface the words that wanted a card and
+            # couldn't get one, so /immerse can gloss them.
+            error = ("needs gloss (no card minted): " + ", ".join(ungossed[:12])
+                     + (f" +{len(ungossed) - 12} more" if len(ungossed) > 12 else ""))
         if job:
             q.set_state(qconn, job["id"], "watched",
                         episode_id=job["episode_id"], title=job.get("title"),
