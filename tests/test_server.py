@@ -554,6 +554,29 @@ class TestRoutes(ServerTestBase):
                                         "taps": [["公園", "k"]]}, headers=self.auth)
         self.assertEqual(q.get_job(conn, EP)["state"], "reconciled")
 
+    def test_taps_after_watched_do_not_regress_the_job(self):
+        """Feedback and mark-watched are independent and may arrive in either
+        order. Late feedback still lands in the ledger, but must not drag the
+        row back to the pre-watch `reconciled` state (that un-did the watch on
+        the phone and re-armed delete)."""
+        self.stage_episode()
+        qconn, _ = self._enqueue_at("watched")
+        r = self.client.post("/taps", json={"episode_id": EP, "batch_id": "e" * 16,
+                                            "taps": [["公園", "k"]]}, headers=self.auth)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["applied"], 1)  # evidence still recorded
+        self.assertEqual(q.get_job(qconn, EP)["state"], "watched")
+        conn = lc.open_db(self.cfg["ledger_db"])
+        self.assertEqual(conn.execute(
+            "SELECT COUNT(*) FROM evidence WHERE lemma='公園' AND source='tap_known'"
+        ).fetchone()[0], 1)
+
+        # same during the background close-out: `pushing` must survive too
+        q.set_state(qconn, q.get_job(qconn, EP)["id"], "pushing", episode_id=EP)
+        self.client.post("/taps", json={"episode_id": EP, "batch_id": "f" * 16,
+                                        "taps": [["犬", "h"]]}, headers=self.auth)
+        self.assertEqual(q.get_job(qconn, EP)["state"], "pushing")
+
     def test_watched_without_feedback(self):
         self.stage_episode()
         r = self.client.post(f"/watched/{EP}", headers=self.auth)

@@ -96,7 +96,7 @@ download/ASR/tokenize it used to do up front is exactly the batch that already r
 | `prepared` | 1 done | worker | **pull video** (big, slow — do it overnight) |
 | `curating` | 2 | curate step | — |
 | `staged` | 2 done | curate step | **pull prep-doc** (tiny, fast); review + tap |
-| `reconciled` | — | `POST /taps` (pre-watch feedback) | ready to watch; cards selected |
+| `reconciled` | — | `POST /taps` (pre-watch feedback) | ready to watch; cards selected. Set **only from a pre-watch state** — feedback that arrives after mark-watched (either tap order, or an outbox flush) still records its evidence but leaves a `pushing`/`watched` row alone |
 | `pushing` | — | `POST /watched` | close-out running in the background (clips + Anki push + lapse poll); `progress_msg` narrates it ("pushing card 3/12"); delete is refused |
 | `watched` | — | close-out thread | terminal: cards pushed to Anki (skipped for the disliked-it branch, body `{cards:false}`); a failed push lands on the row's `error` — re-POST `/watched` retries; **local files are kept** (rewatch / passive listening; deletion is manual only) |
 | `failed` | any | worker | surface error + retry action |

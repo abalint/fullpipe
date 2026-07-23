@@ -417,10 +417,16 @@ def create_app(cfg, start_worker=True):
 
     # --- taps / watched (the reconcile round-trip) --------------------------------
 
+    # States at or past the watch close-out. Feedback is allowed at any time
+    # (taps are ledger evidence, order-independent), but it must never drag a
+    # row backwards out of one of these — `reconciled` is a *pre*-watch state,
+    # and regressing it un-does the watch on the phone (and re-arms delete).
+    POST_WATCH_STATES = ("pushing", "watched")
+
     def _mark_job(episode_id, state):
         conn = queue_conn()
         job = q.get_job(conn, episode_id)
-        if job:
+        if job and job["state"] not in POST_WATCH_STATES:
             q.set_state(conn, job["id"], state,
                         episode_id=job["episode_id"], title=job.get("title"))
 
@@ -429,24 +435,39 @@ def create_app(cfg, start_worker=True):
         """Pre-watch feedback: known taps → ledger evidence, high-interest
         taps → card selection. Does NOT imply watched — watching is a later,
         separate step (the workflow decided 2026-07-05: review → feedback →
-        watch → mark-watched pushes the cards)."""
+        watch → mark-watched pushes the cards).
+
+        Feedback and mark-watched are independent and may arrive in either
+        order (they also flush from the offline outbox in whatever order they
+        were queued). Taps always land in the ledger; what's skipped once the
+        episode is past the watch close-out is the *episode-local* half —
+        re-running card selection (those cards are already pushed) and moving
+        the queue row back to the pre-watch `reconciled` state."""
         episode_id = payload.get("episode_id")
         if not episode_id:
             raise HTTPException(422, "missing episode_id")
+        job = q.get_job(queue_conn(), episode_id)
+        post_watch = bool(job) and job["state"] in POST_WATCH_STATES
         conn = ledger_conn()
         result = lc.apply_taps(conn, payload, anki_call=None, watched=False)
         if not result["duplicate"]:
             result["promote"] = lc.promote(conn)
-            # run card selection from the full tap set (k prunes, h prioritizes)
-            # plus the standing high-interest set carried over from prior shows
-            try:
-                from tools.select import run_select
-                interest = lc.active_interest(conn)
-                final = run_select(cfg, episode_id, payload.get("taps", []), interest)
-                result["cards_selected"] = len(final)
-            except FileNotFoundError:
-                result["cards_selected"] = None  # no coverage staged (blob-only episode)
-            _mark_job(episode_id, "reconciled")
+            if post_watch:
+                # the deck for this episode is already decided; the taps are
+                # still knowledge evidence and steer *future* episodes
+                result["cards_selected"] = None
+                result["post_watch"] = True
+            else:
+                # run card selection from the full tap set (k prunes, h prioritizes)
+                # plus the standing high-interest set carried over from prior shows
+                try:
+                    from tools.select import run_select
+                    interest = lc.active_interest(conn)
+                    final = run_select(cfg, episode_id, payload.get("taps", []), interest)
+                    result["cards_selected"] = len(final)
+                except FileNotFoundError:
+                    result["cards_selected"] = None  # no coverage staged (blob-only)
+                _mark_job(episode_id, "reconciled")
         return result
 
     def _close_out(episode_id, picks):
