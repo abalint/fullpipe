@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 from functools import lru_cache
+from pathlib import Path
 
 # Suppress CMD windows when spawning subprocesses on Windows; empty elsewhere.
 _NOWWIN: dict = (
@@ -21,6 +22,13 @@ _NOWWIN: dict = (
 
 @lru_cache(maxsize=None)
 def _resolve(name: str) -> str:
+    # Prefer a copy installed alongside the interpreter (the project venv):
+    # brew's yt-dlp formula lags upstream by months, and a stale yt-dlp fails
+    # downloads outright (YouTube retires player clients faster than that).
+    # `pip install -U yt-dlp` in .venv is then the fix, with no PATH juggling.
+    local = Path(sys.executable).parent / name
+    if local.is_file():
+        return str(local)
     found = shutil.which(name)
     if found:
         return found

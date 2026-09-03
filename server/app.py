@@ -273,6 +273,16 @@ def create_app(cfg, start_worker=True):
         curate = read_json(curate_path) if curate_path.exists() else None
         return build_prep_data(transcript, coverage, curate)
 
+    @app.get("/page/{episode_id}", dependencies=[Depends(auth)])
+    def get_page(episode_id: str):
+        """The reader's post structure for a page job (tools.pages): per post
+        n/name/date/uid/replies_to plus lines as runs of sentence idxs into
+        /transcript — the phone joins the two to render tappable posts."""
+        path = episode_dir(cfg, episode_id) / "page.json"
+        if not path.exists():
+            raise HTTPException(404, f"no staged page for {episode_id}")
+        return read_json(path)
+
     @app.get("/transcript/{episode_id}", dependencies=[Depends(auth)])
     def get_transcript(episode_id: str):
         """Full tokenized sentence track for the in-app player's subtitle
@@ -284,9 +294,11 @@ def create_app(cfg, start_worker=True):
         coverage classification (`cls` — i_plus_1/reinforcement/... ), each
         token the corpus freq rank (`f`, absent = not in the corpus), and the
         doc the ranked candidate lemmas (`candidates`, coverage order = the
-        episode's high-value words), and `interest` — the standing "want to
-        learn" lemmas (persist across shows until known) that appear here, so
-        the player highlights them wherever they surface.
+        episode's high-value words), plus the two standing ledger lists that
+        appear here, so the player highlights them wherever they surface:
+        `interest` — the "want to learn" lemmas (persist across shows until
+        known) — and `confirm` — the "we think you know this" queue awaiting
+        a yes/no (GET /confirm).
 
         Curated sentences additionally carry the curate pass's `grammar`
         (pattern + form note, GRAMMAR.md — proposals flagged) and `phrases`
@@ -316,6 +328,7 @@ def create_app(cfg, start_worker=True):
             phrases_at.setdefault(idx, []).append(
                 {"canonical": p["canonical"], "surface": p.get("surface", "")})
         interest = lc.active_interest(ledger_conn())
+        confirm = lc.confirm_words(ledger_conn())
         here = {t.get("l") for s in coverage["sentences"] for t in s["tokens"]}
         # ~300k rows, ~0.5s to load — cache it; freq only changes when
         # build_freq reruns (offline, rare), which warrants a server restart
@@ -345,7 +358,37 @@ def create_app(cfg, start_worker=True):
                 "curated": bool(curate),
                 "candidates": [c["lemma"] for c in coverage.get("candidates", [])],
                 "interest": sorted(interest & here),
+                "confirm": sorted(confirm & here),
                 "sentences": [sent(s) for s in coverage["sentences"]]}
+
+    @app.get("/episodes/{episode_id}/paint", dependencies=[Depends(auth)])
+    def get_paint(episode_id: str):
+        """Live paint state for one episode/page — the ledger lists the app
+        overlays on its cached sidecars, so highlighting tracks the ledger
+        *now* rather than the moment coverage ran (token `k`) or the phone
+        pulled the transcript (`confirm`/`interest`). Narrowed to this
+        episode's lemmas / curated grammar patterns, so it's tiny.
+        `known` is additive (words that have become known); `confirm` /
+        `interest` replace the sidecar's lists; `grammar_confirm` is the
+        grammar side of the confirm queue, matched against the curate
+        pass's per-line patterns (a grammar point is not a token — it's
+        only ever "seen" through the line the curate pass tagged with it)."""
+        try:
+            coverage = load_coverage(cfg, episode_id)
+        except FileNotFoundError as e:
+            raise HTTPException(404, str(e))
+        here = {t.get("l") for s in coverage["sentences"] for t in s["tokens"]} - {None}
+        curate_path = episode_dir(cfg, episode_id) / "curate.json"
+        curate = read_json(curate_path) if curate_path.exists() else {}
+        patterns = {g.get("pattern") or g.get("proposed_pattern")
+                    for g in curate.get("grammar", [])} - {None}
+        conn = ledger_conn()
+        return {"episode_id": episode_id,
+                "known": sorted(lc.known_words(conn) & here),
+                "confirm": sorted(lc.confirm_words(conn) & here),
+                "interest": sorted(lc.active_interest(conn) & here),
+                "grammar_confirm": sorted(lc.confirm_grammar(conn) & patterns),
+                "at": lc.now_iso()}
 
     @app.get("/definitions/{episode_id}", dependencies=[Depends(auth)])
     def get_definitions(episode_id: str):
@@ -452,7 +495,12 @@ def create_app(cfg, start_worker=True):
         result = lc.apply_taps(conn, payload, anki_call=None, watched=False)
         if not result["duplicate"]:
             result["promote"] = lc.promote(conn)
-            if post_watch:
+            if episode_id.startswith("page_"):
+                # pages mint no cards: taps are pure ledger evidence, and the
+                # row's state stays put (staged → read is the page lifecycle)
+                result["cards_selected"] = None
+                result["page"] = True
+            elif post_watch:
                 # the deck for this episode is already decided; the taps are
                 # still knowledge evidence and steer *future* episodes
                 result["cards_selected"] = None
@@ -543,7 +591,11 @@ def create_app(cfg, start_worker=True):
             raise HTTPException(404, str(e))
 
         picks = None
-        if not (body or {}).get("cards", True):
+        if episode_id.startswith("page_"):
+            # a read page: exposures activate like any watch, but pages never
+            # mint cards regardless of what the client sent
+            result["cards"] = {"queued": 0, "note": "page — no cards"}
+        elif not (body or {}).get("cards", True):
             result["cards"] = {"queued": 0, "note": "declined — cards skipped"}
         else:
             # cards: feedback-selected picks; if none were staged (watched with
@@ -595,6 +647,32 @@ def create_app(cfg, start_worker=True):
             raise HTTPException(422, str(e))
         except KeyError as e:
             raise HTTPException(404, str(e))
+
+    # --- immersion time log (MOBILE.md — viewing time) -------------------------------
+
+    @app.post("/viewtime", dependencies=[Depends(auth)])
+    def post_viewtime(body: dict):
+        """Store one phone-recorded playback session: {id, episode_id, kind:
+        watch|listen, day (device-local YYYY-MM-DD), start, secs, reached?,
+        duration?, title?}. Idempotent on the client-minted id (outbox replays
+        dedupe). The episode need not exist — time spent is kept even after
+        the row is deleted, so a stale episode never 404s the outbox."""
+        try:
+            return lc.record_view_session(ledger_conn(), body)
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+
+    @app.delete("/viewtime/{sid}", dependencies=[Depends(auth)])
+    def delete_viewtime(sid: str):
+        """Drop one session (the app's ✕ on a hand-typed entry). Idempotent."""
+        return lc.delete_view_session(ledger_conn(), sid)
+
+    @app.get("/viewtime", dependencies=[Depends(auth)])
+    def get_viewtime(since: str | None = None):
+        """Every stored session (optionally from device-day `since`), oldest
+        first — the app merges them by id into its local log (reinstall
+        backfill) and renders its own days/weeks."""
+        return {"sessions": lc.query_view_sessions(ledger_conn(), since=since)}
 
     # --- ledger reads ---------------------------------------------------------------
 

@@ -3,8 +3,10 @@
 One queue, two producers (phone share-sheet / PC), one executor (the worker).
 Jobs are idempotent by a source-derived id: for YouTube the video id is
 derivable at enqueue time (yt_<id> — identical to the episode_id acquire will
-assign), local files hash to local_<sha> the same way, and anything else gets
-src_<sha(url)> until acquire reports the real episode_id at `prepared`.
+assign), local files hash to local_<sha> the same way, 5ch threads parse to
+page_5ch_<board>_<thread> (the page_ prefix IS the job's kind marker), and
+anything else gets src_<sha(url)> until acquire reports the real episode_id
+at `prepared`.
 Re-enqueuing an existing source is a no-op; re-enqueuing a `failed` job
 resets it to `queued` (that IS the retry action the phone surfaces).
 """
@@ -19,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from engine.downloader import _extract_video_id  # noqa: E402
 from engine.local_file import generate_local_file_id, is_local_file  # noqa: E402
+from tools.pages import page_episode_id  # noqa: E402
 
 STATES = ("queued", "downloading", "transcribing", "tokenizing", "prepared",
           "curating", "staged", "pushing", "watched", "reconciled", "failed")
@@ -65,6 +68,9 @@ def derive_job_id(source):
     that is derivable without touching the network."""
     if is_local_file(source):
         return generate_local_file_id(source)
+    page_id = page_episode_id(source)
+    if page_id:
+        return page_id
     vid = _extract_video_id(source)
     if vid:
         return f"yt_{vid}"
@@ -80,6 +86,9 @@ def job_dict(row):
     d["episode_id"] = d["episode_id"] or d["id"]
     d["passive"] = bool(d.get("passive"))
     d["debrief"] = bool(d.get("debrief"))
+    # Pages are marked by their id prefix (page_episode_id) — derived, not
+    # stored, so pre-pages rows need no migration.
+    d["kind"] = "page" if d["id"].startswith("page_") else "episode"
     return d
 
 

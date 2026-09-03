@@ -12,6 +12,7 @@
     set-follow           ← set a channel's follow intent (block|less|neutral|more)
     presenter-get/-set   ← read/store a channel's presenter fingerprint (SURVEY.md §4c)
     record-curation      ← /immerse curation block (genre/format/topics/difficulty)
+    record-view-session  ← phone-recorded playback time (watch|listen) → view_sessions
     query                → coverage %, needs_review queue, evidence audits, ratings
 
 Raw evidence is append-only truth; lemmas.status is a projection — rerunning
@@ -23,6 +24,7 @@ CLI:
 
 import argparse
 import json
+import re
 import sys
 import uuid
 from datetime import datetime, timezone
@@ -174,6 +176,9 @@ def _migrate(conn):
         conn.execute("ALTER TABLE lemmas ADD COLUMN confirm_candidate INTEGER NOT NULL DEFAULT 0")
     if "kind" not in lemma_cols:
         conn.execute("ALTER TABLE lemmas ADD COLUMN kind TEXT NOT NULL DEFAULT 'word'")
+    vs_cols = {r["name"] for r in conn.execute("PRAGMA table_info(view_sessions)")}
+    if vs_cols and "source" not in vs_cols:
+        conn.execute("ALTER TABLE view_sessions ADD COLUMN source TEXT NOT NULL DEFAULT 'app'")
     ev_cols = {r["name"] for r in conn.execute("PRAGMA table_info(evidence)")}
     if "kind" not in ev_cols:
         conn.execute("ALTER TABLE evidence ADD COLUMN kind TEXT NOT NULL DEFAULT 'word'")
@@ -594,6 +599,107 @@ def record_debrief(conn, episode_id, payload, debrief_id=None):
     return {"episode_id": episode_id, "debrief_id": debrief_id,
             "comprehension_pct": comp, "language_pct": lang,
             "lag_days": lag, "ts": ts}
+
+
+# Immersion-time log kinds (MOBILE.md — viewing time): active watching in
+# the in-app player vs passive listening in the background audio service.
+VIEW_KINDS = ("watch", "listen")
+# Where a session came from: recorded by the app's player/service, typed in
+# by hand on the Progress tab (listening done outside the app), or imported
+# from the pre-app spreadsheet (tools/import_tracker_pdf.py).
+VIEW_SOURCES = ("app", "manual", "import")
+
+
+def record_view_session(conn, session):
+    """Store one phone-recorded playback session (MOBILE.md — viewing time).
+
+    `session` is the client's segment: {id, episode_id, kind: watch|listen,
+    day: YYYY-MM-DD (device-local), start: ISO, secs, reached?, duration?,
+    title?}. Append-only and idempotent on the client-minted id, so an outbox
+    re-flush is a no-op. The episode need not exist in the ledger: time spent
+    is a fact about the learner's day, not about the episode's lifecycle, and
+    it must survive the episode being deleted (the title rides along for
+    display)."""
+    if not isinstance(session, dict):
+        raise ValueError("session must be an object")
+    sid = session.get("id")
+    if not isinstance(sid, str) or not sid.strip():
+        raise ValueError("session id required")
+    ep = session.get("episode_id")
+    if not isinstance(ep, str) or not ep.strip():
+        raise ValueError("episode_id required")
+    kind = session.get("kind")
+    if kind not in VIEW_KINDS:
+        raise ValueError(f"kind must be one of {VIEW_KINDS}, got {kind!r}")
+    day = session.get("day")
+    if not isinstance(day, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+        raise ValueError(f"day must be YYYY-MM-DD, got {day!r}")
+    start = session.get("start")
+    if not isinstance(start, str) or not start:
+        raise ValueError("start (ISO timestamp) required")
+
+    def _num(key, required=False):
+        v = session.get(key)
+        if v is None:
+            if required:
+                raise ValueError(f"{key} required")
+            return None
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0:
+            raise ValueError(f"{key} must be a non-negative number, got {v!r}")
+        return float(v)
+
+    secs = _num("secs", required=True)
+    reached = _num("reached")
+    duration = _num("duration")
+    title = session.get("title")
+    if title is not None and not isinstance(title, str):
+        raise ValueError("title must be a string")
+    source = session.get("source") or "app"
+    if source not in VIEW_SOURCES:
+        raise ValueError(f"source must be one of {VIEW_SOURCES}, got {source!r}")
+    if conn.execute("SELECT 1 FROM view_sessions WHERE id = ?", (sid,)).fetchone():
+        return {"id": sid, "duplicate": True}
+    conn.execute(
+        "INSERT INTO view_sessions (id, episode_id, title, kind, day, start, secs, "
+        "reached, duration, source, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (sid, ep, title, kind, day, start, secs, reached, duration, source, now_iso()))
+    conn.commit()
+    return {"id": sid, "duplicate": False}
+
+
+def delete_view_session(conn, sid):
+    """Remove one session — the Progress tab's ✕ on a hand-typed entry (the
+    app only offers it for source='manual'; recorded sittings are facts and
+    imported rows are managed on the PC). Idempotent: a missing id is fine."""
+    n = conn.execute("DELETE FROM view_sessions WHERE id = ?", (sid,)).rowcount
+    conn.commit()
+    return {"id": sid, "deleted": n > 0}
+
+
+def query_view_sessions(conn, since=None):
+    """Every stored playback session (optionally from device-day `since`,
+    inclusive), oldest first — the phone merges these by id into its local
+    log, so a reinstalled app gets its history back."""
+    sql = ("SELECT id, episode_id, title, kind, day, start, secs, reached, duration, source "
+           "FROM view_sessions")
+    params = ()
+    if since:
+        sql += " WHERE day >= ?"
+        params = (since,)
+    sql += " ORDER BY day, start, id"
+    return [dict(r) for r in conn.execute(sql, params)]
+
+
+def query_view_totals(conn):
+    """Per-day watch/listen seconds, newest day first — the CLI's readable
+    view of the time log (the phone renders its own weeks)."""
+    out = {}
+    for r in conn.execute(
+            "SELECT day, kind, SUM(secs) AS secs FROM view_sessions "
+            "GROUP BY day, kind ORDER BY day DESC"):
+        out.setdefault(r["day"], {"day": r["day"], "watch": 0.0, "listen": 0.0})
+        out[r["day"]][r["kind"]] = round(r["secs"], 1)
+    return list(out.values())
 
 
 def query_debriefs(conn):
@@ -1225,6 +1331,31 @@ def active_interest(conn, known=()):
     return interested - ledger_known - set(known)
 
 
+def confirm_words(conn):
+    """The word-kind confirmation queue as a bare lemma set — "we think you
+    know this; do you?". Same rows as query_confirm_queue (confirm_candidate
+    = 1) minus the readings/episodes context, cheap enough for hot read paths
+    (GET /transcript, where it drives the player's think-you-know highlight)."""
+    return {r[0] for r in conn.execute(
+        "SELECT lemma FROM lemmas WHERE kind = 'word' AND confirm_candidate = 1")}
+
+
+def known_words(conn):
+    """The ledger's known WORDS as a bare lemma set (status = 'known' — every
+    promoted tap/import/confirm). Ledger-only, no AnkiConnect, for hot read
+    paths: GET /episodes/{id}/paint hands the app what has become known
+    since an episode's coverage froze its `k` flags."""
+    return {r[0] for r in conn.execute(
+        "SELECT lemma FROM lemmas WHERE kind = 'word' AND status = 'known'")}
+
+
+def confirm_grammar(conn):
+    """The grammar-kind confirmation queue as a bare pattern set — the
+    grammar_points analogue of confirm_words, for the player's line badge."""
+    return {r[0] for r in conn.execute(
+        "SELECT pattern FROM grammar_points WHERE confirm_candidate = 1")}
+
+
 def query_summary(conn):
     """Headline counts. lemmas_by_status stays WORDS-ONLY so its meaning (and
     the corpus-rank join in /stats) is unchanged by phrase/grammar tracking;
@@ -1527,10 +1658,14 @@ def main(argv=None):
     p.add_argument("debrief_json",
                    help="JSON file: {comprehension_pct, language_pct?, "
                         "lag_days?, questions?, debrief_id?}")
+    p = sub.add_parser("record-view-session",
+                       help="store one phone-recorded playback session (JSON file)")
+    p.add_argument("session_json")
     p = sub.add_parser("query", help="read the ledger")
     p.add_argument("what", choices=["summary", "needs-review", "confirm-queue",
                                     "why", "unwatched", "ratings", "channels",
-                                    "grammar-proposed", "non-vocab", "debriefs"])
+                                    "grammar-proposed", "non-vocab", "debriefs",
+                                    "viewtime"])
     p.add_argument("lemma", nargs="?")
 
     args = ap.parse_args(argv)
@@ -1634,6 +1769,9 @@ def main(argv=None):
         payload = json.loads(Path(args.debrief_json).read_text(encoding="utf-8"))
         _json_out(record_debrief(conn, args.episode_id, payload,
                                  debrief_id=payload.get("debrief_id")))
+    elif args.verb == "record-view-session":
+        payload = json.loads(Path(args.session_json).read_text(encoding="utf-8"))
+        _json_out(record_view_session(conn, payload))
     elif args.verb == "query":
         if args.what == "summary":
             _json_out(query_summary(conn))
@@ -1664,6 +1802,8 @@ def main(argv=None):
                 "ORDER BY ts DESC, key")])
         elif args.what == "debriefs":
             _json_out(query_debriefs(conn))
+        elif args.what == "viewtime":
+            _json_out(query_view_totals(conn))
 
 
 if __name__ == "__main__":

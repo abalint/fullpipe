@@ -22,7 +22,7 @@ CLI (run from $FULLPIPE with .venv/bin/python):
     python -m tools.harvest list [--status new]
     python -m tools.harvest gate-speech VIDEO_ID ...   (drop speechless picks)
     python -m tools.harvest estimate-coverage VIDEO_ID ...  (comprehensibility %)
-    python -m tools.harvest set-status VIDEO_ID {new|queued|dismissed|picked}
+    python -m tools.harvest set-status VIDEO_ID {new|queued|dismissed|picked|presented}
 """
 
 import argparse
@@ -46,7 +46,15 @@ from lib_config import load_config  # noqa: E402
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 INNERTUBE_CLIENT_VERSION = "2.20250620.01.00"
-STATUSES = ("new", "queued", "dismissed", "picked", "filtered", "no_speech")
+STATUSES = ("new", "queued", "dismissed", "picked", "filtered", "no_speech",
+            "presented")
+
+# A rating at/above this on ANY episode of a channel demotes a `follow=block` from
+# a hard veto to a down-weight (gather_seeds). Guards against the last-write-wins
+# erasure in ledgerctl.set_follow: a block tapped on a weak episode must not be
+# able to silently delete a `more` earned by a great one. Re-tunable — the verdict
+# is computed on read, so changing it needs no re-rating.
+PEAK_OVERRIDE_RATING = 4
 
 # Synthetic-TTS-narrator formats to exclude by default (a personal taste filter —
 # override/extend via config `discover.format_blocklist`). Matched case-insensitively
@@ -74,7 +82,7 @@ CREATE TABLE IF NOT EXISTS candidates (
     view_count INTEGER,        -- when the edge reports it
     edge       TEXT NOT NULL,  -- related | search | rss
     seed       TEXT,           -- seed video_id / query / channel_id that surfaced it
-    status     TEXT NOT NULL DEFAULT 'new',   -- new | queued | dismissed | picked
+    status     TEXT NOT NULL DEFAULT 'new',   -- new | queued | dismissed | picked | presented
     first_seen TEXT NOT NULL,
     meta       TEXT            -- JSON: extra bits (view text, description snippet)
 );
@@ -303,17 +311,31 @@ def gather_seeds(cfg):
 
         # Channels: the derived MAX(rating) joined with the per-channel state
         # table (follow intent + presenter fingerprint). Blocked channels are a
-        # hard veto — dropped from seeds and surfaced for candidate filtering.
-        follow_rank = {"more": 0, "neutral": 1, "less": 2}
+        # hard veto — dropped from seeds and surfaced for candidate filtering —
+        # *unless* the channel also produced a peak (a rating >= PEAK_OVERRIDE).
+        #
+        # Why the override: `follow` is tapped per-episode but stored as one
+        # last-write-wins channel row (ledgerctl.set_follow), so a block tapped on
+        # a weak episode silently ERASES an earlier `more` from a great one — the
+        # signal isn't outvoted, it's gone. A channel with a 4–5 in the ledger is
+        # therefore not safely vetoable from a single later tap; it degrades to a
+        # strong down-weight (surfaced as block_overridden for the judge) instead
+        # of vanishing. An unqualified block — no peak, nothing contradicting it —
+        # stays a hard veto.
+        follow_rank = {"more": 0, "neutral": 1, "less": 2, "block": 3}
         channels, blocked = [], []
         for r in con.execute(
                 "SELECT e.channel, e.channel_id, MAX(e.rating) AS best, "
                 "c.follow_state, c.profile "
                 "FROM episodes e LEFT JOIN channels c ON c.channel_id = e.channel_id "
                 "WHERE e.channel_id IS NOT NULL GROUP BY e.channel_id"):
+            overridden = False
             if r["follow_state"] == "block":
-                blocked.append(r["channel_id"])
-                continue
+                if (r["best"] or 0) >= PEAK_OVERRIDE_RATING:
+                    overridden = True
+                else:
+                    blocked.append(r["channel_id"])
+                    continue
             profile = None
             if r["profile"]:
                 try:
@@ -323,6 +345,7 @@ def gather_seeds(cfg):
             channels.append({
                 "channel": r["channel"], "channel_id": r["channel_id"],
                 "best_rating": r["best"], "follow_state": r["follow_state"],
+                "block_overridden": overridden,
                 "profile": profile})
         # follow=more first, then by best_rating (a mediocre-but-followed channel
         # outranks a higher-rated one you never chose to follow).

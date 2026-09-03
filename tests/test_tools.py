@@ -420,6 +420,39 @@ class DeckAndRenderTest(unittest.TestCase):
         self.assertEqual(result["pushed"], 0)
         self.assertEqual(result["ungossed"], ["縄張り"])
 
+    def test_corrupt_clip_on_disk_is_recut(self):
+        # Regression: a cut killed mid-write leaves a stub mp3. Reuse-if-exists
+        # then fed that corpse to the audio gate on every retry (which 500s on
+        # it), so the card could never mint and re-running never helped.
+        clips = episode_dir(self.cfg, "test_ep", create=True) / "clips"
+        clips.mkdir(exist_ok=True)
+        stub = clips / "fullPipe_test_ep_0001.mp3"
+        stub.write_bytes(b"\xff\xfb\x90" + b"\x00" * 200)   # unplayable stub
+        picks = self._glossed({"lemma": "縄張り", "sentence_idx": 1,
+                               "reading": "なわばり"})
+        result = deck.push_cards(self.cfg, "test_ep", picks,
+                                 anki_call=self._fake_anki([]),
+                                 conn=self.conn, log=lambda m: None)
+        self.assertEqual(result["pushed"], 1)
+        from engine.audio import probe_audio_duration
+        self.assertIsNotNone(probe_audio_duration(stub))
+
+    def test_intact_clip_on_disk_is_reused(self):
+        # The re-cut guard must not throw away good work: a clip already cut
+        # (a retry after AnkiConnect died) is left alone, mtime and all.
+        picks = self._glossed({"lemma": "縄張り", "sentence_idx": 1,
+                               "reading": "なわばり"})
+        deck.push_cards(self.cfg, "test_ep", picks,
+                        anki_call=self._fake_anki([]),
+                        conn=self.conn, log=lambda m: None)
+        clip = (episode_dir(self.cfg, "test_ep") / "clips"
+                / "fullPipe_test_ep_0001.mp3")
+        before = clip.stat().st_mtime_ns
+        deck.push_cards(self.cfg, "test_ep", picks,
+                        anki_call=self._fake_anki([]),
+                        conn=self.conn, log=lambda m: None)
+        self.assertEqual(clip.stat().st_mtime_ns, before)
+
     def test_gloss_guard_only_checks_mapped_fields(self):
         # A note type without Notes/Context must not have every card blocked.
         cfg = dict(self.cfg, deck={"name": "Test Mining",
@@ -607,6 +640,14 @@ class HarvestSeedTest(unittest.TestCase):
         lc.update_episode_meta(conn, "yt_hi",
                                columns={"channel": "Docu", "channel_id": "UCdocu"})
         lc.record_rating(conn, "yt_hi", 5, axes={"topic_pull": 5})
+        # a channel with BOTH a peak and a later block tap — the last-write-wins
+        # erasure case (set_follow keeps one row, so `block` overwrote `more`)
+        lc.update_episode_meta(conn, "yt_peak",
+                               columns={"channel": "Mixed", "channel_id": "UCmixed"})
+        lc.record_rating(conn, "yt_peak", 5, follow="more")
+        lc.update_episode_meta(conn, "yt_weak",
+                               columns={"channel": "Mixed", "channel_id": "UCmixed"})
+        lc.record_rating(conn, "yt_weak", 2, follow="block")
         conn.close()
         self.seeds = self.harvest.gather_seeds({"ledger_db": self.db})
 
@@ -618,6 +659,26 @@ class HarvestSeedTest(unittest.TestCase):
         cids = [c["channel_id"] for c in self.seeds["channels"]]
         self.assertNotIn("UCtts", cids)
         self.assertEqual(self.seeds["blocked_channel_ids"], ["UCtts"])
+
+    def test_peak_overrides_block(self):
+        """A block on a channel that also produced a 4-5 is a down-weight, not a
+        veto — set_follow's last-write-wins must not erase the peak's signal."""
+        self.assertNotIn("UCmixed", self.seeds["blocked_channel_ids"])
+        mixed = [c for c in self.seeds["channels"]
+                 if c["channel_id"] == "UCmixed"]
+        self.assertEqual(len(mixed), 1)
+        self.assertTrue(mixed[0]["block_overridden"])
+        self.assertEqual(mixed[0]["follow_state"], "block")
+        # ...and it sorts last, behind every non-blocked channel
+        self.assertEqual(self.seeds["channels"][-1]["channel_id"], "UCmixed")
+
+    def test_unqualified_block_keeps_its_veto(self):
+        """Only a peak overrides. A blocked channel with nothing above the bar
+        stays hard-vetoed, and carries no override flag."""
+        self.assertEqual(self.seeds["blocked_channel_ids"], ["UCtts"])
+        self.assertFalse(any(c.get("block_overridden")
+                             for c in self.seeds["channels"]
+                             if c["channel_id"] != "UCmixed"))
 
     def test_followed_channel_ranks_first(self):
         # follow=more outranks a higher-rated channel you never chose to follow

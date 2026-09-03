@@ -14,6 +14,7 @@ the CLI — `python -m server.worker [SOURCE ...]` enqueues the sources, drains
 the queue, and exits (the /prepare skill's engine; no server needed).
 """
 
+import re
 import subprocess
 import sys
 import threading
@@ -28,6 +29,7 @@ from server import jobqueue as q  # noqa: E402
 from tools._staging import downloads_dir, episode_dir  # noqa: E402
 from tools.acquire import acquire  # noqa: E402
 from tools.coverage import run_coverage  # noqa: E402
+from tools.pages import acquire_page, is_page_source  # noqa: E402
 
 VIDEO_EXTS = {".mp4", ".m4v", ".mkv", ".webm", ".mov", ".avi", ".ts"}
 
@@ -35,32 +37,56 @@ VIDEO_EXTS = {".mp4", ".m4v", ".mkv", ".webm", ".mov", ".avi", ".ts"}
 _TRANSCRIBE_MARKERS = ("transcrib", "whisper", "reazon", "elevenlabs", "asr")
 
 
-def video_codec(path):
+def video_props(path):
+    """(codec, height) of the first video stream — (None, None) if no video."""
     out = subprocess.run(
         [ffprobe_path(), "-v", "error", "-select_streams", "v:0",
-         "-show_entries", "stream=codec_name", "-of", "csv=p=0", str(path)],
+         "-show_entries", "stream=codec_name,height",
+         "-of", "default=noprint_wrappers=1", str(path)],
         capture_output=True, text=True, **_NOWWIN)
-    return out.stdout.strip().splitlines()[0] if out.stdout.strip() else None
+    vals = dict(line.split("=", 1)
+                for line in out.stdout.strip().splitlines() if "=" in line)
+    codec = vals.get("codec_name") or None
+    try:
+        height = int(vals["height"])
+    except (KeyError, ValueError):
+        height = None
+    return codec, height
 
 
-def normalize_video(src, dest, log=lambda m: None):
-    """src → dest as H.264 mp4 (MOBILE.md: the pipeline's only transcode).
+def max_height(resolution):
+    """'480p' -> 480. None (no cap) for 'Best'/blank/unparseable."""
+    m = re.match(r"\s*(\d+)\s*p?\s*$", str(resolution or ""))
+    return int(m.group(1)) if m else None
 
-    Already-H.264 sources are remuxed (stream copy — seconds); VP9/AV1 get a
-    real transcode so any Android player can handle the file.
+
+def normalize_video(src, dest, cap=None, log=lambda m: None):
+    """src → dest as H.264 mp4 no taller than `cap` (MOBILE.md: the pipeline's
+    only transcode).
+
+    Already-H.264 sources that fit the cap are remuxed (stream copy — seconds);
+    VP9/AV1 get a real transcode so any Android player can handle the file, and
+    anything taller than the cap is scaled down. YouTube is already fetched at
+    the target resolution, so the scale path is really for local files, whose
+    source is whatever the user happened to have — often a 1080p master the
+    phone should never be asked to pull.
     """
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(".tmp.mp4")
-    codec = video_codec(src)
+    codec, height = video_props(src)
     if codec is None:
         raise RuntimeError(f"no video stream in {src}")
-    if codec == "h264":
+    too_tall = bool(cap and height and height > cap)
+    if codec == "h264" and not too_tall:
         log("remuxing (already H.264)…")
         args = ["-c", "copy"]
     else:
-        log(f"transcoding {codec} → H.264…")
+        log("transcoding " + (f"{height}p → {cap}p…" if too_tall
+                              else f"{codec} → H.264…"))
         args = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
                 "-c:a", "aac", "-b:a", "128k"]
+        if too_tall:
+            args += ["-vf", f"scale=-2:{cap}"]
     r = subprocess.run(
         [ffmpeg_path(), "-y", "-i", str(src), *args,
          "-movflags", "+faststart", str(tmp)],
@@ -80,8 +106,8 @@ def stage_video(cfg, source, record, log=lambda m: None):
     if dest.exists():
         return dest
 
+    resolution = cfg.get("server", {}).get("video_resolution", "480p")
     if record["episode"]["kind"] == "youtube":
-        resolution = cfg.get("server", {}).get("video_resolution", "480p")
         log(f"downloading video ({resolution})…")
         src = download_video(source, downloads_dir(cfg), resolution=resolution,
                              progress_callback=log)
@@ -90,12 +116,35 @@ def stage_video(cfg, source, record, log=lambda m: None):
         src = p if p.suffix.lower() in VIDEO_EXTS else None
     if src is None:
         return None
-    return normalize_video(src, dest, log=log)
+    return normalize_video(src, dest, cap=max_height(resolution), log=log)
+
+
+def process_page_job(cfg, conn, job, log=print):
+    """Stage 1 for a page job: fetch + parse + coverage — no media, no ASR.
+    Pages skip curation (there is no Stage 2 to wait for), so the terminal
+    state is `staged`: readable on the phone the moment coverage lands. The
+    /immerse page pass can still enrich the popup later (curate.json defs)."""
+    job_id = job["id"]
+    try:
+        q.set_state(conn, job_id, "downloading")
+        record = acquire_page(job["source"], cfg,
+                              log=lambda m: q.set_progress(conn, job_id, str(m)))
+        episode_id = record["episode"]["id"]
+        title = record["episode"].get("title")
+        q.set_state(conn, job_id, "tokenizing", episode_id=episode_id, title=title)
+        run_coverage(cfg, episode_id)
+        q.set_state(conn, job_id, "staged", episode_id=episode_id, title=title)
+        log(f"  [{job_id}] staged (page)")
+    except Exception as e:
+        q.set_state(conn, job_id, "failed", error=str(e)[:500])
+        log(f"  [{job_id}] FAILED: {e}")
 
 
 def process_job(cfg, conn, job, log=print):
     """Run Stage 1 for one job. State transitions + artifacts; raises nothing
     (failures land in state='failed' with the error on the job)."""
+    if is_page_source(job["source"]):
+        return process_page_job(cfg, conn, job, log=log)
     job_id = job["id"]
     try:
         q.set_state(conn, job_id, "downloading")
@@ -168,7 +217,9 @@ def drain(cfg, conn, sources=(), log=print):
         process_job(cfg, conn, job, log=log)
         final = q.get_job(conn, job["id"])
         state = final["state"] if final else "failed"
-        summary["prepared" if state == "prepared" else "failed"].append(job["id"])
+        # pages land straight on `staged` (no Stage 2) — that's their success
+        ok = state == "prepared" or (state == "staged" and final["kind"] == "page")
+        summary["prepared" if ok else "failed"].append(job["id"])
     scan_stage2(cfg, conn, log=log)
     return summary
 

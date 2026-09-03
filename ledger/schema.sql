@@ -203,3 +203,25 @@ CREATE TABLE IF NOT EXISTS non_vocab (
     origin TEXT,              -- episode_id that first flagged it
     ts     TEXT NOT NULL
 );
+
+-- Immersion time log (MOBILE.md — viewing time): one row per playback
+-- session the phone recorded. `secs` is wall-clock seconds actually spent
+-- playing — a rewound stretch counts again, a pause counts nothing — so the
+-- sum is the honest "hours of exposure" number. `reached` vs `duration`
+-- says whether the episode was finished. Client-minted ids make the outbox
+-- replay-safe; `day` is the DEVICE-local calendar day the time belongs to
+-- (the phone decides what "today" is, not the server's clock).
+CREATE TABLE IF NOT EXISTS view_sessions (
+    id          TEXT PRIMARY KEY,   -- client-minted (replay dedup)
+    episode_id  TEXT NOT NULL,
+    title       TEXT,               -- snapshot: survives episode deletion
+    kind        TEXT NOT NULL,      -- watch (in-app player) | listen (passive service)
+    day         TEXT NOT NULL,      -- device-local YYYY-MM-DD
+    start       TEXT NOT NULL,      -- ISO wall-clock start of the session
+    secs        REAL NOT NULL,      -- wall-clock seconds spent playing
+    reached     REAL,               -- furthest media position seen (s)
+    duration    REAL,               -- media length (s), when the client knew it
+    source      TEXT NOT NULL DEFAULT 'app',  -- app (recorded) | manual (typed in) | import (historic sheet)
+    received_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_view_sessions_day ON view_sessions(day);

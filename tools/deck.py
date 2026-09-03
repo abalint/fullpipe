@@ -264,13 +264,31 @@ def _resolve_video(cfg, episode_id, transcript):
     return None
 
 
+def _reusable_clip(clip_path, expected):
+    """Is an already-cut clip still worth reusing? Only if ffprobe can read a
+    duration close to the span we asked for.
+
+    A cut that dies mid-write (killed process, full disk) leaves a stub mp3 —
+    a few hundred bytes with no two consecutive MPEG frames. Because the cut
+    is skipped whenever the file exists, that stub then gets re-fed to the
+    audio gate on every retry, which 500s on it, so the card can never mint
+    and re-running never helps. Cheap to check, and it costs one ffprobe."""
+    duration = probe_audio_duration(clip_path)
+    return duration is not None and duration >= expected - CLIP_PAD
+
+
 def _clip_sentence(audio_path, sentence, clip_path, total_duration,
-                   target_lufs=CLIP_TARGET_LUFS):
+                   target_lufs=CLIP_TARGET_LUFS, log=None):
     start = max(0.0, sentence["start"] - CLIP_PAD)
     end = min(total_duration, sentence["end"] + CLIP_PAD)
     if end - start < MIN_SLICE_DURATION:
         raise ValueError(f"degenerate clip for sentence {sentence['idx']}")
-    if not Path(clip_path).exists():
+    clip_path = Path(clip_path)
+    if clip_path.exists() and not _reusable_clip(clip_path, end - start):
+        if log:
+            log(f"  re-cutting {clip_path.name}: unreadable clip on disk")
+        clip_path.unlink()
+    if not clip_path.exists():
         slice_audio(str(audio_path), start, end, str(clip_path),
                     target_lufs=target_lufs)
     return clip_path
@@ -341,7 +359,7 @@ def _prepare_clips(cfg, episode_id, transcript, picks, log=print,
             continue
         clip_name = f"fullPipe_{episode_id}_{p['sentence_idx']:04d}.mp3"
         _clip_sentence(audio, sent, clips_dir / clip_name, total,
-                       target_lufs=target_lufs)
+                       target_lufs=target_lufs, log=log)
         if gate is not None:
             if on_progress:
                 on_progress(f"validating clip {i}/{len(picks)}")

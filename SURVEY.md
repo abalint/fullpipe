@@ -100,6 +100,26 @@ down-weight — averaging it into anything is wrong. Keep it as explicit states:
 ("3/5 video, but I want more from them") — it's a **channel** signal fully
 decoupled from *this video's* score.
 
+### The last-write-wins hazard, and the peak override
+`follow` is tapped **per episode** but stored as **one channel row**
+(`ledgerctl.set_follow` upserts `channels.follow_state`). So two taps on the same
+channel don't accumulate — the later one *erases* the earlier. Tap `more` on a
+channel's ★5 and `block` on its later ★2, and the ledger retains no trace that
+you ever wanted more of it, while the veto silently makes the channel
+unreachable. This bit for real: しごとリアル held the highest-rated episode in the
+ledger (★5, "natural speech, fun presenter") and was invisible to `/recommend`.
+
+Fix, applied at **read** time (`harvest.gather_seeds`, `PEAK_OVERRIDE_RATING`):
+a `block` on a channel that also produced a rating ≥ 4 degrades from veto to
+**strong down-weight**, surfaced to the judge as `block_overridden: true` and
+sorted last among channels. An *unqualified* block — no peak contradicting it —
+keeps its hard veto. Computed on read, so no re-rating is needed to re-tune it,
+and no stored answer is overwritten.
+
+The deeper repair (not built) is to stop discarding taps at all: keep every
+follow tap with its episode and derive channel state from the history. Until
+then, a single tap cannot revoke a channel that has earned a 4–5.
+
 ---
 
 ## 3. Conversion rules (scale type → recommender move)
@@ -134,7 +154,9 @@ The scale-semantics tag on each axis is the whole conversion. Three types:
 
 **Veto floor** (`follow`)
 - `block` → hard filter: drop the channel from seeds *and* from the candidate
-  pool.
+  pool — **unless** the channel also has an episode rated ≥ `PEAK_OVERRIDE_RATING`,
+  in which case it degrades to a strong down-weight (see "the last-write-wins
+  hazard" in §2).
 - `less / neutral / more` → **channel-state** weight, decoupled from video
   ratings. `more` overrides a mediocre `overall` so the channel stays a strong
   seed. This replaces the crude `MAX(rating)` that is currently the *only*

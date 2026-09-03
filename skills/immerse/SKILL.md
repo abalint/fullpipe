@@ -76,6 +76,7 @@ block, then decide together what this session does:
 | `prepared` · `curating` | Stage 1 done — **ready for live curation** | curate it (Steps 3–6) |
 | `queued` · `downloading` · `transcribing` · `tokenizing` | worker still grinding | report progress (`progress_msg`); don't touch |
 | `staged` | curated, phone can pull | nothing to do — mention it |
+| `staged` **page job** (`page_` id) without `curate.json` | readable now, popup un-enriched | offer the **page pass (Step 1.5)** |
 | `watched` · `reconciled` | loop closed | nothing to do |
 | `failed` | Stage 1 blew up | show `error`; **ask** whether to retry (re-`enqueue` the same source resets it to queued) or drop it |
 
@@ -100,6 +101,42 @@ reading — then the **repair gate (Step 2.6)**, and only then continue with
 Step 3 (its transcript + coverage already exist; re-run coverage if either
 gate changed anything). Curate episodes **one at a time**, completing each
 through Step 6 before the next.
+
+## Step 1.5 — page pass (page_ jobs: the popup-dictionary AI pass)
+
+Page jobs (`page_` episode ids — 5ch threads queued from the phone's Pages
+tab, `tools/pages.py`) are **not curated episodes**. The worker stages them
+straight to `staged` and they are readable on the phone immediately with the
+plain JMdict popup. This pass exists ONLY to give the popup the same AI
+treatment episode popups get: glosses for words JMdict lacks (5ch slang,
+net-speak, contractions, names) and corrections where the dictionary's first
+sense misleads in context.
+
+Everything else in this skill is **skipped for pages**: no punctuation/repair
+gates (the text is written, not ASR), no synopsis/focal points, no
+`picks.json`, no render, no deck, no `record-curation` (pages stay out of the
+taste/recommender data), and no state change (already `staged`).
+
+1. Worklist — every lemma in the thread with no dictionary entry:
+
+   ```sh
+   $PY -m tools.jmdict missing EPISODE_ID        # [{lemma, count, example}]
+   ```
+
+2. Judge each item against its example line. Gloss what a reader would
+   actually tap: slang (ワロタ, 乙, 芝), contractions Sudachi mis-lemmatizes,
+   proper names (pos like "name (person)" / "name (place)"), board jargon.
+   **Skip non-words** — kaomoji fragments, AA debris, keyboard mash — leaving
+   them unglossed is correct ("no dictionary entry" is the honest popup).
+   High-recurrence items first; singleton line noise is not worth an entry.
+
+3. Write `<episode_dir>/curate.json` with ONLY a `defs` array (same schema as
+   the episode defs pass — word / reading / gloss / pos, plain-English
+   glosses). `/definitions` merges these `ai`-flagged entries automatically:
+   sole entry where JMdict is empty, prepended episode-sense where it isn't.
+   The phone refreshes its cached dictionary on the next online open of the
+   reader (the transcript's `curated` flag flips true once curate.json
+   exists).
 
 ## Step 2 — acquire + coverage (direct mode / missing artifacts only)
 

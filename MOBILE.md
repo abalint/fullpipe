@@ -214,11 +214,16 @@ Thin HTTP over `ledgerctl` verbs + the queue. (Verbs: `materialize-known`, `comp
 | `GET /video/{id}` | staged file | **resumable** (HTTP range) — available at `prepared` |
 | `GET /video/{id}/subs` | staged file | subtitle sidecar |
 | `GET /prep/{id}` | prep-doc JSON | available at `staged`; pre-tokenized sentences w/ readings + glosses |
-| `GET /transcript/{id}` | staged coverage | **every** sentence w/ start/end + tokens (prep ships only the i+1 subset) — drives the in-app player's tap-able subtitle overlay; available at `prepared`. tokens carry `t` (aligned start seconds, engine/word_align.py — word/segment granularity for ASR, cue granularity for hand-subs) pacing the player's roll-up window; absent on pre-alignment episodes, where the player falls back to proportional pacing. Top-level `curated` = the curate pass's grammar/phrase notes are aboard; the app downloads its sidecars at video-download time (usually `prepared`) and refreshes them once the episode turns up staged (`refreshSidecars`) |
+| `GET /transcript/{id}` | staged coverage | **every** sentence w/ start/end + tokens (prep ships only the i+1 subset) — drives the in-app player's tap-able subtitle overlay; available at `prepared`. tokens carry `t` (aligned start seconds, engine/word_align.py — word/segment granularity for ASR, cue granularity for hand-subs) pacing the player's roll-up window; absent on pre-alignment episodes, where the player falls back to proportional pacing. Top-level `confirm` = the ledger's "we think you know this" queue narrowed to the lemmas in this episode (the player and page reader paint them light blue; `interest`, the standing want-to-learn set, rides along the same way — unpainted, since ★ taps already show). Top-level `curated` = the curate pass's grammar/phrase notes are aboard; the app downloads its sidecars at video-download time (usually `prepared`) and refreshes them once the episode turns up staged (`refreshSidecars`) |
 | `GET /definitions/{id}` | jmdict.db + curate.json + repair.json | JMdict entries for **every** lemma in the episode — content words, particles, aux verbs, pronouns, names — the player's any-word popup (kana keys rank kana-natural/grammar entries first, so の leads with the particle, not 野). Keyed by the Sudachi lemma already on each token, so no client deinflection; the app narrates conjugation itself from the token chain (mobile `inflection.ts`). Compounds/expressions Sudachi splits (帝王切開 → 帝王\|切開, そういう → そう\|いう) ride along keyed by the joined span — validated headwords only (`compound_entries`) — and the app reconstructs the join on tap (mobile `compounds.ts`). `{}` until `tools.jmdict build` has run. Curate-authored `defs` rows merge in flagged `ai`: sole entry for words JMdict lacks (worklist from `tools.jmdict missing`), **prepended** episode-sense entry for words it has — the popup leads with the sense used in this episode, full dictionary entries after. The repair gate's `names` (surface + kind + note) merge the same way, so name taps answer without waiting for curation |
-| `POST /taps` | `apply-taps` + `tools.select` | `{episode_id, batch_id, taps:[[lemma,"k"\|"h"],…]}`; pre-watch feedback: "k"→ledger, "h"→card priority; runs final card selection; does NOT imply watched |
-| `POST /watched/{id}` | `mark-watched` + `tools.deck` | post-watch close-out: activates exposures immediately, then **pushes the selected cards to Anki in a background thread** (responds with `{cards: {queued: N}}`; the job row narrates progress via state `pushing` and flips to `watched`, carrying any push error); re-POST retries a failed push. Body `{cards: false}` = watched-but-disliked: exposures still activate, no cards pushed |
+| `GET /episodes/{id}/paint` | ledger lists, live | **highlight state as of now** (2026-09-02), narrowed to the episode: `known` (words the ledger now calls known — additive over the sidecar's token `k`, which Stage-1 coverage froze), `confirm` / `interest` (replace the sidecar's snapshot lists), `grammar_confirm` (the grammar half of the confirm queue ∩ the curate pass's line patterns — a grammar point is only ever "seen" through a tagged line, so the player badges the line). The app fetches it on every player / reader / prep open, caches it per episode, and adds every word tapped ✓ on the phone, so paints follow the ledger instead of the download |
+| `GET /page/{id}` | staged page doc | page jobs only (`page_` ids — 5ch threads, `tools/pages.py`): the reader's post structure (per post n/name/date/uid/replies_to + lines as runs of sentence idxs into `/transcript`). Page jobs skip curation and land straight on `staged`; the phone's Pages tab reads them, marks words through the normal tap flow, and `POST /watched {cards:false}` semantics apply on "finished reading". Deleting the row afterwards purges files, keeps evidence |
+| `POST /taps` | `apply-taps` + `tools.select` | `{episode_id, batch_id, taps:[[lemma,"k"\|"h"],…]}`; pre-watch feedback: "k"→ledger, "h"→card priority; runs final card selection; does NOT imply watched. **Page jobs:** taps are pure ledger evidence — no card selection, no state change |
+| `POST /watched/{id}` | `mark-watched` + `tools.deck` | post-watch close-out: activates exposures immediately, then **pushes the selected cards to Anki in a background thread** (responds with `{cards: {queued: N}}`; the job row narrates progress via state `pushing` and flips to `watched`, carrying any push error); re-POST retries a failed push. Body `{cards: false}` = watched-but-disliked: exposures still activate, no cards pushed. **Page jobs never mint cards** regardless of the body — "finished reading" activates exposures only |
 | `POST /episodes/{id}/rating` | `record-rating` | post-watch **survey** (SURVEY.md) → append-only `taste_events`. Body `{rating: 1-5\|null, tags:[…], axes:{…}, follow, note, review_id?}`. `axes` are graded 1–5 on `topic_pull·presenter·audio_fidelity·speech_clarity·difficulty` (own sliders; a 5 on `difficulty` = too-hard, not "good"). `follow` ∈ `block·less·neutral·more` is a per-**channel** intent decoupled from the star (kept even when `rating` is null) → upserts `channels.follow_state`. `note` = free text. `tags` (chips) ∈ `already_knew·over_my_head·didnt_grab·format_miss·fascinating·loved_format`. Re-POST appends a new review (on-read verdict takes the latest); a client `review_id` makes it idempotent for outbox replay. Rating+tags+axes+follow ride back on `GET /jobs` (`_taste`) so the app pre-fills a re-review. Ratable pre-watch; a rated-but-unwatched episode keeps its rating through `DELETE /jobs/{id}` (rating-only ledger tombstone) |
+| `POST /viewtime` | `record-view-session` | **immersion time** (2026-09-02): one phone-recorded playback sitting `{id, episode_id, kind: watch\|listen, day, start, secs, reached?, duration?, title?}` → `view_sessions`. `secs` = wall-clock seconds the media was advancing (rewinds count again, pauses/seeks don't, speed folded out); `reached` vs `duration` = finished or not; `day` is the **device-local** calendar day (a sitting is split at midnight client-side). Active watching (`watch`: the in-app player, including its 🎧 audio-only mode) and passive listening (`listen`: the Listen tab's queue) are kept apart. Idempotent on the client-minted `id`; the episode need **not** exist — time spent outlives a deleted row |
+| `DELETE /viewtime/{id}` | — | drop one sitting (the app's ✕ on a hand-typed entry; idempotent). Sessions carry a `source`: `app` (recorded), `manual` (typed in on the Progress tab — outside-the-app listening), `import` (the pre-app spreadsheet: `python3 -m tools.import_tracker_pdf PDF`, Listening tab → `watch`, passive tab → `listen`, reconciles to the sheet's own totals) |
+| `GET /viewtime` | `query viewtime` | `{sessions:[…]}` — the whole log (`?since=YYYY-MM-DD` narrows), oldest first; the app merges by id into its local log (reinstall backfill) and renders its own Sunday→Saturday weeks on the Progress tab |
 | `GET /coverage` | `query` | coverage %, trends, `needs_review` queue, mining candidates |
 | `GET /health` | — | liveness for the client's reachability check |
 
@@ -230,6 +235,15 @@ Thin HTTP over `ledgerctl` verbs + the queue. (Verbs: `materialize-known`, `comp
   cheaper than downloading high and transcoding down, and skips a whole transcode stage.
 - **Remux/transcode to H.264 mp4** (the pipeline's only transcode). YouTube 480p is often VP9/AV1;
   normalizing to H.264 guarantees playback on any Android player. ffmpeg is already vendored.
+- **Local files are capped at the same resolution.** A local source is whatever the user happened
+  to have — often a 1080p master — so `stage_video` scales anything taller than
+  `server.video_resolution` down on the way in. Only the download step can be skipped for local
+  sources, never the cap: a staged file the phone cannot realistically pull is not staged at all.
+- **Hard ceiling: 2 GiB per video file.** The in-app player is a WebView `<video>`, and a local
+  file larger than 2,147,483,648 bytes downloads fine and then fails to play ("playback failed").
+  A 100-minute 1080p episode clears that ceiling; the same episode at 480p is ~0.5 GB. This is the
+  real reason the cap is not optional — an uncapped long local file produces a download that
+  completes and a video that will not open.
 - **Ship the subtitle sidecar** with the video so you watch with the exact subs the analysis used.
 - **Retention — both sides** (video maintenance is a first-class concern):
   - *PC:* a staged video may be purged once the phone confirms pull **and** the episode is
@@ -263,6 +277,12 @@ if best-in-class furigana/tap typography is worth a separate codebase.
   end-times don't cut subs early. Replay-line / prev / next / speed /
   furigana / fullscreen; resume position.
 - Queue screen: per-item lifecycle state, download progress, storage used, pin/delete.
+- Immersion-time record (Progress tab): the player feeds a recorder from its
+  playback ticks; the native passive-audio service logs its own listening
+  sittings (it runs with the webview dead) which the app drains on
+  foreground. Watching and listening are separate buckets; days roll up
+  into collapsible Sunday→Saturday weeks; each sitting ships to
+  `POST /viewtime`.
 - **Not a card reviewer** — AnkiDroid owns review (cards arrive via AnkiConnect → AnkiWeb →
   AnkiDroid). The client may deep-link into AnkiDroid.
 
@@ -271,7 +291,7 @@ if best-in-class furigana/tap typography is worth a separate codebase.
 ## Sync semantics
 
 - **One outbox for every write** *(built 2026-07-06)*. All client-side mutations — tap batches,
-  mark-watched, ratings, enqueues — are typed actions in a FIFO outbox, flushed opportunistically
+  mark-watched, ratings, enqueues, time sittings — are typed actions in a FIFO outbox, flushed opportunistically
   (submit / app-foreground / network-return). FIFO preserves the workflow order: an episode's
   feedback flushes before its close-out. Downloaded episodes are therefore fully usable offline:
   watch, tap, mark watched, rate — the server catches up at the next sync.

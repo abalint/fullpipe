@@ -16,7 +16,8 @@ from fastapi.testclient import TestClient
 from ledger import ledgerctl as lc
 from server import jobqueue as q
 from server.app import create_app, queue_db_path
-from server.worker import scan_stage2
+from server.worker import (max_height, normalize_video, scan_stage2,
+                          stage_video, video_props)
 from tools._staging import episode_dir, write_json
 
 EP = "yt_testvideo12"
@@ -348,6 +349,52 @@ class TestRoutes(ServerTestBase):
         self.assertNotIn("grammar", data["sentences"][0])
         self.assertNotIn("phrases", data["sentences"][0])
         self.assertFalse(data["curated"])
+
+    def test_transcript_carries_standing_lists(self):
+        # the two ledger lists the player highlights: "want to learn"
+        # (tap_interest, green) and "think you know" (confirm queue, blue).
+        # Both are filtered to the lemmas that actually appear in this episode.
+        self.stage_episode()
+        conn = lc.open_db(self.cfg["ledger_db"])
+        lc.apply_taps(conn, {"episode_id": EP, "batch_id": "b" * 16,
+                             "taps": [["犬", "h"], ["蝶", "h"]]}, watched=False)
+        conn.execute("UPDATE lemmas SET confirm_candidate = 1 WHERE lemma = '公園'")
+        conn.commit()
+        conn.close()
+        data = self.client.get(f"/transcript/{EP}", headers=self.auth).json()
+        self.assertEqual(data["interest"], ["犬"])  # 蝶 is not in this episode
+        self.assertEqual(data["confirm"], ["公園"])
+
+    def test_paint_state_is_live(self):
+        """GET /episodes/{id}/paint: the ledger's lists as of NOW, narrowed to
+        this episode — a word tapped known elsewhere shows up as known here
+        even though coverage froze its `k`, the confirm queue is current,
+        and grammar candidates are matched against the curated line patterns."""
+        ep_dir = self.stage_episode(with_curate=True)
+        write_json(ep_dir / "curate.json", {
+            "synopsis": "犬の話。", "keywords": [], "focal_points": [], "exclude": [],
+            "grammar": [{"sentence_idx": 1, "pattern": "〜てしまう"}],
+        })
+        conn = lc.open_db(self.cfg["ledger_db"])
+        # 公園 was unknown at coverage time; a tap (from any episode) makes it known
+        lc.apply_taps(conn, {"episode_id": EP, "batch_id": "p" * 16,
+                             "taps": [["公園", "k"], ["犬", "h"]]}, watched=False)
+        lc.promote(conn)  # what POST /taps does after applying
+        conn.execute("UPDATE lemmas SET confirm_candidate = 1 WHERE lemma = '犬'")
+        conn.execute("INSERT INTO lemmas (lemma, kind, status, confirm_candidate, updated_at) "
+                     "VALUES ('蝶', 'word', 'learning', 1, 'now')")  # not in this episode
+        for pat, cand in (("〜てしまう", 1), ("〜てくる", 1), ("〜ながら", 0)):
+            conn.execute("INSERT INTO grammar_points (pattern, status, confirm_candidate, "
+                         "updated_at) VALUES (?, 'learning', ?, 'now')", (pat, cand))
+        conn.commit()
+        conn.close()
+        data = self.client.get(f"/episodes/{EP}/paint", headers=self.auth).json()
+        self.assertEqual(data["known"], ["公園"])
+        self.assertEqual(data["confirm"], ["犬"])
+        self.assertEqual(data["interest"], ["犬"])
+        self.assertEqual(data["grammar_confirm"], ["〜てしまう"])
+        self.assertEqual(
+            self.client.get("/episodes/nope/paint", headers=self.auth).status_code, 404)
 
     def test_transcript_carries_curated_grammar_and_phrases(self):
         # the player popup's line context (GRAMMAR.md): curate.json grammar/
@@ -692,6 +739,74 @@ class TestRoutes(ServerTestBase):
         self.assertEqual(self.client.post(
             f"/episodes/{EP}/rating", json={"rating": 4, "follow": "subscribe"},
             headers=self.auth).status_code, 422)
+
+    def test_viewtime_roundtrip(self):
+        """A phone-recorded session lands in view_sessions, replays dedupe on
+        id, GET hands it back (filtered by device-day), and the episode does
+        NOT have to exist — time spent outlives a deleted row."""
+        seg = {"id": "abc123", "episode_id": "yt_gone", "title": "消えた動画",
+               "kind": "watch", "day": "2026-09-02",
+               "start": "2026-09-02T20:15:00-06:00", "secs": 1234.5,
+               "reached": 1500.0, "duration": 1800.0}
+        r = self.client.post("/viewtime", json=seg, headers=self.auth)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json(), {"id": "abc123", "duplicate": False})
+        # replay (outbox double-flush) is a no-op
+        r = self.client.post("/viewtime", json=seg, headers=self.auth)
+        self.assertEqual(r.json(), {"id": "abc123", "duplicate": True})
+        listen = {**seg, "id": "def456", "kind": "listen", "day": "2026-09-01",
+                  "start": "2026-09-01T08:00:00-06:00", "secs": 600}
+        self.client.post("/viewtime", json=listen, headers=self.auth)
+
+        lconn = lc.open_db(self.cfg["ledger_db"])
+        self.assertEqual(lconn.execute(
+            "SELECT COUNT(*) FROM view_sessions").fetchone()[0], 2)
+        body = self.client.get("/viewtime", headers=self.auth).json()
+        self.assertEqual([x["id"] for x in body["sessions"]], ["def456", "abc123"])
+        self.assertEqual(body["sessions"][1]["secs"], 1234.5)
+        self.assertEqual(body["sessions"][1]["title"], "消えた動画")
+        since = self.client.get("/viewtime?since=2026-09-02", headers=self.auth).json()
+        self.assertEqual([x["id"] for x in since["sessions"]], ["abc123"])
+        # the CLI's per-day totals
+        totals = lc.query_view_totals(lconn)
+        self.assertEqual(totals, [
+            {"day": "2026-09-02", "watch": 1234.5, "listen": 0.0},
+            {"day": "2026-09-01", "watch": 0.0, "listen": 600.0},
+        ])
+
+    def test_viewtime_source_and_delete(self):
+        """`source` rides along (app by default; manual for hand-typed entries,
+        import for the spreadsheet), comes back on GET, and DELETE removes a
+        row idempotently."""
+        base = {"episode_id": "manual", "kind": "listen", "day": "2026-09-02",
+                "start": "2026-09-02T12:00:00-06:00", "secs": 1800, "title": "car radio"}
+        self.client.post("/viewtime", json={**base, "id": "m1", "source": "manual"},
+                         headers=self.auth)
+        self.client.post("/viewtime", json={**base, "id": "a1"}, headers=self.auth)
+        r = self.client.post("/viewtime", json={**base, "id": "x", "source": "guess"},
+                             headers=self.auth)
+        self.assertEqual(r.status_code, 422)
+        rows = {x["id"]: x for x in
+                self.client.get("/viewtime", headers=self.auth).json()["sessions"]}
+        self.assertEqual(rows["m1"]["source"], "manual")
+        self.assertEqual(rows["a1"]["source"], "app")
+        r = self.client.delete("/viewtime/m1", headers=self.auth)
+        self.assertEqual(r.json(), {"id": "m1", "deleted": True})
+        self.assertEqual(self.client.delete("/viewtime/m1", headers=self.auth).json(),
+                         {"id": "m1", "deleted": False})
+        self.assertEqual([x["id"] for x in
+                          self.client.get("/viewtime", headers=self.auth).json()["sessions"]],
+                         ["a1"])
+
+    def test_viewtime_rejects_bad_input(self):
+        base = {"id": "x1", "episode_id": EP, "kind": "watch", "day": "2026-09-02",
+                "start": "2026-09-02T20:15:00-06:00", "secs": 10}
+        for bad in ({**base, "kind": "skim"}, {**base, "day": "9/2/2026"},
+                    {**base, "secs": -1}, {**base, "secs": "10"},
+                    {**base, "id": ""}, {k: v for k, v in base.items() if k != "start"}):
+            r = self.client.post("/viewtime", json=bad, headers=self.auth)
+            self.assertEqual(r.status_code, 422, bad)
+        self.assertEqual(self.client.post("/viewtime", json=base).status_code, 401)
 
     def test_rating_review_id_replay_is_idempotent(self):
         """The offline outbox re-flushes with the same review_id — one review."""
@@ -1135,6 +1250,64 @@ class TestWorkerScan(ServerTestBase):
         job = q.get_job(conn, EP)
         self.assertEqual(job["state"], "staged")
         self.assertEqual(job["title"], "テスト動画")
+
+
+class TestVideoStaging(unittest.TestCase):
+    """The phone pulls staged video over Tailscale, so a staged file must
+    honour server.video_resolution no matter where the source came from."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _src(self, name, height, codec="libx264"):
+        """A 1s H.264 test pattern at the given height (16:9)."""
+        path = self.dir / name
+        import subprocess
+        subprocess.run(
+            ["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi",
+             "-i", f"testsrc=duration=1:size={height * 16 // 9}x{height}:rate=5",
+             "-c:v", codec, "-pix_fmt", "yuv420p", str(path)], check=True)
+        return path
+
+    def test_max_height_parses_resolution(self):
+        for res, want in [("480p", 480), ("1080p", 1080), ("720", 720),
+                          ("Best", None), ("", None), (None, None)]:
+            self.assertEqual(max_height(res), want, res)
+
+    def test_taller_than_cap_is_scaled_down(self):
+        src = self._src("tall.mp4", 720)
+        dest = self.dir / "out" / "video.mp4"
+        normalize_video(src, dest, cap=480)
+        codec, height = video_props(dest)
+        self.assertEqual(codec, "h264")
+        self.assertEqual(height, 480)
+
+    def test_within_cap_is_remuxed_untouched(self):
+        src = self._src("short.mp4", 360)
+        dest = self.dir / "out" / "video.mp4"
+        normalize_video(src, dest, cap=480)
+        self.assertEqual(video_props(dest), ("h264", 360))
+
+    def test_no_cap_leaves_height_alone(self):
+        src = self._src("tall2.mp4", 720)
+        dest = self.dir / "out" / "video.mp4"
+        normalize_video(src, dest, cap=None)
+        self.assertEqual(video_props(dest), ("h264", 720))
+
+    def test_local_source_is_capped_by_config(self):
+        """Regression: local files used to be remuxed at full source
+        resolution, staging a 1080p master the phone could not pull."""
+        src = self._src("local.mp4", 720)
+        cfg = {"work_dir": str(self.dir / "work"),
+               "server": {"video_resolution": "480p"}}
+        record = {"episode": {"id": "local_test", "kind": "local"}}
+        dest = stage_video(cfg, str(src), record)
+        self.assertEqual(video_props(dest)[1], 480)
+        self.assertLess(dest.stat().st_size, src.stat().st_size)
 
 
 if __name__ == "__main__":
