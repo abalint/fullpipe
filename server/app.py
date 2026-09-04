@@ -28,6 +28,7 @@ from lib_config import load_config  # noqa: E402
 from server import jobqueue as q  # noqa: E402
 from server.worker import Worker  # noqa: E402
 from tools import jmdict  # noqa: E402
+from tools import series as series_tool  # noqa: E402
 from tools._staging import (  # noqa: E402
     downloads_dir, episode_dir, load_coverage, load_transcript, read_json)
 from tools.render import build_prep_data  # noqa: E402
@@ -238,13 +239,22 @@ def create_app(cfg, start_worker=True):
         return q.get_job(conn, job["id"])
 
     @app.delete("/jobs/{id_}", dependencies=[Depends(auth)])
-    def delete_job(id_: str):
+    def delete_job(id_: str, force: bool = False):
         """Remove a job and all its artifacts: episode dir (video, transcript,
         coverage, prep, clips), the cached source download, the queue row, and
         — unless the episode was fully pipelined (watched) — its ledger
         footprint. Watched episodes retain their lemma evidence and Anki
-        cards; only the files and the queue row go."""
+        cards; only the files and the queue row go.
+
+        Series episodes (tools.series) are refused without ?force=true: the
+        phone's swipe-delete on them is local-only (free the phone, keep the
+        PC's derived data for a rewatch); a real removal is the PC-side
+        `tools.series remove`."""
         job = get_job_or_404(id_)
+        if job.get("series") and not force:
+            raise HTTPException(
+                409, "series episode — remove the video from the phone only; "
+                     "delete the series on the PC (tools.series remove)")
         if job["state"] in q.STAGE1_STATES:
             raise HTTPException(
                 409, f"job is {job['state']} — let Stage 1 finish or fail first")
@@ -456,11 +466,41 @@ def create_app(cfg, start_worker=True):
             return
         raise HTTPException(401, "bad or missing token")
 
+    restores = {}  # episode_id → thread re-pulling an evicted series video
+
+    def _restore_series_video(job):
+        """An evicted series episode (tools.series evict) is re-materialized
+        from the PC in the background; the phone retries its download."""
+        ep = job["episode_id"]
+        t = restores.get(ep)
+        if t and t.is_alive():
+            return
+        slug, ep_no = series_tool.parse_series_source(job["source"])
+
+        def run():
+            try:
+                series_tool.materialize(cfg, slug, ep_no, log=lambda m: None)
+                durations.pop(ep, None)
+            except Exception as e:  # surfaced on the next GET as a 404
+                restores[ep] = e
+        t = threading.Thread(target=run, daemon=True, name=f"restore-{ep}")
+        restores[ep] = t
+        t.start()
+
     @app.get("/video/{episode_id}")
     def get_video(episode_id: str, request: Request, t: str | None = None):
         media_auth(request, t)
         path = episode_dir(cfg, episode_id) / "video.mp4"
         if not path.exists():
+            job = q.get_job(queue_conn(), episode_id)
+            if job and job.get("series"):
+                prev = restores.get(episode_id)
+                if isinstance(prev, Exception):
+                    restores.pop(episode_id, None)
+                    raise HTTPException(404, f"restoring from the PC failed: {prev}")
+                _restore_series_video(job)
+                raise HTTPException(
+                    503, "video is being restored from the PC — retry in a minute")
             raise HTTPException(404, f"no staged video for {episode_id}")
         return FileResponse(path, media_type="video/mp4")  # starlette serves ranges
 

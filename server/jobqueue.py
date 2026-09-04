@@ -4,7 +4,8 @@ One queue, two producers (phone share-sheet / PC), one executor (the worker).
 Jobs are idempotent by a source-derived id: for YouTube the video id is
 derivable at enqueue time (yt_<id> — identical to the episode_id acquire will
 assign), local files hash to local_<sha> the same way, 5ch threads parse to
-page_5ch_<board>_<thread> (the page_ prefix IS the job's kind marker), and
+page_5ch_<board>_<thread> (the page_ prefix IS the job's kind marker), series
+episodes (series://<slug>/<n>, tools.series) to ser_<slug>_e<nn>, and
 anything else gets src_<sha(url)> until acquire reports the real episode_id
 at `prepared`.
 Re-enqueuing an existing source is a no-op; re-enqueuing a `failed` job
@@ -22,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from engine.downloader import _extract_video_id  # noqa: E402
 from engine.local_file import generate_local_file_id, is_local_file  # noqa: E402
 from tools.pages import page_episode_id  # noqa: E402
+from tools.series import series_episode_id  # noqa: E402
 
 STATES = ("queued", "downloading", "transcribing", "tokenizing", "prepared",
           "curating", "staged", "pushing", "watched", "reconciled", "failed")
@@ -36,6 +38,9 @@ CREATE TABLE IF NOT EXISTS jobs (
     state        TEXT NOT NULL DEFAULT 'queued',
     passive      INTEGER NOT NULL DEFAULT 0, -- in the passive-listening collection
     debrief      INTEGER NOT NULL DEFAULT 0, -- queued for a /debrief conversation
+    series       TEXT,                       -- tools.series slug (box-set episodes only)
+    series_title TEXT,                       -- display name of the series
+    ep_no        INTEGER,                    -- playlist order within the series
     progress_msg TEXT,
     error        TEXT,
     created_at   TEXT NOT NULL,
@@ -60,12 +65,20 @@ def open_queue(db_path):
         if flag not in cols:
             conn.execute(f"ALTER TABLE jobs ADD COLUMN {flag} INTEGER NOT NULL DEFAULT 0")
             conn.commit()
+    for col, decl in (("series", "series TEXT"), ("series_title", "series_title TEXT"),
+                      ("ep_no", "ep_no INTEGER")):
+        if col not in cols:
+            conn.execute(f"ALTER TABLE jobs ADD COLUMN {decl}")
+            conn.commit()
     return conn
 
 
 def derive_job_id(source):
     """Stable id from the source alone — matches acquire's episode_id where
     that is derivable without touching the network."""
+    series_id = series_episode_id(source)
+    if series_id:
+        return series_id
     if is_local_file(source):
         return generate_local_file_id(source)
     page_id = page_episode_id(source)
@@ -92,8 +105,10 @@ def job_dict(row):
     return d
 
 
-def enqueue(conn, source):
-    """Idempotent enqueue. Returns (job, created)."""
+def enqueue(conn, source, *, title=None, series=None, series_title=None, ep_no=None):
+    """Idempotent enqueue. Returns (job, created). Series episodes
+    (tools.series) pass their playlist identity so the phone can group and
+    order them before Stage 1 has run."""
     job_id = derive_job_id(source)
     ts = now_iso()
     existing = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
@@ -107,8 +122,9 @@ def enqueue(conn, source):
                 "SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()), False
         return job_dict(existing), False
     conn.execute(
-        "INSERT INTO jobs (id, source, state, created_at, updated_at) "
-        "VALUES (?, ?, 'queued', ?, ?)", (job_id, source, ts, ts))
+        "INSERT INTO jobs (id, source, title, series, series_title, ep_no, state, "
+        "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
+        (job_id, source, title, series, series_title, ep_no, ts, ts))
     conn.commit()
     return job_dict(conn.execute(
         "SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()), True

@@ -80,6 +80,13 @@ block, then decide together what this session does:
 | `watched` · `reconciled` | loop closed | nothing to do |
 | `failed` | Stage 1 blew up | show `error`; **ask** whether to retry (re-`enqueue` the same source resets it to queued) or drop it |
 
+Rows with `series` / `ep_no` set (`ser_<slug>_eNN`, the `/series` skill) are
+box-set episodes: curate them like any episode, in `ep_no` order when several
+are ready. Their subs are broadcast/streaming files with **no sentence
+punctuation** — the punctuation gate (Step 2.5) is not optional for them —
+and the `channel` on the ledger row is the series title (that is the taste
+grouping for a show).
+
 **Ask, don't assume** (AskUserQuestion when interactive):
 
 - Several episodes ready → which to curate now, one / a subset / all? (Default

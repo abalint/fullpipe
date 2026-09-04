@@ -48,6 +48,13 @@
     "channel_blocklist": []
   },
 
+  "series": {
+    "_comment": "tools.series: already-downloaded box sets on the PC. ssh_host is the desktop's LAN address (Tailscale works too, just slower); remote_stage_dir is where the PC keeps the 480p copies it transcodes (NVENC) — originals under the library folder are only ever read.",
+    "ssh_host": "transcribe-svc@192.168.0.230",
+    "ssh_identity": "~/.ssh/transcribe_remote_ed25519",
+    "remote_stage_dir": "I:/transcribe/fullpipe_stage",
+    "ssh_timeout": 3600
+  },
   "freq": {
     "show_graph_db": "~/Documents/code/anki/phrases/japaneseShowGraph/subs/japaneseShowGraph.db",
     "leeds_fallback": "~/Documents/code/audioPrimeProd/data/ja_frequency.txt"

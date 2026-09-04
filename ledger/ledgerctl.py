@@ -60,6 +60,7 @@ _EPISODE_META_COLUMNS = frozenset((
     "channel", "channel_id", "duration", "upload_date",
     "genre", "format", "difficulty_felt",
     "coverage_pct", "iplus1_count", "known_set_size",
+    "series", "ep_no",
 ))
 
 # The six taste tags (DESIGN.md — "The tags"). Confound-breakers + attributors.
@@ -165,6 +166,7 @@ def _migrate(conn):
         ("language_pct", "language_pct REAL"),
         ("debriefed_at", "debriefed_at TEXT"),
         ("metadata", "metadata TEXT"),
+        ("series", "series TEXT"), ("ep_no", "ep_no INTEGER"),
     ):
         if col not in have:
             conn.execute(f"ALTER TABLE episodes ADD COLUMN {decl}")
@@ -249,7 +251,8 @@ def update_episode_meta(conn, episode_id, columns=None, metadata=None):
 
 # Acquire's transcript.json episode block → episode row: scalar columns vs. the
 # bulky JSON payload (DESIGN.md — "Rescue the discarded yt-dlp dump").
-_ACQUIRE_META_COLUMNS = ("channel", "channel_id", "duration", "upload_date")
+_ACQUIRE_META_COLUMNS = ("channel", "channel_id", "duration", "upload_date",
+                         "series", "ep_no")
 _ACQUIRE_META_JSON = ("view_count", "description", "tags")
 
 

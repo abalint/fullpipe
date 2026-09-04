@@ -176,7 +176,7 @@ def deduplicate_scrolling_subs(subs, logger=None):
 # - Music symbols: ♪ ♫ 🎵 🎶 (alone or repeated, with optional whitespace)
 # - Combinations of the above
 _BRACKET_GROUP = r'(?:[\[\(（【〔〈《「『].*?[\]\)）】〕〉》」』])'
-_MUSIC_SYMBOLS = r'[♪♫🎵🎶]+'
+_MUSIC_SYMBOLS = r'[♪♫🎵🎶～〜]+'
 _NON_SPEECH_RE = re.compile(
     r'^\s*(?:' + _BRACKET_GROUP + r'|' + _MUSIC_SYMBOLS + r')(?:\s*(?:' + _BRACKET_GROUP + r'|' + _MUSIC_SYMBOLS + r'))*\s*$'
 )
@@ -185,6 +185,43 @@ _NON_SPEECH_RE = re.compile(
 def _is_non_speech(text):
     """Return True if text consists entirely of non-speech annotations."""
     return bool(_NON_SPEECH_RE.match(text))
+
+
+# Hand-authored (broadcast / streaming) subs carry markup the tokenizer must
+# never see: Unicode bidi controls wrapping every line (Netflix: U+202A…U+202C),
+# a BOM, dialogue dashes ("-（父親）もう治ったか？ -（男の子）うん"), speaker /
+# sound-source tags at the start of a line ("（テレビ:キャスター）戦後…"),
+# reading glosses after a name ("富士浅田(ふじあさだ)"), and continuation
+# dashes ("住民によって⸺"). Stripped per segment; a block left empty is dropped.
+_BIDI_CTRL_RE = re.compile('[\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]')
+_DIALOGUE_DASH_RE = re.compile(r'(?:^|(?<=\s))[\-‐－–—]\s*')
+_ANNOTATION_RE = re.compile(r'(?:^|(?<=\s))[\(（][^\(\)（）]{1,20}[\)）]\s*')
+_READING_GLOSS_RE = re.compile(
+    r'(?<=[\u4e00-\u9fff々])[\(（][\u3040-\u309f\u30a0-\u30ffー]{1,12}[\)）]')
+_CONTINUATION_RE = re.compile(r'[⸺―]+(?=\s|$)')
+
+
+def strip_sub_markup(text):
+    """One cue's text without presentation markup (see above). Pure."""
+    t = _BIDI_CTRL_RE.sub('', text)
+    t = _DIALOGUE_DASH_RE.sub('', t)
+    t = _READING_GLOSS_RE.sub('', t)  # before tags: （遠藤(えんどう)） nests one
+    t = _ANNOTATION_RE.sub('', t)
+    t = _CONTINUATION_RE.sub('', t)
+    return re.sub(r'\s+', ' ', t).strip()
+
+
+def strip_markup(subs, logger=None):
+    """strip_sub_markup over a cue list; cues emptied by the strip are dropped
+    (they were pure markup — a speaker tag with nothing after it)."""
+    out = []
+    for s, e, t in subs:
+        t2 = strip_sub_markup(t)
+        if t2:
+            out.append((s, e, t2))
+    if logger:
+        logger.debug("Markup strip", input_count=len(subs), retained=len(out))
+    return out
 
 
 def filter_non_speech(subs, logger=None):

@@ -101,6 +101,7 @@ CREATE TABLE IF NOT EXISTS episodes (
     language_pct REAL,                          -- latest /debrief audio-only subtotal (cache)
     debriefed_at TEXT,                          -- latest debrief's timestamp (cache)
     metadata TEXT,                              -- JSON: description, tags[], topics[], view_count
+    series TEXT, ep_no INTEGER,                 -- tools.series: series slug + episode order (local box sets)
     processed_at TEXT
 );
 

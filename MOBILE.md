@@ -210,8 +210,9 @@ Thin HTTP over `ledgerctl` verbs + the queue. (Verbs: `materialize-known`, `comp
 | `GET /jobs` · `GET /jobs/{id}` | queue read | lifecycle state + progress; annotated with `duration` (seconds), `comprehensibility` (coverage's token_comprehensibility, 0..1) and the ledger episode row's `genre` / `format` / `channel` (the `/immerse` curation labels; null until curated) for the queue's sort/filter/display |
 | `POST /jobs/{id}/curate` | launch Stage 2 | kicks the live `/immerse` curate over one/many `prepared` jobs |
 | `POST /jobs/{id}/passive` | shelve to Listen tab | `{passive: bool}` — flags a `watched` episode as passive-listening material (409 otherwise; un-shelving always allowed). Pure flag flip: state/artifacts/ledger untouched; `passive` rides back on `GET /jobs` |
+| `DELETE /jobs/{id}` | purge | episode dir + cached download + queue row; watched episodes keep their ledger evidence and cards. **Series episodes are refused (409) without `?force=true`** — the phone's swipe-delete on them is local-only (below); the real removal is `tools.series remove` on the PC |
 | `POST /jobs/{id}/debrief` | queue for /debrief | `{debrief: bool}` — flags an episode (`staged`/`reconciled`/`pushing`/`watched`; 409 earlier) for the PC-side post-watch comprehension conversation; unflagging always allowed. Pure flag flip, but **while set `DELETE /jobs/{id}` is refused** — the debrief needs the transcript. The `/debrief` skill reads flagged jobs as its worklist and unflags on completion; `debrief` rides back on `GET /jobs` |
-| `GET /video/{id}` | staged file | **resumable** (HTTP range) — available at `prepared` |
+| `GET /video/{id}` | staged file | **resumable** (HTTP range) — available at `prepared`. A series episode whose Mac copy was evicted (`tools.series evict`) answers **503 "restoring"** and re-pulls the 480p copy from the PC in the background — the app retries |
 | `GET /video/{id}/subs` | staged file | subtitle sidecar |
 | `GET /prep/{id}` | prep-doc JSON | available at `staged`; pre-tokenized sentences w/ readings + glosses |
 | `GET /transcript/{id}` | staged coverage | **every** sentence w/ start/end + tokens (prep ships only the i+1 subset) — drives the in-app player's tap-able subtitle overlay; available at `prepared`. tokens carry `t` (aligned start seconds, engine/word_align.py — word/segment granularity for ASR, cue granularity for hand-subs) pacing the player's roll-up window; absent on pre-alignment episodes, where the player falls back to proportional pacing. Top-level `confirm` = the ledger's "we think you know this" queue narrowed to the lemmas in this episode (the player and page reader paint them light blue; `interest`, the standing want-to-learn set, rides along the same way — unpainted, since ★ taps already show). Top-level `curated` = the curate pass's grammar/phrase notes are aboard; the app downloads its sidecars at video-download time (usually `prepared`) and refreshes them once the episode turns up staged (`refreshSidecars`) |
@@ -254,6 +255,38 @@ Thin HTTP over `ledgerctl` verbs + the queue. (Verbs: `materialize-known`, `comp
     queue can't fill the device; until then, reclaim space by deleting rows by hand.
 
 ---
+
+## Series — box sets from the PC library (2026-09-04)
+
+`tools/series.py` (the `/series` skill) ingests already-downloaded shows from
+the desktop's library (`E:/Japanese/...`): the PC transcodes a 480p copy of
+each episode (NVENC; the original is only read), the Mac pulls it over the
+LAN with the Japanese subtitle sidecar, and the queue gets one job per
+episode carrying its **playlist identity** — `series` (slug), `series_title`,
+`ep_no` — with the stable id `ser_<slug>_eNN` (source `series://<slug>/<n>`).
+From `prepared` on it is an ordinary episode: `/immerse` curates, the phone
+pulls, taps, marks watched, rates, debriefs. The ledger row keeps `series` /
+`ep_no` and uses the series title as its `channel`.
+
+**Retention is tiered so a rewatch never costs the derived data:**
+
+- *Phone:* swipe-delete on a series row removes **only the downloaded video and
+  its sidecars from the phone** — no server call, taps and cached prep stay,
+  works offline. `⬇` (row or series header) brings it back. Watched rows keep
+  a `⬇` for the same reason.
+- *Mac:* `tools.series evict <slug>` drops `video.mp4` (+ the acquire mp3) of
+  watched episodes; `fetch` or the phone's next `GET /video` restores from the
+  PC (503 while the pull runs). Transcript, coverage, curate, prep, picks,
+  clips, ledger evidence and cards are untouched.
+- *PC:* 480p stage copies under `I:/transcribe/fullpipe_stage/<slug>/`; the
+  originals are never modified or deleted.
+
+**Playlist on the phone:** series rows sit under a collapsible header (title ·
+n/N watched · m on phone · `▶ EPnn` / `⬇ EPnn` for the next unwatched episode)
+in `ep_no` order with an `EPnn` chip; sort/filter still apply per row. When an
+episode ends the player shows an **up next** card and — if the next episode is
+downloaded and Settings → Playback → Autoplay is on — rolls into it after an
+8 s countdown. Mark-watched remains a deliberate tap (prep screen / row).
 
 ## The Android client
 

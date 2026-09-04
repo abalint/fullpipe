@@ -28,14 +28,16 @@ from engine.local_file import (generate_local_file_id, get_local_file_metadata, 
                                is_local_file, prepare_local_file)
 from engine.punctuation import get_language_config, punctuate_subs  # noqa: E402
 from lib_config import load_config  # noqa: E402
+from tools import series as series_tool  # noqa: E402
 from tools._staging import downloads_dir, episode_dir, write_json  # noqa: E402
 
 JA = get_language_config("Japanese")
 
 
 def clean_subs(subs):
-    """Dedup scrolling auto-subs and drop non-speech annotation blocks."""
-    return SP.filter_non_speech(SP.deduplicate_scrolling_subs(subs))
+    """Strip presentation markup (bidi controls, speaker tags, dialogue
+    dashes), dedup scrolling auto-subs, and drop non-speech annotation blocks."""
+    return SP.filter_non_speech(SP.deduplicate_scrolling_subs(SP.strip_markup(subs)))
 
 
 def segment(subs, api_key=None, punct_model="gpt-4o-mini", cache_dir=None,
@@ -79,7 +81,32 @@ def acquire(source, cfg, force_transcription=False, restore_punct=True, log=prin
     dl_dir = downloads_dir(cfg)
     meta = {}  # rich yt-dlp provenance (youtube only); empty for local files
 
-    if is_local_file(source):
+    series_ref = series_tool.parse_series_source(source)
+    if series_ref:
+        # A box-set episode (tools.series): the 480p copy lives at the episode
+        # dir already (materialized from the PC on demand), the Japanese subs
+        # beside the manifest, and the id is the stable series id — not the
+        # path/mtime hash, so an evict + re-fetch is still the same episode.
+        kind = "series"
+        slug, ep_no = series_ref
+        man = series_tool.load_manifest(cfg, slug)
+        ep = series_tool.find_episode(man, ep_no)
+        episode_id = ep["id"]
+        uploader, title = man["title"], ep["title"]
+        video = series_tool.materialize(cfg, slug, ep_no, log=lambda m: log(f"  {m}"))
+        mp3_path, srt_path = prepare_local_file(
+            video, dl_dir, sub_lang,
+            progress_callback=lambda m: log(f"  {m}"),
+            force_transcription=force_transcription,
+            engine_pref=asr.get("engine", "auto"),
+            elevenlabs_api_key=elevenlabs_key,
+            gpu_url=gpu_url, gpu_token=gpu_token,
+            file_id=episode_id,
+            subtitle_file=series_tool.local_subs_path(cfg, slug, ep_no),
+        )
+        meta = {"channel": man["title"], "channel_id": f"series:{slug}",
+                "series": slug, "ep_no": ep_no, "duration": ep.get("duration")}
+    elif is_local_file(source):
         kind = "local"
         episode_id = generate_local_file_id(source)
         uploader, title = get_local_file_metadata(source)
@@ -162,6 +189,10 @@ def acquire(source, cfg, force_transcription=False, restore_punct=True, log=prin
             "description": meta.get("description"),
             "tags": meta.get("tags") or [],
         })
+    elif kind == "series":
+        # The series is the "channel" (taste groups by show), plus the
+        # playlist identity the ledger keeps for rewatch history.
+        episode.update(meta)
     record = {
         "episode": episode,
         "acquired_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),

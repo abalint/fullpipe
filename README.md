@@ -208,6 +208,16 @@ queue synchronously (same `drain`/`process_job` code as the server thread,
 same queue db/states/artifacts), then hands off to `/immerse` at `prepared`.
 Bare invocation drains whatever is already queued.
 
+**Series ingest (2026-09-04): `/series` skill** (`skills/series/SKILL.md`,
+`tools/series.py`) — already-downloaded box sets on the PC (`E:/Japanese/...`)
+become playlists: the desktop transcodes 480p copies (NVENC, originals only
+read), the Mac pulls them over the LAN with the Japanese subs, and each
+episode is queued as `ser_<slug>_eNN` carrying `series`/`ep_no`. Video is
+tiered (phone ⇄ Mac ⇄ PC stage copy) so deleting it anywhere never touches
+the transcript/coverage/curation/ledger; the phone groups series in order
+and autoplays the next episode. Netflix-style subtitle markup (bidi marks,
+speaker tags, dialogue dashes) is now stripped in acquire for every source.
+
 **Taste metadata (2026-07-06):** the per-episode enjoyment signal that feeds
 ytSearch (DESIGN.md — Taste metadata). Enjoyment is a *projection over an
 append-only `taste_events` log*, mirroring the lemma ledger (evidence →

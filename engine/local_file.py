@@ -149,7 +149,8 @@ def prepare_local_file(filepath, download_dir, lang_code,
                        progress_callback=None, force_transcription=False,
                        process_tracker=None, transcribe_fallback=True,
                        engine_pref="auto", elevenlabs_api_key=None,
-                       gpu_url=None, gpu_token=None):
+                       gpu_url=None, gpu_token=None, file_id=None,
+                       subtitle_file=None):
     """Prepare a local file for the pipeline, mirroring download_youtube().
 
     Converts to mp3, discovers or transcribes subtitles, and returns
@@ -161,6 +162,10 @@ def prepare_local_file(filepath, download_dir, lang_code,
         lang_code: Subtitle language code (e.g. "ja")
         progress_callback: Optional callable(str) for status messages
         force_transcription: If True, skip subtitle discovery and always transcribe
+        file_id: cache key to use instead of the path/size/mtime hash — series
+            episodes (tools.series) carry a stable id that must survive the
+            video being evicted and re-fetched
+        subtitle_file: a known companion subtitle to use instead of discovery
 
     Returns:
         (mp3_path, srt_path) tuple of Path objects
@@ -172,7 +177,7 @@ def prepare_local_file(filepath, download_dir, lang_code,
     download_dir = Path(download_dir)
     download_dir.mkdir(parents=True, exist_ok=True)
 
-    file_id = generate_local_file_id(filepath)
+    file_id = file_id or generate_local_file_id(filepath)
     mp3_path = download_dir / f"{file_id}.mp3"
     srt_path = download_dir / f"{file_id}.{lang_code}.srt"
 
@@ -196,7 +201,8 @@ def prepare_local_file(filepath, download_dir, lang_code,
                               gpu_url=gpu_url, gpu_token=gpu_token)
         else:
             # Try to find a companion SRT
-            companion = discover_subtitle_file(filepath, lang_code)
+            companion = (Path(subtitle_file) if subtitle_file and Path(subtitle_file).is_file()
+                         else discover_subtitle_file(filepath, lang_code))
             if companion:
                 if progress_callback:
                     progress_callback(f"Found subtitle file: {companion.name}")
