@@ -6,6 +6,9 @@ import re
 # subs typically have ~0.9 marks per block; anything below this threshold
 # means the file is missing enough punctuation to break sentences.
 PUNCTUATION_THRESHOLD = 0.22
+# Minimum 。 per block. Hand-authored subs that terminate statements at all
+# run ~0.4+; streaming subs that only carry ？！ sit at 0.00.
+DECLARATIVE_THRESHOLD = 0.05
 
 
 def has_good_punctuation(subs, sentence_punct, logger=None):
@@ -28,6 +31,14 @@ def has_good_punctuation(subs, sentence_punct, logger=None):
     punct_count = len(punct_re.findall(all_text))
     ratio = punct_count / len(subs)
     result = ratio >= PUNCTUATION_THRESHOLD
+    # Broadcast/streaming subs (Netflix, TV rips) keep ？ and ！ but drop the
+    # declarative 。 entirely — enough marks to pass the ratio, yet every
+    # statement runs on into the next. A file whose declaratives are almost
+    # never terminated needs the restore regardless of the ratio.
+    if result and '。' in sentence_punct:
+        declaratives = all_text.count('。') / len(subs)
+        if declaratives < DECLARATIVE_THRESHOLD:
+            result = False
     if logger:
         logger.debug("Punctuation quality check", ratio=round(ratio, 3),
                       threshold=PUNCTUATION_THRESHOLD, passed=result, block_count=len(subs))

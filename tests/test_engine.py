@@ -99,6 +99,14 @@ class SrtParserTest(unittest.TestCase):
         self.assertTrue(SP.has_good_punctuation(good, r'[。！？]'))
         self.assertFalse(SP.has_good_punctuation(bad, r'[。！？]'))
 
+    def test_question_marks_alone_do_not_count_as_punctuated(self):
+        """Regression: Netflix-style subs carry ？/！ but no 。 — the ratio
+        passed and every declarative ran on into the next block."""
+        subs = [(i, i + 1, "何？" if i % 3 == 0 else "そうだね") for i in range(30)]
+        self.assertFalse(SP.has_good_punctuation(subs, r'[。！？]'))
+        subs = [(i, i + 1, "何？" if i % 3 == 0 else "そうだね。") for i in range(30)]
+        self.assertTrue(SP.has_good_punctuation(subs, r'[。！？]'))
+
     def test_filter_non_speech(self):
         subs = [(0, 1, "[音楽]"), (1, 2, "♪♪"), (2, 3, "こんにちは")]
         self.assertEqual(len(SP.filter_non_speech(subs)), 1)

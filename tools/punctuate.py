@@ -42,7 +42,7 @@ BLOCKS_FILE = "punct_blocks.json"
 
 def clean_subs(subs):
     """Dedup scrolling auto-subs and drop non-speech blocks (mirrors acquire)."""
-    return SP.filter_non_speech(SP.deduplicate_scrolling_subs(subs))
+    return SP.filter_non_speech(SP.deduplicate_scrolling_subs(SP.strip_markup(subs)))
 
 
 def raw_blocks(transcript):
