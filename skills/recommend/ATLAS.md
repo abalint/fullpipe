@@ -74,6 +74,22 @@ clean-turn-taking variant; never drop the cluster.
   difficulty_felt 4); and the pre-1990 archive tier carries audio-fidelity
   risk — prefer modern uploads.
 
+- **朗読（プロ声優・ナレーターの文学朗読）** — one professional voice reading a
+  whole novel or short story: 青空文庫 classics (窪田等, 西村俊彦, 枡太) and
+  contemporary novels read by star 声優 (梶裕貴『推し、燃ゆ』).
+  `朗読 プロ声優 小説` · `<作家名> 朗読 全編` — edu/hybrid. Single clean voice, but
+  it is *written* prose, not dialogue — expect difficulty above the coverage %.
+  Risk: the `睡眠用 / 作業用BGM` compilation tier is junk (long, sleepy, ad-free
+  padding); take single-work uploads by named readers. First offered 2026-09-03.
+- **怪談語り（怪談師の一人語り）** — one performer telling a "true" ghost story
+  straight to camera or a small audience: 稲川淳二 (the genre's founder, official
+  怪談劇場 channel), 島田秀平, 好井まさお, 渡辺裕薫, ぁみ.
+  `実話怪談 語り 一人語り` · `<怪談師名> 怪談` — fun. Solo, dense, colloquial
+  storytelling register. Risk: 稲川's delivery is idiosyncratic (mumbled, breathy);
+  the younger 芸人 tellers are cleaner. The `つめあわせ 睡眠用` tier is junk.
+  Distinct from 心霊スポット検証 (that's a location run, this is a telling).
+  First offered 2026-09-03.
+
 ## The してみた economy (challenge & experiment)
 
 - **検証してみた** — "we actually tested it" — urban claims, products, physics.

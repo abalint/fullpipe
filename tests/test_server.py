@@ -930,6 +930,22 @@ class TestRoutes(ServerTestBase):
         self.assertEqual(self.client.get(f"/jobs/{EP}", headers=self.auth)
                          .json()["comprehensibility"], 0.8)
 
+    def test_jobs_carry_curation_genre(self):
+        """The queue's genre chip/filter reads /immerse's curation labels
+        straight off the ledger's episode row; absent → null, not missing."""
+        self.stage_episode()
+        self._enqueue_at("staged")
+        job = self.client.get(f"/jobs/{EP}", headers=self.auth).json()
+        self.assertIsNone(job["genre"])
+        self.assertIsNone(job["channel"])
+        lc.record_curation(lc.open_db(self.cfg["ledger_db"]), EP, {
+            "genre": "documentary", "format": "live-action", "topics": ["trains"]})
+        jobs = self.client.get("/jobs", headers=self.auth).json()
+        self.assertEqual([(j["genre"], j["format"]) for j in jobs
+                          if j["episode_id"] == EP], [("documentary", "live-action")])
+        self.assertEqual(self.client.get(f"/jobs/{EP}", headers=self.auth)
+                         .json()["genre"], "documentary")
+
     def test_coverage_query(self):
         self.stage_episode()
         r = self.client.get("/coverage", headers=self.auth)

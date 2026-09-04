@@ -149,21 +149,35 @@ def create_app(cfg, start_worker=True):
             comps[episode_id] = val
         return val
 
-    def _annotate(job, verdict):
+    def _meta():
+        """episode_id → {genre, format, channel} from the ledger's episode row:
+        genre/format are /immerse's curation labels (English, categorical —
+        the queue's genre chip + filter), channel is yt-dlp provenance."""
+        return {r["id"]: {"genre": r["genre"], "format": r["format"],
+                          "channel": r["channel"]}
+                for r in ledger_conn().execute(
+                    "SELECT id, genre, format, channel FROM episodes")}
+
+    def _annotate(job, verdict, meta=None):
         return {**job, **_taste(verdict),
+                "genre": (meta or {}).get("genre"),
+                "format": (meta or {}).get("format"),
+                "channel": (meta or {}).get("channel"),
                 "duration": _duration(job["episode_id"]),
                 "comprehensibility": _comprehensibility(job["episode_id"])}
 
     @app.get("/jobs", dependencies=[Depends(auth)])
     def get_jobs():
         verdicts = _verdicts()
-        return [_annotate(j, verdicts.get(j["episode_id"]))
+        meta = _meta()
+        return [_annotate(j, verdicts.get(j["episode_id"]), meta.get(j["episode_id"]))
                 for j in q.list_jobs(queue_conn())]
 
     @app.get("/jobs/{id_}", dependencies=[Depends(auth)])
     def get_job(id_: str):
         job = get_job_or_404(id_)
-        return _annotate(job, lc.query_enjoyment(ledger_conn(), job["episode_id"]))
+        return _annotate(job, lc.query_enjoyment(ledger_conn(), job["episode_id"]),
+                         _meta().get(job["episode_id"]))
 
     @app.post("/jobs/{id_}/curate", dependencies=[Depends(auth)])
     def post_curate(id_: str):

@@ -207,7 +207,7 @@ Thin HTTP over `ledgerctl` verbs + the queue. (Verbs: `materialize-known`, `comp
 | endpoint | maps to | notes |
 |---|---|---|
 | `POST /jobs` | enqueue | `{source: url\|file\|topic}` → `episode_id`; idempotent |
-| `GET /jobs` · `GET /jobs/{id}` | queue read | lifecycle state + progress; annotated with `duration` (seconds) and `comprehensibility` (coverage's token_comprehensibility, 0..1) for the queue's sort/display |
+| `GET /jobs` · `GET /jobs/{id}` | queue read | lifecycle state + progress; annotated with `duration` (seconds), `comprehensibility` (coverage's token_comprehensibility, 0..1) and the ledger episode row's `genre` / `format` / `channel` (the `/immerse` curation labels; null until curated) for the queue's sort/filter/display |
 | `POST /jobs/{id}/curate` | launch Stage 2 | kicks the live `/immerse` curate over one/many `prepared` jobs |
 | `POST /jobs/{id}/passive` | shelve to Listen tab | `{passive: bool}` — flags a `watched` episode as passive-listening material (409 otherwise; un-shelving always allowed). Pure flag flip: state/artifacts/ledger untouched; `passive` rides back on `GET /jobs` |
 | `POST /jobs/{id}/debrief` | queue for /debrief | `{debrief: bool}` — flags an episode (`staged`/`reconciled`/`pushing`/`watched`; 409 earlier) for the PC-side post-watch comprehension conversation; unflagging always allowed. Pure flag flip, but **while set `DELETE /jobs/{id}` is refused** — the debrief needs the transcript. The `/debrief` skill reads flagged jobs as its worklist and unflags on completion; `debrief` rides back on `GET /jobs` |
