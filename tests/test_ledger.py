@@ -309,6 +309,40 @@ class LedgerTest(unittest.TestCase):
         # once known, it drops out of the active set
         self.assertNotIn("設計", lc.active_interest(self.conn, known={"設計"}))
 
+    def test_interest_graduates_to_think_you_know(self):
+        # LIVE_REVIEW.md §3: a starred word whose exposures clear the bar is a
+        # confirm candidate (blue) and leaves the ★ list; "not yet" clears the
+        # flag and it is back.
+        lc.apply_taps(self.conn, {"episode_id": "e1", "batch_id": "bg",
+                                  "taps": [["設計", "h"]]})
+        lc.promote(self.conn)
+        self.assertIn("設計", lc.active_interest(self.conn))
+        self.conn.execute("UPDATE lemmas SET confirm_candidate = 1 WHERE lemma = '設計'")
+        self.assertNotIn("設計", lc.active_interest(self.conn))
+        self.conn.execute("UPDATE lemmas SET confirm_candidate = 0 WHERE lemma = '設計'")
+        self.assertIn("設計", lc.active_interest(self.conn))
+
+    def test_should_know_window(self):
+        # the green list: most frequent corpus lemmas by show-penetration rank,
+        # skipping known / blue / ★ words, laughter + filler tokens, and the
+        # Leeds fallback rows; a rolling window of n.
+        self.conn.executemany(
+            "INSERT OR REPLACE INTO freq (lemma, rank, source) VALUES (?, ?, ?)",
+            [("食べる", 1, "show_graph"), ("ハハハ", 2, "show_graph"),
+             ("う~ん", 3, "show_graph"), ("ちょっ", 4, "show_graph"),
+             ("設計", 5, "show_graph"), ("犬", 6, "show_graph"),
+             ("猫", 7, "show_graph"), ("鳥", 8, "leeds"), ("魚", 9, "show_graph")])
+        lc.import_known(self.conn, ["食べる"])            # known → out
+        lc.apply_taps(self.conn, {"episode_id": "e1", "batch_id": "bs",
+                                  "taps": [["設計", "h"]]})  # ★ → out
+        lc.promote(self.conn)
+        self.conn.execute("INSERT INTO lemmas (lemma, pos, updated_at) "
+                          "VALUES ('ハハハ', '感動詞', 'now')")  # interjection → out
+        self.conn.execute("INSERT INTO lemmas (lemma, kind, status, confirm_candidate, "
+                          "updated_at) VALUES ('犬', 'word', 'learning', 1, 'now')")  # blue → out
+        self.assertEqual(lc.should_know(self.conn, 5), ["猫", "魚"])
+        self.assertEqual(lc.should_know(self.conn, 1), ["猫"])
+
     def test_deleted_card_reopens_for_remine(self):
         # A minted card the user later deletes in Anki: poll_lapses can't find
         # the note → stamps deleted_at, and the lemma leaves the live-card set.

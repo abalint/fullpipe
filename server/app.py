@@ -353,6 +353,7 @@ def create_app(cfg, start_worker=True):
                 {"canonical": p["canonical"], "surface": p.get("surface", "")})
         interest = lc.active_interest(ledger_conn())
         confirm = lc.confirm_words(ledger_conn())
+        should = lc.should_know(ledger_conn(), cfg.get("should_know_window", 100))
         here = {t.get("l") for s in coverage["sentences"] for t in s["tokens"]}
         # ~300k rows, ~0.5s to load — cache it; freq only changes when
         # build_freq reruns (offline, rare), which warrants a server restart
@@ -383,6 +384,8 @@ def create_app(cfg, start_worker=True):
                 "candidates": [c["lemma"] for c in coverage.get("candidates", [])],
                 "interest": sorted(interest & here),
                 "confirm": sorted(confirm & here),
+                # "you should know this": the most frequent unknowns (green)
+                "should_know": [l for l in should if l in here],
                 "sentences": [sent(s) for s in coverage["sentences"]]}
 
     @app.get("/episodes/{episode_id}/paint", dependencies=[Depends(auth)])
@@ -411,6 +414,8 @@ def create_app(cfg, start_worker=True):
                 "known": sorted(lc.known_words(conn) & here),
                 "confirm": sorted(lc.confirm_words(conn) & here),
                 "interest": sorted(lc.active_interest(conn) & here),
+                "should_know": [l for l in lc.should_know(
+                    conn, cfg.get("should_know_window", 100)) if l in here],
                 "grammar_confirm": sorted(lc.confirm_grammar(conn) & patterns),
                 "at": lc.now_iso()}
 

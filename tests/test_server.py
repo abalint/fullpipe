@@ -364,6 +364,9 @@ class TestRoutes(ServerTestBase):
         data = self.client.get(f"/transcript/{EP}", headers=self.auth).json()
         self.assertEqual(data["interest"], ["犬"])  # 蝶 is not in this episode
         self.assertEqual(data["confirm"], ["公園"])
+        # the green list is on the wire too — 公園 is the only ranked lemma
+        # here and it is blue, so nothing qualifies
+        self.assertEqual(data["should_know"], [])
 
     def test_paint_state_is_live(self):
         """GET /episodes/{id}/paint: the ledger's lists as of NOW, narrowed to
@@ -391,7 +394,9 @@ class TestRoutes(ServerTestBase):
         data = self.client.get(f"/episodes/{EP}/paint", headers=self.auth).json()
         self.assertEqual(data["known"], ["公園"])
         self.assertEqual(data["confirm"], ["犬"])
-        self.assertEqual(data["interest"], ["犬"])
+        # 犬 graduated to the blue list, so it has left the ★ list
+        self.assertEqual(data["interest"], [])
+        self.assertEqual(data["should_know"], [])  # 公園 known, 犬 unranked
         self.assertEqual(data["grammar_confirm"], ["〜てしまう"])
         self.assertEqual(
             self.client.get("/episodes/nope/paint", headers=self.auth).status_code, 404)

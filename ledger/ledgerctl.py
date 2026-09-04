@@ -1326,12 +1326,49 @@ def active_interest(conn, known=()):
 
     Retirement reads the ledger `lemmas` projection (status='known') — cheap,
     no AnkiConnect, so this stays usable in hot read paths (GET /transcript).
-    `known` optionally adds extra known lemmas the caller already has in hand."""
+    `known` optionally adds extra known lemmas the caller already has in hand.
+
+    Graduation (LIVE_REVIEW.md §3): a wanted word whose exposures cleared θ
+    is a confirm candidate — it has moved on to the "think you know" list
+    and leaves this one. A "not yet" answer clears the candidate flag, and
+    the word is back here."""
     interested = {r[0] for r in conn.execute(
         "SELECT DISTINCT lemma FROM evidence WHERE source = 'tap_interest'")}
-    ledger_known = {r[0] for r in conn.execute(
-        "SELECT lemma FROM lemmas WHERE status = 'known'")}
-    return interested - ledger_known - set(known)
+    graduated = {r[0] for r in conn.execute(
+        "SELECT lemma FROM lemmas WHERE status = 'known' OR confirm_candidate = 1")}
+    return interested - graduated - set(known)
+
+
+# Frequency-table rows that aren't vocabulary: laughter / filler transcribed
+# as tokens (ハハハ, フフッ, う~ん) and truncated fragments (ちょっ). Kept in
+# the corpus ranks — they are genuinely frequent — but never worth painting.
+_NOT_VOCAB_RE = re.compile(r"[~〜]|[っッ]$")
+_NOT_VOCAB_POS = frozenset(("感動詞",))
+
+
+def should_know(conn, n=100):
+    """The "you should know this" list (LIVE_REVIEW.md §3): the n most
+    frequent corpus lemmas (show-penetration ranks, not the Leeds fallback)
+    that are not known, not already awaiting a confirm (blue), and not
+    starred (★ is the user's own list and wins). A rolling window — as
+    words graduate by ✓ / ★ / promotion the next ranks slide in. Ordered by
+    rank so callers can keep the order."""
+    interest = active_interest(conn)
+    rows = conn.execute(
+        """SELECT f.lemma, l.pos FROM freq f
+           LEFT JOIN lemmas l ON l.lemma = f.lemma
+           WHERE f.source = 'show_graph'
+             AND COALESCE(l.status, 'unknown') != 'known'
+             AND COALESCE(l.confirm_candidate, 0) = 0
+           ORDER BY f.rank LIMIT ?""", (max(n * 4, 50),)).fetchall()
+    out = []
+    for lemma, pos in rows:
+        if lemma in interest or pos in _NOT_VOCAB_POS or _NOT_VOCAB_RE.search(lemma):
+            continue
+        out.append(lemma)
+        if len(out) >= n:
+            break
+    return out
 
 
 def confirm_words(conn):
