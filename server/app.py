@@ -296,24 +296,6 @@ def create_app(cfg, start_worker=True):
         q.set_passive(conn, job["id"], passive)
         return q.get_job(conn, job["id"])
 
-    @app.post("/jobs/{id_}/debrief", dependencies=[Depends(auth)])
-    def post_debrief(id_: str, body: dict):
-        """Queue an episode for a post-watch /debrief conversation (or clear
-        the flag). Pure flag flip like /passive — state, artifacts and ledger
-        untouched — but while set, DELETE refuses the job: the debrief needs
-        the transcript, which deletion would destroy. Flagging needs the
-        episode curated (its artifacts exist and outlast the watch);
-        unflagging is always allowed."""
-        job = get_job_or_404(id_)
-        debrief = bool(body.get("debrief", True))
-        if debrief and job["state"] not in ("staged", "reconciled",
-                                            "pushing", "watched"):
-            raise HTTPException(
-                409, f"job is {job['state']} — nothing to debrief yet")
-        conn = queue_conn()
-        q.set_debrief(conn, job["id"], debrief)
-        return q.get_job(conn, job["id"])
-
     @app.delete("/jobs/{id_}", dependencies=[Depends(auth)])
     def delete_job(id_: str, force: bool = False):
         """Remove a job and all its artifacts: episode dir (video, transcript,
@@ -337,10 +319,6 @@ def create_app(cfg, start_worker=True):
         if job["state"] == "pushing":
             raise HTTPException(
                 409, "cards are being pushed to Anki — wait for the close-out to finish")
-        if job.get("debrief"):
-            raise HTTPException(
-                409, "queued for debrief — the conversation needs the transcript; "
-                     "finish the /debrief (or unflag) first")
         ep = job["episode_id"]
         files_removed = 0
         d = episode_dir(cfg, ep)

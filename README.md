@@ -68,9 +68,6 @@ skills/     /immerse (built) · next: /reconcile · /generate · /replace · /se
   immerse/SKILL.md        pre-watch orchestrator: acquire → coverage → live
                           curation (synopsis/glosses/focal points/picks) →
                           render → deck; discovered via ../.claude/skills/
-  debrief/SKILL.md        post-watch comprehension conversation (English
-                          questions over the watched transcript) → answers
-                          the exposure-confirmation queue (confirm/defer)
   autopilot/SKILL.md      unattended top-up: `/loop 30m /autopilot` measures the
                           YouTube-only watchable stock (tools/stock.py) and,
                           under autopilot.min_hours, curates prepared jobs

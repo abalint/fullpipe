@@ -97,9 +97,6 @@ CREATE TABLE IF NOT EXISTS episodes (
     difficulty_felt INTEGER,                    -- /immerse subjective difficulty (1–5)
     coverage_pct REAL,                          -- coverage-at-watch: the difficulty confound control
     iplus1_count INTEGER, known_set_size INTEGER,
-    comprehension_pct REAL,                     -- latest /debrief measured comprehension (cache; truth = debriefs)
-    language_pct REAL,                          -- latest /debrief audio-only subtotal (cache)
-    debriefed_at TEXT,                          -- latest debrief's timestamp (cache)
     metadata TEXT,                              -- JSON: description, tags[], topics[], view_count
     series TEXT, ep_no INTEGER,                 -- tools.series: series slug + episode order (local box sets)
     processed_at TEXT
@@ -121,26 +118,6 @@ CREATE TABLE IF NOT EXISTS taste_events (
     ts         TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_taste_episode ON taste_events(episode_id);
-
--- Append-only /debrief log (DESIGN.md — Measured comprehension). One row per
--- post-watch comprehension interview: the rubric's two scores plus the scored
--- question list. Survives swipe-delete (episode artifacts don't), so this is
--- the durable side of the coverage→comprehension calibration: coverage_pct is
--- the ledger's *prediction* of difficulty, comprehension_pct is the *measured*
--- outcome, and their gap over time is both the improvement curve and the
--- error signal for the coverage model. Re-debriefs append (drift preserved);
--- episodes.comprehension_pct/language_pct/debriefed_at cache the latest.
-CREATE TABLE IF NOT EXISTS debriefs (
-    id                INTEGER PRIMARY KEY,
-    episode_id        TEXT NOT NULL,
-    debrief_id        TEXT NOT NULL,  -- idempotency: a replayed debrief_id is a no-op
-    comprehension_pct REAL NOT NULL,  -- 0..1 airtime-weighted rubric total (episode comprehension)
-    language_pct      REAL,           -- 0..1 audio-only-probe subtotal; NULL = none asked
-    lag_days          REAL,           -- watch → debrief gap the scores are conditioned on
-    questions         TEXT,           -- JSON rubric: [{q, weight, score, audio_only, note}, …]
-    ts                TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_debriefs_episode ON debriefs(episode_id);
 
 -- Per-presenter durable state (SURVEY.md §4). Channels were previously derived
 -- from episodes.channel_id with MAX(rating) as their only signal; this table

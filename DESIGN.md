@@ -466,31 +466,18 @@ ledger still undercounts, sharpening into a real difficulty predictor as `tap_kn
 enjoyment features: card-review performance and card yield are language-difficulty
 signal, never taste.
 
-### Measured comprehension — the /debrief signal (built 2026-07-11)
+### Measured comprehension — retired (built 2026-07-11 as /debrief, removed 2026-09-05)
 
-The "comprehension quiz" that was deferred here landed as **/debrief**, a live
-post-watch interview rather than a prerendered quiz (better: it adapts, probes
-partials, and grades against a native-viewer bar — no question survives that a
-native casual viewer wouldn't retain a day later). Coverage measures
-*vocabulary overlap*; the debrief measures the real target, *did you actually
-follow it* — and splits it in two, because visuals subsidize comprehension:
-
-- `comprehension_pct` — airtime-weighted rubric total over the whole spine
-  (did the *episode* land)
-- `language_pct` — the audio-only-probe subtotal (did the *Japanese* land)
-
-Persistence mirrors taste: an append-only **`debriefs`** table is the truth
-(one row per interview, scored rubric JSON included; re-debriefs append), with
-the latest scores cached onto `episodes.comprehension_pct/language_pct/
-debriefed_at` — so the video-history row carries the *prediction*
-(`coverage_pct`, `difficulty_felt`) and the *measurement* side by side.
-`ledgerctl record-debrief` writes it; `ledgerctl query debriefs` is the
-improvement curve (oldest first, prediction joined to measurement). The
-long-game payoffs stand as written: ground truth for the `over_my_head`
-decoupling, and — as rows accumulate — calibrating the coverage→comprehension
-mapping itself (retuning the `promote` θ thresholds). First calibration point
-(2026-07-11): 54% measured coverage ≈ 0.35–0.40 comprehension, with an
-on-screen/audio-only split as the dominant miss pattern.
+A live post-watch comprehension interview (`/debrief`: free recall scored
+against a hidden idea-unit map, plus a gap pass, persisted to an append-only
+`debriefs` table) ran for two months. It was removed with the rest of the
+post-watch machinery under the immersion-only rule: no test, no extra screen,
+nothing between one episode and the next. The one calibration point it
+produced is kept for the coverage estimator (2026-07-11: 54% measured coverage
+≈ 0.35–0.40 comprehension, with "visuals land, narration-only doesn't" as the
+dominant miss pattern). Existing ledgers keep their `debriefs` rows and the
+`episodes.comprehension_pct/language_pct/debriefed_at` columns as inert data;
+nothing reads or writes them any more.
 
 **Deferred signals:**
 
@@ -605,8 +592,8 @@ lean on when asked, not echo-chamber gravity to always-apply.
 The number is a deliberate **floor**: raw ASR with no punctuation-restore or
 repair pass, so ASR non-words and un-adjudicated names count against the learner
 (the cross-episode name registry claws some back). Real coverage.json usually
-lands at or above it; lived comprehension lands below (first debrief: 54%
-coverage → ~35% comprehension). It shares the speech gate's fate above — when the
+lands at or above it; lived comprehension lands below (the one 2026-07
+interview: 54% coverage → ~35% comprehension). It shares the speech gate's fate above — when the
 no-subtitle acquisition route ships, a caption-less-but-spoken video will read as
 `no_caption` and needs the same audio-based fallback to be scored.
 
@@ -869,7 +856,7 @@ fullPipe/                     # ✅ = built 2026-07-05 (see README.md for usage)
 ├── tools/                    # ✅ dumb CLI: acquire, coverage, deck, render, harvest (discovery)
 │   └── (prime deferred with the interleaver)
 ├── tests/                    # ✅ 93 unittest cases (ledger/tools/server/engine)
-├── skills/                   # ✅ /immerse, /prepare, /recommend, /debrief (+ scripts/ensure_anki.sh); NEXT: /reconcile, /setup, /generate, /replace
+├── skills/                   # ✅ /immerse, /prepare, /recommend, /autopilot, /series (+ scripts/ensure_anki.sh); NEXT: /reconcile, /setup, /generate, /replace
 ├── render/                   # ✅ template.html + demo-prep.html (also hydrated by GET /prep)
 ├── server/                   # ✅ FastAPI queue + ledgerctl verbs over Tailscale (MOBILE.md); taste tags on /rating
 └── (mobile client)           # ✅ Capacitor Android app → sibling repo anki/mobile/ (MOBILE.md); stars + taste-tag picker

@@ -28,7 +28,7 @@ punctuation gate — Netflix-style subs have no 。, and ASR-only shows arrive
 as long run-on segments; the repair gate matters most there — a show's own
 jargon and character names get mangled the same way in every episode, and
 the cross-episode registry carries the fixes forward), the phone pulls,
-taps, marks watched, rates, debriefs.
+taps, marks watched, rates.
 
 Subtitle discovery order when the folder has none: the show-graph repo's
 kitsunekko mirror (`~/Documents/code/graphs/japaneseShowGraph/subs`), then

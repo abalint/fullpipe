@@ -198,7 +198,7 @@ Mode adjustments:
   Emit *different angles*, not near-duplicates.
 - **Comprehensibility mode** (Step 0.3): bias the clusters toward genres that
   skew *easy but still native* — one clear speaker, everyday register, concrete
-  visually-scaffolded topics (the debrief pattern: "follows the pictures" content
+  visually-scaffolded topics (the observed pattern: "follows the pictures" content
   lands, dense narration-only doesn't — [[debrief-calibration-baseline]]). Good
   veins: 日常 vlog / ルーティン, 一人暮らし, 簡単料理 / 作り置き (talking-to-camera
   cooking), 商店街・食べ歩き, ペット / 猫 vlog, カフェ 作業, ゆるい 雑談 / soft
@@ -378,18 +378,18 @@ scores it against the **live ledger known-set**, returning per id:
 no punctuation-restore or repair pass, so ASR non-words and un-adjudicated names
 count *against* the learner (the cross-episode name registry claws some back, but
 fresh names still cost). So the real coverage.json usually lands **at or above**
-the estimate, and lived comprehension lands well below either: the first
-/debrief mapped a 54% coverage.json to ~35% real comprehension
-([[debrief-calibration-baseline]]). Use it to **compare candidates** and set a
-floor, not to predict the watch.
+the estimate, and lived comprehension lands well below either: a one-off
+post-watch interview (2026-07-11, since retired) mapped a 54% coverage.json to
+~35% real comprehension ([[debrief-calibration-baseline]]). Use it to **compare
+candidates** and set a floor, not to predict the watch.
 
 How to use it:
 
 - **Comprehensibility mode** (Step 0.3): make it a primary ranking key. Sort the
   taste-worthy, speech-passed shortlist by `pct` descending, drop `no_caption`,
   and prefer picks in a genuinely-followable band (roughly `pct ≳ 0.75` given the
-  downward bias and the ~35%-of-54% comprehension mapping — adjust as debriefs
-  recalibrate). A high `iplus1` alongside high `pct` is the sweet spot: followable
+  downward bias and the ~35%-of-54% comprehension mapping). A high `iplus1`
+  alongside high `pct` is the sweet spot: followable
   *and* still teaching. Present the % on every pick.
 - **Default / open pass**: still run it, still show `pct` on each pick's line, but
   keep novelty the ranker — a fascinating 55% wildcard belongs in an open pass;

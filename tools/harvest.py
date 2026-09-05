@@ -548,7 +548,8 @@ def estimate_coverage(conn, cfg, video_ids, recheck=False):
     The cross-episode non-vocab registry is folded in to claw back names already
     flagged in past episodes, but fresh ones still cost. Treat it as a floor and
     a comparator between candidates, not an exact prediction. Calibration point:
-    coverage.json ~54% mapped to ~35% real comprehension in the first /debrief.
+    coverage.json ~54% mapped to ~35% real comprehension in a one-off post-watch
+    interview (2026-07-11).
 
     Cached in meta.coverage_est so re-runs are free; pass recheck=True to redo.
     Returns a per-video list of {video_id, pct, iplus1, tokens, ...}.
