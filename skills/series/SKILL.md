@@ -24,8 +24,17 @@ anime / videos). This skill drives `tools/series.py`, which:
    locally too).
 
 Everything from `prepared` on is the normal flow: `/immerse` curates (run the
-punctuation gate — Netflix-style subs have no 。), the phone pulls, taps,
-marks watched, rates, debriefs.
+punctuation gate — Netflix-style subs have no 。, and ASR-only shows arrive
+as long run-on segments; the repair gate matters most there — a show's own
+jargon and character names get mangled the same way in every episode, and
+the cross-episode registry carries the fixes forward), the phone pulls,
+taps, marks watched, rates, debriefs.
+
+Subtitle discovery order when the folder has none: the show-graph repo's
+kitsunekko mirror (`~/Documents/code/graphs/japaneseShowGraph/subs`), then
+jimaku.cc / kitsunekko.net / SubDL / OpenSubtitles online. Older OVAs and
+anything never on a JP streaming service usually have none — go straight to
+GPU ASR rather than searching long.
 
 ## Commands
 

@@ -199,6 +199,11 @@ $PY -m tools.punctuate check EPISODE_ID     # stdout = blocks path, or empty
 
 - **Empty stdout** → nothing to do (subs already punctuated, or already
   restored). Skip straight to Step 3 (queue path) / coverage (direct path).
+  The check is three-fold (marks per block, 。 per block, **characters per
+  mark ≤ 45** — closing 」 never counts); if it passes but the transcript
+  still reads as 30–90 s run-ons, that's a checker bug: export the blocks
+  yourself (`punct_blocks.json` is just `[{"idx","text"}]` over the cleaned
+  raw SRT) and run the gate anyway, then say so in the report.
 - **A path on stdout** (`<episode_dir>/punct_blocks.json`, a
   `[{"idx","text"}, …]` list of raw blocks) → this episode needs punctuation.
   **Spawn a subagent** (Agent tool, `general-purpose`) to restore it:
@@ -465,8 +470,19 @@ Read the prior profile (if any), then — from **this** transcript — write the
 *merged* fingerprint to `<episode_dir>/presenter.json` and store it:
 
 ```sh
-$PY -m ledger.ledgerctl presenter-set <CHANNEL_ID> <episode_dir>/presenter.json --channel "<name>"
+$PY -m ledger.ledgerctl presenter-set <CHANNEL_ID> <episode_dir>/presenter.json --channel "<name>" --episode <EPISODE_ID>
 ```
+
+Do `presenter-get` → merge → `presenter-set` **as one late, uninterrupted
+step** (not get-early / set-at-the-end), and always list every episode the
+profile has seen in `provenance.episodes`. When several agents curate one
+channel/series concurrently, the ledger reconciles under a write lock: it
+unions `provenance.episodes`, keeps `observations` ≥ their count, and if the
+stored profile had episodes yours never saw it parks that snapshot under
+`provenance.folded` and answers `stale_merge: true` — mention it in the
+report. If `presenter-get` shows a `folded` list, fold those snapshots into
+your prose (characterization / measured / variance), and **omit `folded`**
+from the profile you write so the backlog clears.
 
 The profile is the **feature track** (machine-observed traits) — never put the
 user's ratings in it. Shape (all fields optional; `characterization` is the
@@ -482,7 +498,7 @@ load-bearing one the recommender reads):
   "topics_gravitated": ["daily-life", "tech-light"], "formats": ["monologue"],
   "measured": { "wpm": {"mean": 180, "range": [150, 210]} },
   "variance": "Usually calm; reaction videos spike energy.",
-  "provenance": { "observations": 3 }
+  "provenance": { "observations": 3, "episodes": ["yt_a1", "yt_b2", "yt_c3"] }
 }
 ```
 

@@ -747,6 +747,45 @@ class LedgerTest(unittest.TestCase):
         self.assertTrue(got["provenance"]["updated_at"])  # stamped on write
         self.assertIsNone(lc.get_presenter_profile(self.conn, "UCnone"))
 
+    def test_presenter_profile_concurrent_writers_are_merged_not_clobbered(self):
+        """Regression (Angel Cop, 2026-09-05): six parallel curate agents each
+        read the profile, merged their episode, and wrote back — last writer
+        won and the stored profile ended at 5 of 6 episodes. presenter-set now
+        reconciles against what is stored NOW."""
+        a = {"characterization": "Ensemble cop drama, ep4 view.",
+             "measured": {"notes": "Ep04: 223 sentences."},
+             "provenance": {"observations": 1, "episodes": ["e04"]}}
+        lc.set_presenter_profile(self.conn, "series:x", "X", a)
+        # sibling B read the profile BEFORE A wrote (sees nothing), writes its own
+        b = {"characterization": "Ensemble cop drama, ep1 view.",
+             "measured": {"notes": "Ep01: 335 sentences."},
+             "provenance": {"observations": 1}}
+        r = lc.set_presenter_profile(self.conn, "series:x", "X", b, episode_id="e01")
+        self.assertTrue(r["stale_merge"])
+        self.assertEqual(r["folded_episodes"], ["e04"])
+        self.assertEqual(r["observations"], 2)
+        got = lc.get_presenter_profile(self.conn, "series:x")
+        self.assertEqual(sorted(got["provenance"]["episodes"]), ["e01", "e04"])
+        self.assertEqual(got["characterization"], "Ensemble cop drama, ep1 view.")
+        folded = got["provenance"]["folded"]
+        self.assertEqual(len(folded), 1)
+        self.assertEqual(folded[0]["episodes"], ["e04"])
+        self.assertEqual(folded[0]["measured"]["notes"], "Ep04: 223 sentences.")
+        # a proper merge (read after both writes) that names all episodes and
+        # drops the folded backlog is stored as-is
+        c = {"characterization": "Ensemble cop drama, eps 1+4+6.",
+             "provenance": {"observations": 3, "episodes": ["e01", "e04", "e06"]}}
+        r = lc.set_presenter_profile(self.conn, "series:x", "X", c, episode_id="e06")
+        self.assertNotIn("stale_merge", r)
+        got = lc.get_presenter_profile(self.conn, "series:x")
+        self.assertNotIn("folded", got["provenance"])
+        self.assertEqual(got["provenance"]["observations"], 3)
+        # legacy profile with no episode list: a stale count is bumped past the stored one
+        lc.set_presenter_profile(self.conn, "UClegacy", "L", {"provenance": {"observations": 3}})
+        r = lc.set_presenter_profile(self.conn, "UClegacy", "L", {"provenance": {"observations": 2}})
+        self.assertTrue(r["stale_merge"])
+        self.assertEqual(r["observations"], 4)
+
     # --- measured comprehension (DESIGN.md — Measured comprehension) ----------
 
     def test_record_debrief_and_episode_cache(self):

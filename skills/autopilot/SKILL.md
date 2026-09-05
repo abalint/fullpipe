@@ -102,7 +102,12 @@ SQLite (short writes, 5 s busy timeout — see Failure modes).
 >
 > Policy for the interactive points, since nobody is watching: never call
 > AskUserQuestion; curate this episode fully; the punctuation and repair
-> gates are mandatory (run `check`, and if it prints a path do the work).
+> gates are mandatory (run `check`, and if it prints a path do the work; if
+> it prints nothing but the sentences are still multi-line run-ons, export the
+> blocks yourself and run the gate anyway). Sibling agents may be curating the
+> same channel/series at the same time: do presenter-get → merge →
+> presenter-set as one late step, pass `--episode <EPISODE_ID>`, list every
+> episode in `provenance.episodes`, and fold any `provenance.folded` backlog.
 > If the Agent tool is available, spawn the gate subagents exactly as the
 > skill says; if it is not, do the gate's task yourself inline with the same
 > rules (write punct_out.json / repair_out.json, then `apply`). Card bar:

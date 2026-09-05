@@ -9,6 +9,19 @@ PUNCTUATION_THRESHOLD = 0.22
 # Minimum 。 per block. Hand-authored subs that terminate statements at all
 # run ~0.4+; streaming subs that only carry ？！ sit at 0.00.
 DECLARATIVE_THRESHOLD = 0.05
+# Maximum characters per sentence mark. The per-block ratio above assumes
+# short scrolling blocks; ASR segments are long, so a raw GPU transcript with
+# a stray 。 every 50-250 characters (plus ASCII !/? on shouts) clears both
+# per-block thresholds while every statement still runs on into the next
+# (Angel Cop EP02, 2026-09-05: 0.31 marks/block, 55 chars/mark, fully run-on).
+# Creator-authored Japanese subs run ~30 chars per mark; a spoken sentence is
+# ~15-40 chars. Anything sparser is under-punctuated. A false "needs restore"
+# costs one insert-only subagent pass; a false "fine" wrecks the episode.
+MAX_CHARS_PER_MARK = 45
+# 」 closes a quote; it is a merge boundary (sentence_enders) but not evidence
+# that statements are being terminated, so it never counts toward the quality
+# check even when the caller's pattern includes it.
+_NON_TERMINAL_MARKS = frozenset('」』')
 
 
 def has_good_punctuation(subs, sentence_punct, logger=None):
@@ -16,8 +29,9 @@ def has_good_punctuation(subs, sentence_punct, logger=None):
 
     Looks at the combined text of all blocks (not just block endings) because
     scrolling auto-subs often have punctuation mid-block after deduplication.
-    Returns True if there are at least PUNCTUATION_THRESHOLD punctuation marks
-    per block across the full text.
+    Returns True only if all three hold: at least PUNCTUATION_THRESHOLD marks
+    per block, at least DECLARATIVE_THRESHOLD 。 per block, and no more than
+    MAX_CHARS_PER_MARK characters per mark (closing quotes never count).
 
     Args:
         subs: List of (start_sec, end_sec, text) tuples
@@ -28,8 +42,10 @@ def has_good_punctuation(subs, sentence_punct, logger=None):
 
     punct_re = re.compile(sentence_punct)
     all_text = ''.join(text for _, _, text in subs)
-    punct_count = len(punct_re.findall(all_text))
+    punct_count = sum(1 for m in punct_re.findall(all_text)
+                      if m not in _NON_TERMINAL_MARKS)
     ratio = punct_count / len(subs)
+    chars_per_mark = len(all_text) / max(punct_count, 1)
     result = ratio >= PUNCTUATION_THRESHOLD
     # Broadcast/streaming subs (Netflix, TV rips) keep ？ and ！ but drop the
     # declarative 。 entirely — enough marks to pass the ratio, yet every
@@ -39,9 +55,16 @@ def has_good_punctuation(subs, sentence_punct, logger=None):
         declaratives = all_text.count('。') / len(subs)
         if declaratives < DECLARATIVE_THRESHOLD:
             result = False
+    # Long ASR segments: the per-block ratio is meaningless when a "block" is
+    # a 30-90 s run-on. Marks must also be dense enough per character.
+    if result and chars_per_mark > MAX_CHARS_PER_MARK:
+        result = False
     if logger:
         logger.debug("Punctuation quality check", ratio=round(ratio, 3),
-                      threshold=PUNCTUATION_THRESHOLD, passed=result, block_count=len(subs))
+                      threshold=PUNCTUATION_THRESHOLD,
+                      chars_per_mark=round(chars_per_mark, 1),
+                      max_chars_per_mark=MAX_CHARS_PER_MARK,
+                      passed=result, block_count=len(subs))
     return result
 
 

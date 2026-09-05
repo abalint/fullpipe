@@ -18,3 +18,6 @@ gpu_service/run_service.bat
 
 # Server runtime log (hand-started uvicorn)
 server.log
+
+# hand-made backups of config.json carry the same tokens
+config.json.bak*

@@ -503,28 +503,99 @@ def get_presenter_profile(conn, channel_id):
         return None
 
 
-def set_presenter_profile(conn, channel_id, channel, profile):
+def _as_list(v):
+    return [x for x in (v or []) if isinstance(x, str)] if isinstance(v, list) else []
+
+
+def set_presenter_profile(conn, channel_id, channel, profile, episode_id=None):
     """Store a channel's presenter fingerprint (SURVEY.md §4c). `profile` is the
     already-merged dict the curate step produced from (this transcript + the
-    prior profile) — this function only persists it; the LLM does the merge.
+    prior profile) — the LLM does the semantic merge; this function persists it
+    and guards the write against a concurrent sibling.
+
+    Parallel curate agents on one series (autopilot waves, `/series` batches)
+    each read the profile, merge their episode in, and write back — last
+    writer wins, and the losers' observations vanish (Angel Cop, 2026-09-05:
+    six agents, the stored profile ended at 5 of 6 episodes). So the write
+    happens under BEGIN IMMEDIATE and is reconciled against what is stored
+    NOW, not what the caller read earlier:
+
+      - `provenance.episodes` is the union of stored + incoming (+ episode_id);
+        `provenance.observations` is at least its length (legacy profiles
+        without an episode list keep max(incoming, stored) + 1 when the
+        incoming count is not ahead of the stored one).
+      - if the stored profile carries episodes the incoming one never saw,
+        the stored snapshot (characterization, measured, variance) is kept
+        under `provenance.folded` so the next curate pass can fold it into
+        the prose properly — nothing observed is thrown away — and the
+        result reports `stale_merge: true` with the folded episode ids.
+
     Stamps provenance.updated_at. No-op without a channel_id."""
     if not channel_id:
         return {"channel_id": None, "stored": False}
     profile = dict(profile or {})
     prov = dict(profile.get("provenance") or {})
-    prov["updated_at"] = now_iso()
-    profile["provenance"] = prov
-    conn.execute(
-        """INSERT INTO channels (channel_id, channel, profile, updated_at)
-           VALUES (?, ?, ?, ?)
-           ON CONFLICT(channel_id) DO UPDATE SET
-               profile = excluded.profile,
-               channel = COALESCE(excluded.channel, channels.channel),
-               updated_at = excluded.updated_at""",
-        (channel_id, channel, json.dumps(profile, ensure_ascii=False), prov["updated_at"]))
-    conn.commit()
-    return {"channel_id": channel_id, "observations": prov.get("observations"),
-            "stored": True}
+    incoming_eps = _as_list(prov.get("episodes"))
+    if episode_id and episode_id not in incoming_eps:
+        incoming_eps.append(episode_id)
+
+    if not conn.in_transaction:
+        conn.execute("BEGIN IMMEDIATE")  # take the write lock before the read
+    try:
+        stored = get_presenter_profile(conn, channel_id) or {}
+        s_prov = dict(stored.get("provenance") or {})
+        stored_eps = _as_list(s_prov.get("episodes"))
+        unseen = [e for e in stored_eps if e not in incoming_eps]
+        episodes = list(dict.fromkeys(stored_eps + incoming_eps))
+
+        obs_in = prov.get("observations") or 0
+        obs_st = s_prov.get("observations") or 0
+        stale = bool(unseen) or (bool(stored) and not stored_eps and obs_in <= obs_st)
+        observations = max(obs_in, len(episodes)) if episodes else obs_in
+        if stale and not unseen:
+            # legacy profile (no episode list) overwritten under a race: the
+            # incoming count was derived from a stale read — count both.
+            observations = max(observations, obs_st + 1)
+
+        folded = [f for f in (prov.get("folded") or []) if isinstance(f, dict)]
+        if unseen:
+            snap = {k: stored.get(k) for k in ("characterization", "measured", "variance")
+                    if stored.get(k) is not None}
+            snap["episodes"] = unseen
+            folded.append(snap)
+            folded = folded[-5:]
+            # keep the overwritten snapshots' own folded backlog too
+            for f in (s_prov.get("folded") or []):
+                if isinstance(f, dict) and f not in folded:
+                    folded.append(f)
+            folded = folded[-5:]
+
+        if episodes:
+            prov["episodes"] = episodes
+        prov["observations"] = observations
+        if folded:
+            prov["folded"] = folded
+        else:
+            prov.pop("folded", None)
+        prov["updated_at"] = now_iso()
+        profile["provenance"] = prov
+        conn.execute(
+            """INSERT INTO channels (channel_id, channel, profile, updated_at)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(channel_id) DO UPDATE SET
+                   profile = excluded.profile,
+                   channel = COALESCE(excluded.channel, channels.channel),
+                   updated_at = excluded.updated_at""",
+            (channel_id, channel, json.dumps(profile, ensure_ascii=False), prov["updated_at"]))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    out = {"channel_id": channel_id, "observations": observations, "stored": True}
+    if stale:
+        out["stale_merge"] = True
+        out["folded_episodes"] = unseen
+    return out
 
 
 def set_rating(conn, episode_id, rating):
@@ -1812,6 +1883,8 @@ def main(argv=None):
     p.add_argument("channel_id")
     p.add_argument("profile_json", help="path to the merged profile JSON")
     p.add_argument("--channel", help="display name")
+    p.add_argument("--episode", help="episode id this observation comes from "
+                   "(recorded in provenance.episodes; lets concurrent writers merge)")
     p = sub.add_parser("record-curation",
                        help="persist /immerse curation metadata (genre/format/topics/difficulty)")
     p.add_argument("episode_id")
@@ -1912,7 +1985,8 @@ def main(argv=None):
         _json_out(get_presenter_profile(conn, args.channel_id))
     elif args.verb == "presenter-set":
         profile = json.loads(Path(args.profile_json).read_text(encoding="utf-8"))
-        _json_out(set_presenter_profile(conn, args.channel_id, args.channel, profile))
+        _json_out(set_presenter_profile(conn, args.channel_id, args.channel, profile,
+                                        episode_id=args.episode))
     elif args.verb == "record-curation":
         curation = json.loads(Path(args.curate_json).read_text(encoding="utf-8"))
         result = record_curation(conn, args.episode_id, curation)

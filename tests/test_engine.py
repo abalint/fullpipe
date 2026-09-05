@@ -107,6 +107,25 @@ class SrtParserTest(unittest.TestCase):
         subs = [(i, i + 1, "何？" if i % 3 == 0 else "そうだね。") for i in range(30)]
         self.assertTrue(SP.has_good_punctuation(subs, r'[。！？]'))
 
+    def test_sparse_marks_in_long_asr_segments_do_not_count_as_punctuated(self):
+        """Regression (Angel Cop EP02, 2026-09-05): raw GPU-ASR segments are
+        long, so a stray 。 every ~50 chars plus ASCII ! on shouts cleared the
+        per-block ratio AND the declarative floor while every statement still
+        ran on. Marks must also be dense per character."""
+        run_on = "彼らはテロ行為を未然に阻止しテロリストの撲滅のため殺人も許可されている警視庁外に設置された組織だ"
+        subs = []
+        for i in range(30):
+            subs.append((i, i + 1, run_on + ("。" if i % 3 == 0 else "")))
+            subs.append((i, i + 1, "エンゼル!" if i % 2 == 0 else run_on))
+        self.assertFalse(SP.has_good_punctuation(subs, r'[。！？.!?」]'))
+        # the same text properly terminated passes
+        dense = [(i, i + 1, "テロ行為を未然に阻止した。彼らは殺人も許可されている。") for i in range(30)]
+        self.assertTrue(SP.has_good_punctuation(dense, r'[。！？.!?」]'))
+
+    def test_closing_quotes_never_count_as_sentence_marks(self):
+        subs = [(i, i + 1, "「そうだね」と彼は言った") for i in range(30)]
+        self.assertFalse(SP.has_good_punctuation(subs, r'[。！？.!?」]'))
+
     def test_filter_non_speech(self):
         subs = [(0, 1, "[音楽]"), (1, 2, "♪♪"), (2, 3, "こんにちは")]
         self.assertEqual(len(SP.filter_non_speech(subs)), 1)
