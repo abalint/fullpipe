@@ -22,6 +22,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import FileResponse  # noqa: E402
 
+from engine.lemma import phrase_span  # noqa: E402
 from engine.paths import ffprobe_path  # noqa: E402
 from ledger import ledgerctl as lc  # noqa: E402
 from lib_config import load_config  # noqa: E402
@@ -36,6 +37,33 @@ from tools.render import build_prep_data  # noqa: E402
 
 def queue_db_path(cfg):
     return str(Path(cfg["work_dir"]) / "queue.db")
+
+
+def episode_phrases(coverage, curate):
+    """{sentence_idx: [{canonical, surface}]} — every multi-word expression on
+    each line: the curate pass's emissions (curate.json `phrases`, GRAMMAR.md)
+    merged with the already-tracked phrases Stage 1 matched deterministically
+    (coverage.json per-sentence `phrases`). One entry per canonical per line;
+    the curate surface wins when both know the phrase."""
+    at: dict[int, list] = {}
+
+    def add(idx, canonical, surface):
+        if idx is None or not canonical:
+            return
+        lst = at.setdefault(idx, [])
+        for p in lst:
+            if p["canonical"] == canonical:
+                if surface and not p["surface"]:
+                    p["surface"] = surface
+                return
+        lst.append({"canonical": canonical, "surface": surface or ""})
+
+    for p in curate.get("phrases", []) or []:
+        add(p.get("sentence_idx"), p.get("canonical"), p.get("surface", ""))
+    for s in coverage.get("sentences", []):
+        for u in s.get("phrases") or []:
+            add(s.get("idx"), u.get("phrase"), "")
+    return at
 
 
 def create_app(cfg, start_worker=True):
@@ -326,8 +354,10 @@ def create_app(cfg, start_worker=True):
 
         Curated sentences additionally carry the curate pass's `grammar`
         (pattern + form note, GRAMMAR.md — proposals flagged) and `phrases`
-        (canonical + surface), so the player's word popup can show the line's
-        grammatical context; absent before curation and on untagged lines."""
+        (canonical + surface + token span + ledger status — the curate
+        pass's emissions merged with the tracked phrases Stage 1 detected),
+        so the player paints each phrase as one unit and the popup gives it
+        its own mark; absent before curation and on untagged lines."""
         try:
             coverage = load_coverage(cfg, episode_id)
         except FileNotFoundError as e:
@@ -344,13 +374,9 @@ def create_app(cfg, start_worker=True):
             if not pattern:
                 note["proposed"] = True
             grammar_at.setdefault(idx, []).append(note)
-        phrases_at: dict[int, list] = {}
-        for p in curate.get("phrases", []):
-            idx = p.get("sentence_idx")
-            if idx is None or not p.get("canonical"):
-                continue
-            phrases_at.setdefault(idx, []).append(
-                {"canonical": p["canonical"], "surface": p.get("surface", "")})
+        phrases_at = episode_phrases(coverage, curate)
+        statuses = lc.phrase_statuses(
+            ledger_conn(), {p["canonical"] for ps in phrases_at.values() for p in ps})
         interest = lc.active_interest(ledger_conn())
         confirm = lc.confirm_words(ledger_conn())
         should = lc.should_know(ledger_conn(), cfg.get("should_know_window", 100))
@@ -373,7 +399,16 @@ def create_app(cfg, start_worker=True):
             if s["idx"] in grammar_at:
                 d["grammar"] = grammar_at[s["idx"]]
             if s["idx"] in phrases_at:
-                d["phrases"] = phrases_at[s["idx"]]
+                # each phrase as one unit: its token span (so the player
+                # paints 血が騒いだ as a whole and the popup opens a phrase
+                # layer from any token in it) + the ledger status snapshot
+                d["phrases"] = []
+                for p in phrases_at[s["idx"]]:
+                    entry = {**p, "status": statuses.get(p["canonical"], "unknown")}
+                    span = phrase_span(s["tokens"], p["canonical"], p.get("surface"))
+                    if span:
+                        entry["start"], entry["end"] = span
+                    d["phrases"].append(entry)
             return d
 
         return {"episode_id": episode_id,
@@ -409,14 +444,23 @@ def create_app(cfg, start_worker=True):
         curate = read_json(curate_path) if curate_path.exists() else {}
         patterns = {g.get("pattern") or g.get("proposed_pattern")
                     for g in curate.get("grammar", [])} - {None}
+        phrases = {p["canonical"]
+                   for ps in episode_phrases(coverage, curate).values() for p in ps}
         conn = ledger_conn()
+        interest = lc.active_interest(conn)
         return {"episode_id": episode_id,
                 "known": sorted(lc.known_words(conn) & here),
                 "confirm": sorted(lc.confirm_words(conn) & here),
-                "interest": sorted(lc.active_interest(conn) & here),
+                "interest": sorted(interest & here),
                 "should_know": [l for l in lc.should_know(
                     conn, cfg.get("should_know_window", 100)) if l in here],
                 "grammar_confirm": sorted(lc.confirm_grammar(conn) & patterns),
+                # the phrase axis (GRAMMAR.md): a phrase is its own item, so
+                # its paint is independent of its component words' —
+                # known/blue/purple over the sidecar's status snapshot
+                "phrase_known": sorted(lc.known_phrases(conn) & phrases),
+                "phrase_confirm": sorted(lc.confirm_phrases(conn) & phrases),
+                "phrase_interest": sorted(interest & phrases),
                 "at": lc.now_iso()}
 
     @app.get("/definitions/{episode_id}", dependencies=[Depends(auth)])
@@ -446,6 +490,10 @@ def create_app(cfg, start_worker=True):
                 jmdict.merge_curate_defs({}, curate), repair)
         lemmas = {t["l"] for s in coverage["sentences"]
                   for t in s["tokens"] if t.get("l")}
+        # the line's phrases too (血が騒ぐ) — JMdict headwords by construction,
+        # keyed by canonical so the popup's phrase layer can gloss them
+        lemmas |= {p["canonical"]
+                   for ps in episode_phrases(coverage, curate).values() for p in ps}
         conn = jmdict.open_db(path)  # per-request: sqlite handles are thread-bound
         try:
             result = jmdict.lookup_many(conn, lemmas)
@@ -750,12 +798,17 @@ def create_app(cfg, start_worker=True):
 
         # frequency-band coverage: known WORDS ∩ corpus ranks, bucketed —
         # phrases/grammar have no corpus rank and must not dilute the join.
+        # Corpus (show_graph) rows only: Leeds fallback rows keep their Leeds
+        # rank as-is (build_freq, P7), so that rank space overlaps the corpus
+        # one and particles like の/は at Leeds rank 0..8 would push a band
+        # past 100%. Ranks are 0-based, so "top N" is rank < N.
         # Join known (~few k rows) against freq — cheap despite freq's ~300k.
         known_ranks = [r[0] for r in conn.execute(
             "SELECT f.rank FROM lemmas l JOIN freq f ON f.lemma = l.lemma "
-            "WHERE l.status = 'known' AND l.kind = 'word' AND f.rank IS NOT NULL")]
+            "WHERE l.status = 'known' AND l.kind = 'word' "
+            "AND f.source = 'show_graph' AND f.rank IS NOT NULL")]
         bands = [{"band": b,
-                  "known": sum(1 for r in known_ranks if r <= b),
+                  "known": sum(1 for r in known_ranks if r < b),
                   "total": b}
                  for b in FREQ_BANDS]
 
@@ -775,6 +828,7 @@ def create_app(cfg, start_worker=True):
             "confirm_candidates": summary["confirm_candidates"],  # all kinds
             "words_encountered": distinct_exposed,
             "want_to_learn": len(lc.active_interest(conn)),
+            "should_know": len(lc.should_know(conn, cfg.get("should_know_window", 100))),
             "freq_bands": bands,
             "evidence_by_source": by_source,
             # sibling axes (GRAMMAR.md): tracked phrases + grammar points
@@ -787,6 +841,67 @@ def create_app(cfg, start_worker=True):
             "grammar_proposed": grammar["proposed"],
         }
 
+    def _with_senses(rows):
+        """JMdict senses onto word rows (when jmdict.db exists)."""
+        lookup = {r["lemma"] for r in rows if r.get("kind") != "grammar"}
+        path = jmdict.db_path(cfg)
+        if lookup and path.exists():
+            jconn = jmdict.open_db(path)  # per-request: sqlite handles are thread-bound
+            try:
+                defs = jmdict.lookup_many(jconn, lookup)
+            finally:
+                jconn.close()
+            for r in rows:
+                if r.get("kind") != "grammar":
+                    r["senses"] = defs.get(r["lemma"], [])
+        return rows
+
+    @app.get("/lists/{name}", dependencies=[Depends(auth)])
+    def get_word_list(name: str):
+        """The other two global word lists, reviewable like the confirm queue
+        (LIVE_REVIEW.md §1). `interest` = the standing ★ want-to-learn set
+        (common words first); `should_know` = the should_know_window most
+        frequent corpus words not yet known, in rank order. Rows carry the
+        confirm-queue shape (reading, furigana segs, rank, exposures,
+        watched-episode titles, JMdict senses) so the phone reuses one card."""
+        conn = ledger_conn()
+        if name == "interest":
+            lemmas = sorted(lc.active_interest(conn))
+            rows = lc.query_word_list(conn, lemmas)
+            rows.sort(key=lambda r: (r["freq_rank"] is None, r["freq_rank"] or 0,
+                                     -r["exposure_count"]))
+        elif name == "should_know":
+            rows = lc.query_word_list(
+                conn, lc.should_know(conn, cfg.get("should_know_window", 100)))
+        else:
+            raise HTTPException(404, f"no such list: {name}")
+        return {"list": name, "words": _with_senses(rows)}
+
+    @app.post("/lists/mark", dependencies=[Depends(auth)])
+    def post_list_mark(body: dict):
+        """A mark made from a list review rather than inside an episode:
+        {"lemma", "mark": "k"|"h"} — the same tap semantics as POST /taps
+        (LIVE_REVIEW.md §5a: ✓ on a ★ / green word → tap_known → known; ★ on
+        a green word → tap_interest → the ★ list). No episode, no card
+        selection; optional `batch_id` makes an outbox re-flush idempotent."""
+        lemma = (body.get("lemma") or "").strip()
+        mark = body.get("mark")
+        if not lemma:
+            raise HTTPException(422, "missing lemma")
+        if mark not in ("k", "h"):
+            raise HTTPException(422, f"unknown mark: {mark}")
+        conn = ledger_conn()
+        result = lc.apply_taps(conn, {"batch_id": body.get("batch_id"),
+                                      "taps": [[lemma, mark]]}, watched=False)
+        if not result["duplicate"]:
+            lc.promote(conn)
+        row = conn.execute("SELECT status FROM lemmas WHERE lemma = ?",
+                           (lemma,)).fetchone()
+        return {"lemma": lemma, "mark": mark,
+                "status": row["status"] if row else None,
+                "interest": lemma in lc.active_interest(conn),
+                "duplicate": result["duplicate"]}
+
     @app.get("/confirm", dependencies=[Depends(auth)])
     def get_confirm():
         """The exposure-confirmation queue: items whose watched exposures
@@ -796,19 +911,7 @@ def create_app(cfg, start_worker=True):
         senses (when jmdict.db exists; phrase headwords are JMdict keys too);
         grammar rows carry pattern/level/gloss from the taxonomy."""
         conn = ledger_conn()
-        candidates = lc.query_confirm_queue(conn)
-        lookup = {c["lemma"] for c in candidates if c.get("kind") != "grammar"}
-        path = jmdict.db_path(cfg)
-        if lookup and path.exists():
-            jconn = jmdict.open_db(path)  # per-request: sqlite handles are thread-bound
-            try:
-                defs = jmdict.lookup_many(jconn, lookup)
-            finally:
-                jconn.close()
-            for c in candidates:
-                if c.get("kind") != "grammar":
-                    c["senses"] = defs.get(c["lemma"], [])
-        return {"candidates": candidates}
+        return {"candidates": _with_senses(lc.query_confirm_queue(conn))}
 
     @app.post("/confirm", dependencies=[Depends(auth)])
     def post_confirm(body: dict):

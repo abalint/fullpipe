@@ -428,9 +428,79 @@ class TestRoutes(ServerTestBase):
             {"pattern": "〜てしまう", "note": "行っちゃった = 行く+てしまう"},
             {"pattern": "ら抜き言葉", "note": "見られる→見れる", "proposed": True},
         ])
+        # not placeable on 犬が → no span; untracked → status unknown
         self.assertEqual(data["sentences"][0]["phrases"],
-                         [{"canonical": "気を付ける", "surface": "気を付けて"}])
+                         [{"canonical": "気を付ける", "surface": "気を付けて",
+                           "status": "unknown"}])
         self.assertNotIn("phrases", data["sentences"][1])
+
+    def test_transcript_phrases_carry_span_and_status(self):
+        """A phrase is one unit for the player: its token span (so 血が騒いだ
+        paints as a whole) and its ledger status; the curate pass's emissions
+        merge with the tracked phrases Stage 1 detected on the same line."""
+        ep_dir = self.stage_episode(with_curate=True)
+        cov = json.loads(json.dumps(COVERAGE))
+        cov["sentences"][0]["tokens"] = [
+            {"s": "血", "l": "血", "r": "ち", "c": True, "k": True},
+            {"s": "が", "l": "が", "r": "が", "c": False, "k": True},
+            {"s": "騒い", "l": "騒ぐ", "r": "さわい", "c": True, "k": True},
+            {"s": "だ", "l": "だ", "r": "だ", "c": False, "k": True}]
+        cov["sentences"][1]["phrases"] = [{"phrase": "気を付ける", "status": "unknown"}]
+        write_json(ep_dir / "coverage.json", cov)
+        write_json(ep_dir / "curate.json", {
+            "synopsis": "犬の話。", "keywords": [], "focal_points": [], "exclude": [],
+            "phrases": [
+                {"sentence_idx": 0, "surface": "血が騒いだ", "canonical": "血が騒ぐ",
+                 "classification": "too_hard"},
+                {"sentence_idx": 1, "surface": "気を付けて", "canonical": "気を付ける",
+                 "classification": "comprehensible"},  # also Stage-1 tracked → one entry
+            ]})
+        conn = lc.open_db(self.cfg["ledger_db"])
+        lc.add_phrase(conn, "血が騒ぐ")
+        lc.confirm_known_lemma(conn, "血が騒ぐ", kind="phrase")
+        lc.promote(conn)
+        conn.close()
+        data = self.client.get(f"/transcript/{EP}", headers=self.auth).json()
+        self.assertEqual(data["sentences"][0]["phrases"], [
+            {"canonical": "血が騒ぐ", "surface": "血が騒いだ", "status": "known",
+             "start": 0, "end": 3}])
+        self.assertEqual(data["sentences"][1]["phrases"], [
+            {"canonical": "気を付ける", "surface": "気を付けて", "status": "unknown"}])
+        # the paint state carries the phrase axis, narrowed to this episode
+        paint = self.client.get(f"/episodes/{EP}/paint", headers=self.auth).json()
+        self.assertEqual(paint["phrase_known"], ["血が騒ぐ"])
+        self.assertEqual(paint["phrase_confirm"], [])
+        self.assertEqual(paint["phrase_interest"], [])
+
+    def test_phrase_tap_lands_as_phrase_evidence(self):
+        """The popup's phrase layer marks the expression, not its words: a
+        [key, mark, "phrase"] tap creates/updates the phrase item only, and
+        a ★ on it joins the paint state's phrase_interest."""
+        ep_dir = self.stage_episode(with_curate=True)
+        write_json(ep_dir / "curate.json", {
+            "synopsis": "犬の話。", "keywords": [], "focal_points": [], "exclude": [],
+            "phrases": [{"sentence_idx": 0, "surface": "気を付けて",
+                         "canonical": "気を付ける", "classification": "comprehensible"},
+                        {"sentence_idx": 1, "surface": "血が騒いだ",
+                         "canonical": "血が騒ぐ", "classification": "too_hard"}]})
+        r = self.client.post("/taps", json={
+            "episode_id": EP, "batch_id": "q" * 16,
+            "taps": [["気を付ける", "k", "phrase"], ["血が騒ぐ", "h", "phrase"], ["犬", "k"]]},
+            headers=self.auth)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["applied"], 2)
+        self.assertEqual(r.json()["interest"], 1)
+        conn = lc.open_db(self.cfg["ledger_db"])
+        rows = {r[0]: (r[1], r[2]) for r in conn.execute(
+            "SELECT lemma, kind, status FROM lemmas")}
+        self.assertEqual(rows["気を付ける"], ("phrase", "known"))
+        self.assertEqual(rows["血が騒ぐ"], ("phrase", "unknown"))
+        self.assertNotIn("気", rows)  # the words inside are untouched
+        conn.close()
+        paint = self.client.get(f"/episodes/{EP}/paint", headers=self.auth).json()
+        self.assertEqual(paint["phrase_known"], ["気を付ける"])
+        self.assertEqual(paint["phrase_interest"], ["血が騒ぐ"])
+        self.assertNotIn("血が騒ぐ", paint["interest"])  # phrase keys stay on their axis
 
     def test_definitions_for_episode_lemmas(self):
         self.stage_episode()
@@ -453,9 +523,19 @@ class TestRoutes(ServerTestBase):
             (1, {"と言う", "という"},
              {"k": ["と言う"], "r": ["という"],
               "s": [{"pos": ["particle"], "g": ["called; named"]}]}),
+            (1, {"気を付ける", "きをつける"},
+             {"k": ["気を付ける"], "r": ["きをつける"],
+              "s": [{"pos": ["expression"], "g": ["to be careful"]}]}),
         ]))
         conn.close()
+        # the line's curated phrases are served by canonical for the popup's
+        # phrase layer — no token carries that key
+        write_json(episode_dir(self.cfg, EP) / "curate.json", {
+            "synopsis": "", "keywords": [], "focal_points": [], "exclude": [],
+            "phrases": [{"sentence_idx": 0, "surface": "気を付けて",
+                         "canonical": "気を付ける", "classification": "comprehensible"}]})
         data = self.client.get(f"/definitions/{EP}", headers=self.auth).json()
+        self.assertEqual(data["気を付ける"][0]["s"][0]["g"], ["to be careful"])
         self.assertIn("公園", data)  # content lemma with an entry
         self.assertIn("が", data)  # any-word popup: non-content lemmas too
         self.assertNotIn("犬", data)  # lemma with no dict entry
@@ -1014,13 +1094,81 @@ class TestRoutes(ServerTestBase):
         self.assertEqual(self.client.get("/confirm", headers=self.auth)
                          .json()["candidates"], [])
 
+    def test_word_lists_review_like_confirm(self):
+        # LIVE_REVIEW.md §1: the ★ list and the should-know window are
+        # reviewable with the confirm queue's row shape + actions
+        conn = lc.open_db(self.cfg["ledger_db"])
+        conn.executemany(
+            "INSERT OR REPLACE INTO freq (lemma, rank, source) VALUES (?, ?, ?)",
+            [("猫", 1, "show_graph"), ("犬", 2, "show_graph"), ("設計", 900, "show_graph")])
+        ep = {"id": "w0", "title": "Ep W", "source": "t", "kind": "local"}
+        lc.record_exposure(conn, ep, {"設計": {"sentence_idx": 0, "known_ratio": 0.5,
+                                              "other_unknown_count": 3}})
+        lc.mark_watched(conn, "w0")
+        lc.apply_taps(conn, {"episode_id": "w0", "batch_id": "b1",
+                             "taps": [["設計", "h"], ["犬", "h"]]})
+        lc.promote(conn)
+        conn.close()
+
+        r = self.client.get("/lists/interest", headers=self.auth)
+        self.assertEqual(r.status_code, 200)
+        words = r.json()["words"]
+        self.assertEqual([w["lemma"] for w in words], ["犬", "設計"])  # common first
+        w = words[1]
+        self.assertEqual(w["kind"], "word")
+        self.assertEqual(w["freq_rank"], 900)
+        self.assertEqual(w["episodes"], ["Ep W"])
+        self.assertIn("reading_segs", w)
+
+        r = self.client.get("/lists/should_know", headers=self.auth)
+        words = r.json()["words"]
+        self.assertEqual([w["lemma"] for w in words], ["猫"])  # 犬 is ★, 設計 too
+        self.assertEqual(words[0]["freq_rank"], 1)  # rank from freq, never met
+        self.assertEqual(words[0]["exposure_count"], 0)
+        self.assertEqual(self.client.get("/stats", headers=self.auth)
+                         .json()["should_know"], 1)
+        self.assertEqual(self.client.get("/lists/nope", headers=self.auth)
+                         .status_code, 404)
+
+        # ★ on a green word → it moves to the ★ list; ✓ on a ★ word → known
+        r = self.client.post("/lists/mark", headers=self.auth,
+                             json={"lemma": "猫", "mark": "h"})
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json()["interest"])
+        self.assertEqual(self.client.get("/lists/should_know", headers=self.auth)
+                         .json()["words"], [])
+        r = self.client.post("/lists/mark", headers=self.auth,
+                             json={"lemma": "犬", "mark": "k", "batch_id": "m1"})
+        self.assertEqual(r.json()["status"], "known")
+        self.assertFalse(r.json()["interest"])
+        self.assertEqual([w["lemma"] for w in self.client.get(
+            "/lists/interest", headers=self.auth).json()["words"]], ["猫", "設計"])
+        # a re-flush of the same batch is a no-op
+        self.assertTrue(self.client.post("/lists/mark", headers=self.auth,
+                                         json={"lemma": "犬", "mark": "k",
+                                               "batch_id": "m1"}).json()["duplicate"])
+        self.assertEqual(self.client.post("/lists/mark", headers=self.auth,
+                                          json={"lemma": "犬", "mark": "x"}).status_code, 422)
+        self.assertEqual(self.client.post("/lists/mark", headers=self.auth,
+                                          json={"mark": "k"}).status_code, 422)
+
     def test_stats_endpoint(self):
         # seed the ledger: a known lemma in-corpus, plus an exposure + freq row
         self.stage_episode()
         conn = lc.open_db(self.cfg["ledger_db"])
-        conn.execute("INSERT INTO freq (lemma, rank, source) VALUES ('公園', 120, 'g')")
+        conn.execute("INSERT INTO freq (lemma, rank, source) VALUES ('公園', 120, 'show_graph')")
         # 公園 already exists (record_exposure seeded it) — promote it to known
         conn.execute("UPDATE lemmas SET status='known' WHERE lemma='公園'")
+        # Leeds fallback rows share the corpus rank space (の is Leeds rank 0)
+        # and must not count toward a corpus band; nor does a corpus word at
+        # rank 1000 (0-based → the 1001st word) belong to the top-1000 band.
+        conn.executemany(
+            "INSERT OR REPLACE INTO freq (lemma, rank, source) VALUES (?, ?, ?)",
+            [("の", 0, "leeds"), ("境界", 1000, "show_graph")])
+        conn.executemany(
+            "INSERT OR REPLACE INTO lemmas (lemma, kind, status, updated_at) "
+            "VALUES (?, 'word', 'known', '2026-01-01T00:00:00')",
+            [("の",), ("境界",)])
         conn.commit()
         conn.close()
         r = self.client.get("/stats", headers=self.auth)
@@ -1031,7 +1179,11 @@ class TestRoutes(ServerTestBase):
         self.assertEqual(body["words_encountered"], 1)  # 公園 exposure
         # 公園 (rank 120) counts toward every band whose ceiling ≥ 120
         band1000 = next(b for b in body["freq_bands"] if b["band"] == 1000)
-        self.assertGreaterEqual(band1000["known"], 1)
+        self.assertEqual(band1000["known"], 1)  # 公園 only — not の, not 境界
+        band2000 = next(b for b in body["freq_bands"] if b["band"] == 2000)
+        self.assertEqual(band2000["known"], 2)  # 境界 (rank 1000) joins here
+        for b in body["freq_bands"]:
+            self.assertLessEqual(b["known"], b["total"])
 
 
 class TestTypedConfirm(ServerTestBase):

@@ -179,6 +179,25 @@ class LedgerTest(unittest.TestCase):
         self.assertEqual(self.conn.execute(
             "SELECT status FROM lemmas WHERE lemma='諦める'").fetchone()["status"], "known")
 
+    def test_phrase_tap_is_its_own_item(self):
+        # the player's phrase layer (GRAMMAR.md): marking 血が騒ぐ known
+        # touches the phrase key only — 血 / 騒ぐ keep their own verdicts
+        lc.apply_taps(self.conn, {"episode_id": "ep1", "batch_id": "b1",
+                                  "taps": [["血が騒ぐ", "k", "phrase"], ["血", "k"]]})
+        lc.promote(self.conn)
+        rows = {r["lemma"]: r for r in self.conn.execute(
+            "SELECT lemma, kind, status, pos FROM lemmas")}
+        self.assertEqual((rows["血が騒ぐ"]["kind"], rows["血が騒ぐ"]["status"],
+                          rows["血が騒ぐ"]["pos"]), ("phrase", "known", "expression"))
+        self.assertEqual((rows["血"]["kind"], rows["血"]["status"]), ("word", "known"))
+        self.assertNotIn("騒ぐ", rows)
+        self.assertEqual(self.conn.execute(
+            "SELECT kind FROM evidence WHERE lemma = '血が騒ぐ'").fetchone()["kind"], "phrase")
+        # an unknown kind is ignored, never a crash
+        res = lc.apply_taps(self.conn, {"episode_id": "ep1", "batch_id": "b2",
+                                        "taps": [["〜てしまう", "k", "grammar"]]})
+        self.assertEqual(res["applied"], 0)
+
     def test_tap_unknown_demotes_and_flags_conflict(self):
         lc.apply_taps(self.conn, {"episode_id": None, "batch_id": "b1",
                                   "taps": [["諦める", "k"]]})
@@ -254,6 +273,28 @@ class LedgerTest(unittest.TestCase):
         lc.promote(self.conn)
         self.assertEqual(self.conn.execute(
             "SELECT status FROM lemmas WHERE lemma='設計'").fetchone()["status"], "learning")
+
+    def test_resent_snapshot_does_not_stack_evidence(self):
+        # the phone syncs live: every batch carries the episode's whole mark
+        # set, so 犬=k arrives again with each later change
+        lc.apply_taps(self.conn, {"episode_id": "e1", "batch_id": "s1",
+                                  "taps": [["犬", "k"]]}, watched=False)
+        r2 = lc.apply_taps(self.conn, {"episode_id": "e1", "batch_id": "s2",
+                                       "taps": [["犬", "k"], ["猫", "h"]]},
+                           watched=False)
+        self.assertFalse(r2["duplicate"])
+        self.assertEqual(r2["applied"], 0)      # 犬 already on record
+        self.assertEqual(r2["interest"], 1)     # 猫 is new
+        rows = self.conn.execute(
+            "SELECT lemma, source, COUNT(*) AS n FROM evidence "
+            "GROUP BY lemma, source").fetchall()
+        self.assertEqual({(r["lemma"], r["source"], r["n"]) for r in rows},
+                         {("犬", "tap_known", 1), ("猫", "tap_interest", 1)})
+        # a different episode is a fresh claim
+        lc.apply_taps(self.conn, {"episode_id": "e2", "batch_id": "s3",
+                                  "taps": [["犬", "k"]]}, watched=False)
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM evidence WHERE lemma='犬'").fetchone()[0], 2)
 
     def test_tap_batch_idempotent(self):
         payload = {"episode_id": None, "batch_id": "batch-x", "taps": [["犬", "k"]]}
@@ -342,6 +383,28 @@ class LedgerTest(unittest.TestCase):
                           "updated_at) VALUES ('犬', 'word', 'learning', 1, 'now')")  # blue → out
         self.assertEqual(lc.should_know(self.conn, 5), ["猫", "魚"])
         self.assertEqual(lc.should_know(self.conn, 1), ["猫"])
+
+    def test_query_word_list_rows(self):
+        # review rows for an arbitrary ordered lemma list: ledger fields when
+        # the word has been met, corpus rank + tokenizer reading when it hasn't
+        self.conn.execute(
+            "INSERT OR REPLACE INTO freq (lemma, rank, source) VALUES ('通す', 3, 'show_graph')")
+        ep = {"id": "e1", "title": "Ep 1", "source": "t", "kind": "local"}
+        lc.record_exposure(self.conn, ep, {"設計": {"sentence_idx": 0, "known_ratio": 1.0,
+                                                   "other_unknown_count": 0}})
+        lc.mark_watched(self.conn, "e1")
+        lc.promote(self.conn)
+        rows = lc.query_word_list(self.conn, ["通す", "設計"])
+        self.assertEqual([r["lemma"] for r in rows], ["通す", "設計"])  # caller's order
+        untouched, met = rows
+        self.assertEqual(untouched["freq_rank"], 3)
+        self.assertEqual(untouched["exposure_count"], 0)
+        self.assertEqual(untouched["episodes"], [])
+        self.assertEqual(untouched["reading_segs"], [["通", "とお"], ["す", None]])
+        self.assertEqual(untouched["reading"], "とおす")
+        self.assertEqual(met["exposure_count"], 1)
+        self.assertEqual(met["episodes"], ["Ep 1"])
+        self.assertEqual(lc.query_word_list(self.conn, []), [])
 
     def test_deleted_card_reopens_for_remine(self):
         # A minted card the user later deletes in Anki: poll_lapses can't find

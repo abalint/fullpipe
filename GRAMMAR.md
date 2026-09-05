@@ -344,6 +344,19 @@ through to the evidence row. Phrase keys are excluded from `materialize_known`'s
 token known-set and stem bridging (a phrase's kanji stem would contaminate
 stem matching).
 
+**[as built 2026-09-05] Phrases on the phone.** A phrase is marked as its
+own item, independent of its words: `GET /transcript` ships each line's
+phrases with a token span (`engine/lemma.py:phrase_span` — lemma-sequence
+match first, curate surface as fallback) and the ledger status; the player
+underlines the span in the phrase's colour (`paint.ts:phraseClass` — local
+mark › live `phrase_known`/`phrase_confirm`/`phrase_interest` from
+`GET /episodes/{id}/paint` › sidecar snapshot › unknown), and the popup
+opens a phrase layer above the word layer, each with its own mark. A phrase
+mark travels as `[headword, mark, "phrase"]` in the tap batch and
+`apply_taps` writes kind='phrase' evidence (creating the phrase row if the
+recorder had rejected it — a deliberate mark is as good as `phrase-add`).
+`GET /definitions` includes the headwords so the layer can gloss them.
+
 ## 7. queue + discover → ledger (separate phase)
 
 Point `server/jobqueue.py:open_queue` (and the discovery store) at

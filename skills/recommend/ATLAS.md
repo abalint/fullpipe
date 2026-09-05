@@ -55,6 +55,15 @@ clean-turn-taking variant; never drop the cluster.
   no crosstalk — among the most mineable speech on the platform. Risk: Edo-period
   register and set phrases; and the `快眠落語 / 作業用BGM` compilation tier is junk,
   not performance. Repeat the same performer deliberately — the voice is the point.
+- **大喜利** — comedians improvising answers to a prompt: TV-network YouTube
+  shows (テレビ朝日「まいにち大喜利」), 佐久間宣行 NOBROCK TV's answer-breakdowns,
+  and the indie 大喜る人たち circuit.
+  `大喜利 芸人` · `大喜利 名回答` — fun. Short, punchy, wordplay-dense turns with a
+  clean turn-taking structure (MC reads, each answers). Risk: the panel shows put
+  5-6 comedians in a room — laughter overlaps; the duo breakdown format
+  (a host + one comedian explaining answers) is the clean variant.
+  First offered 2026-09-04.
+
 - **すべらない話系トーク** — comedians telling polished stories to camera or
   each other; single-speaker storytelling at high speech density.
   `芸人 トーク エピソード` · `すべらない話` — fun.
@@ -133,6 +142,15 @@ clean-turn-taking variant; never drop the cluster.
 - **ゲーム実況（ソロ）** — one person playing + narrating; continuous natural
   speech, emotion vocabulary. Horror 実況 = maximum reaction language.
   `ゲーム実況 ホラー` · `ゲーム実況 名作` — fun. Solo only; group = crosstalk.
+- **将棋・囲碁の対局解説** — a professional narrating a real game move by move:
+  棋士's own channels (中村太地, 山口恵梨子), 大盤解説会 archives, 囲碁将棋TV.
+  `将棋 解説 対局` · `大盤解説 名人戦` · `囲碁 解説` — hybrid. One or two clear
+  speakers over a static board, continuous explanation, a lot of "why" language;
+  a whole native subculture the ledger has never touched. Risk: dense jargon
+  (定跡・手筋 names) pulls the coverage estimate down; the multi-hour 大盤解説
+  livestream archives (4-11 h) are the junk tier here — take the edited
+  30-50 min uploads. First offered 2026-09-04.
+
 - **マイクラ / 建築・企画ゲーム** — `マイクラ 建築 企画` — fun.
 - **人狼 / ボードゲーム実況** — `人狼 実況` — fun. Risk: crosstalk high by
   design; sample only clean-turn formats.
@@ -149,6 +167,13 @@ clean-turn-taking variant; never drop the cluster.
   Risk: the 古道具・暮らし vlog tier is near-silent (BGM + text overlay) and passes
   the caption gate while carrying almost no speech — check density, not just the
   gate verdict; prefer the running-commentary store tours.
+- **変身企画 / 美容師のビフォーアフター** — a stylist takes a volunteer and
+  rebuilds their look on camera, talking to them throughout; the reveal is the
+  payoff. `美容師 ビフォーアフター 変身企画` · `大変身 密着` — fun.
+  Risk: speech density is middling (long silent cutting/styling stretches under
+  BGM) — check tokens-per-minute, not just the gate; the tiny salon-promo tier
+  is near-silent. First offered 2026-09-04.
+
 - **高級 vs 激安 比較** — `高級 激安 比較 検証` — fun.
 
 ## Talk & people
@@ -163,6 +188,14 @@ clean-turn-taking variant; never drop the cluster.
   `切り抜き 議論` — hybrid. Risk: low-effort clickbait tier; choose carefully.
 - **ラジオ風二人雑談** — two knowledgeable friends riffing (ゆるラジオ family).
   `ラジオ 雑談 二人` — hybrid. near-box: ゆる哲学ラジオ ★4 already on record.
+- **公開講座・講演（大学／TEDx）** — one expert speaking to a live audience for
+  40-60 minutes: UTokyo Channel's 公開講座 series, 東洋文化研究所, TEDxTalks の
+  日本語登壇.  `大学 公開講座 講義` · `TEDx 日本語 講演` — edu. Single projected
+  voice, prepared structure, slides to scaffold the listening; unusually dense
+  and unusually clean. Risk: academic register and long subordinate clauses put
+  real difficulty above the coverage %; TEDx talks are short (10-20 min) while
+  the university lectures run 40-75. First offered 2026-09-04.
+
 - **Vtuber雑談・切り抜き** — real human voices (not TTS) behind avatars;
   clear solo talk. `Vtuber 雑談 切り抜き` — fun.
   Risk: heavy net-slang register; NOT the synthetic-TTS veto (real voice), but

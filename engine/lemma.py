@@ -291,6 +291,42 @@ class KnownSet:
         return units
 
 
+def phrase_span(tokens, canonical, surface=None):
+    """Token range [start, end) a phrase occupies in a coverage sentence's
+    token list (dicts carrying "l"/"s"), or None when it can't be placed.
+
+    Lemma-sequence match first — the rule KnownSet.phrase_units applies at
+    Stage 1, so 血が騒いだ finds 血|が|騒ぐ whatever the inflection — then
+    the curate-emitted surface as a fallback (joined token surfaces,
+    whitespace tokens transparent) for headwords the tokenizer splits
+    differently than JMdict spells them. The player paints the span as one
+    unit and the popup keys its phrase layer on it (GRAMMAR.md)."""
+    lemmas = [t.get("l") for t in tokens]
+    try:
+        seq = [t.lemma for t in tokenize(canonical)]
+    except Exception:  # tokenizer unavailable — surface only
+        seq = []
+    n = len(seq)
+    if n >= 2:
+        for i in range(len(lemmas) - n + 1):
+            if lemmas[i:i + n] == seq:
+                return i, i + n
+    target = re.sub(r"\s+", "", surface or "")
+    if not target:
+        return None
+    for i in range(len(tokens)):
+        if not (tokens[i].get("s") or "").strip():
+            continue
+        acc = ""
+        for j in range(i, len(tokens)):
+            acc += (tokens[j].get("s") or "").strip()
+            if acc == target:
+                return i, j + 1
+            if not target.startswith(acc):
+                break
+    return None
+
+
 def analyze_sentence(text, known_set, learning=frozenset(), non_vocab=frozenset()):
     """Classify one sentence against the materialized known set.
 

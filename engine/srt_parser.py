@@ -208,13 +208,17 @@ _BIDI_CTRL_RE = re.compile('[\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]')
 _DIALOGUE_DASH_RE = re.compile(r'(?:^|(?<=\s))[\-‐－–—]\s*')
 _ANNOTATION_RE = re.compile(r'(?:^|(?<=\s))[\(（][^\(\)（）]{1,20}[\)）]\s*')
 _READING_GLOSS_RE = re.compile(
-    r'(?<=[\u4e00-\u9fff々])[\(（][\u3040-\u309f\u30a0-\u30ffー]{1,12}[\)）]')
+    r'(?<=[\u4e00-\u9fff々A-Za-zＡ-Ｚａ-ｚ0-9０-９])[\(（][\u3040-\u309f\u30a0-\u30ffー・ 　]{0,12}[\)）]')
 _CONTINUATION_RE = re.compile(r'[⸺―]+(?=\s|$)')
+# SRT styling tags (<i>, <b>, <font …>) and ASS override blocks ({\an8}) that
+# ffmpeg keeps when converting .ass sidecars — pure presentation
+_TAG_RE = re.compile(r'<[^<>]{0,80}>|\{\\[^{}]*\}')
 
 
 def strip_sub_markup(text):
     """One cue's text without presentation markup (see above). Pure."""
-    t = _BIDI_CTRL_RE.sub('', text)
+    t = _TAG_RE.sub(' ', text)  # first: tags hide line starts from the rules below
+    t = _BIDI_CTRL_RE.sub('', t)
     t = _DIALOGUE_DASH_RE.sub('', t)
     t = _READING_GLOSS_RE.sub('', t)  # before tags: （遠藤(えんどう)） nests one
     t = _ANNOTATION_RE.sub('', t)

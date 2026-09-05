@@ -130,6 +130,19 @@ class MarkupStripTest(unittest.TestCase):
         for src, want in cases.items():
             self.assertEqual(SP.strip_sub_markup(src), want, src)
 
+    def test_strip_markup_removes_styling_tags(self):
+        # ffmpeg .ass→.srt keeps <font>/<b> wrappers and {\\an8} overrides
+        raw = ('<font face="Open Sans Semibold" size="45"><b>（雨の音）</b></font>'
+               '<font face="Open Sans Semibold" size="45"><b>（警察官Ａ） '
+               'まったく お前もツイてないな</b></font>')
+        self.assertEqual(SP.strip_sub_markup(raw), "まったく お前もツイてないな")
+        self.assertEqual(SP.strip_sub_markup("{\\an8}<i>行くぞ</i>"), "行くぞ")
+        # reading glosses after Latin / full-width acronyms, also inside a cue
+        self.assertEqual(SP.strip_sub_markup("MaxTac(マックスタック)を呼べ！"), "MaxTacを呼べ！")
+        self.assertEqual(SP.strip_sub_markup("（ＡＶ(エーブイ)の飛行音） 何言ってんだよ"), "何言ってんだよ")
+        self.assertEqual(SP.strip_sub_markup("せめて６：４(ろくよん)にならない？"), "せめて６：４にならない？")
+        self.assertEqual(SP.strip_sub_markup("MaxTac()に任せて"), "MaxTacに任せて")  # Netflix leaves empty glosses
+
     def test_strip_markup_drops_emptied_cues(self):
         subs = [(0, 1, "（足音）"), (1, 2, "\u202aそっか\u202c")]
         self.assertEqual(SP.strip_markup(subs), [(1, 2, "そっか")])

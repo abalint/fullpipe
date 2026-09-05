@@ -1,11 +1,8 @@
 {
   "anki_connect_url": "http://localhost:8765",
-
   "work_dir": "~/immersion",
   "ledger_db": "~/immersion/ledger.db",
-
   "sub_lang": "ja",
-
   "server": {
     "_comment": "sync server (MOBILE.md). host 'tailscale' binds to the tailnet IP (falls back to 127.0.0.1 when tailscale is absent); set a random token and put the same one in the phone app's Settings.",
     "host": "tailscale",
@@ -13,16 +10,20 @@
     "token": "",
     "video_resolution": "480p"
   },
-
   "known_words": {
     "interval_threshold": 21,
     "cache_hours": 6,
     "sources": [
-      { "query": "deck:\"Sentence Cards\"", "field": "sentence" },
-      { "query": "note:\"Core 2k/6k\"", "field": "Vocabulary-Kanji" }
+      {
+        "query": "deck:\"Sentence Cards\"",
+        "field": "sentence"
+      },
+      {
+        "query": "note:\"Core 2k/6k\"",
+        "field": "Vocabulary-Kanji"
+      }
     ]
   },
-
   "asr": {
     "_comment": "engine: auto | gpu | reazonspeech | elevenlabs. 'auto' prefers the desktop GPU service (Kotoba-Whisper) for Japanese when gpu_url is set, then CPU ReazonSpeech, then ElevenLabs. If the GPU host is unreachable it falls back automatically. Only human-uploaded YouTube subs are trusted; auto-captions are re-transcribed. See gpu_service/README.md.",
     "engine": "auto",
@@ -30,24 +31,45 @@
     "gpu_url": "http://100.x.x.x:8422",
     "gpu_token": ""
   },
-
   "punctuation": {
     "model": "gpt-4o-mini"
   },
-
   "discover": {
     "_comment": "/recommend (ytSearch). format_blocklist drops candidates whose title or channel contains any of these substrings (case-insensitive) — a personal taste filter for formats you can't watch, e.g. the ゆっくり / VOICEROID synthetic-TTS narrators. Omit the key entirely to use the built-in default list (tools/harvest.py DEFAULT_FORMAT_BLOCKLIST); set [] to disable filtering. Use the format compounds (ゆっくり解説, 【ゆっくり) not bare ゆっくり, which also means 'leisurely' (a ゆっくり散歩 walking vlog must not be filtered). channel_blocklist hard-blocks specific channel_ids. After editing, run: python -m tools.harvest refilter.",
     "format_blocklist": [
-      "ゆっくり解説", "ゆっくり実況", "ゆっくり茶番", "ゆっくり劇場", "ゆっくり歴史",
-      "ゆっくり地理", "ゆっくり科学", "ゆっくり雑学", "ゆっくり軍事", "ゆっくり動画",
-      "ゆっくりボイス", "【ゆっくり", "ゆっくり】",
-      "voiceroid", "ボイスロイド", "ボイロ", "voicevox", "ずんだもん",
-      "結月ゆかり", "琴葉茜", "琴葉葵", "東北きりたん", "音街ウナ", "弦巻マキ",
-      "cevio", "a.i.voice", "合成音声", "音声合成", "aquestalk", "softalk"
+      "ゆっくり解説",
+      "ゆっくり実況",
+      "ゆっくり茶番",
+      "ゆっくり劇場",
+      "ゆっくり歴史",
+      "ゆっくり地理",
+      "ゆっくり科学",
+      "ゆっくり雑学",
+      "ゆっくり軍事",
+      "ゆっくり動画",
+      "ゆっくりボイス",
+      "【ゆっくり",
+      "ゆっくり】",
+      "voiceroid",
+      "ボイスロイド",
+      "ボイロ",
+      "voicevox",
+      "ずんだもん",
+      "結月ゆかり",
+      "琴葉茜",
+      "琴葉葵",
+      "東北きりたん",
+      "音街ウナ",
+      "弦巻マキ",
+      "cevio",
+      "a.i.voice",
+      "合成音声",
+      "音声合成",
+      "aquestalk",
+      "softalk"
     ],
     "channel_blocklist": []
   },
-
   "series": {
     "_comment": "tools.series: already-downloaded box sets on the PC. ssh_host is the desktop's LAN address (Tailscale works too, just slower); remote_stage_dir is where the PC keeps the 480p copies it transcodes (NVENC) — originals under the library folder are only ever read.",
     "ssh_host": "transcribe-svc@192.168.0.230",
@@ -59,28 +81,34 @@
     "show_graph_db": "~/Documents/code/anki/phrases/japaneseShowGraph/subs/japaneseShowGraph.db",
     "leeds_fallback": "~/Documents/code/audioPrimeProd/data/ja_frequency.txt"
   },
-
   "deck": {
     "name": "Immersion Mining",
-
     "_comment_volume": "There is deliberately no cards-per-day/per-episode cap: card volume is an outcome of the curation quality bar (zero from an episode is fine), never of a count.",
-
     "_comment_audio_gate": "Push-time clip validation: each card's cut clip is re-transcribed on the GPU service (asr.gpu_url) and the card is dropped unless the sentence is actually audible (matched-chars/expected >= min_match after kana/punctuation normalization). On by default when gpu_url is set; fails open if the desktop is unreachable.",
     "audio_gate": {
       "enabled": true,
       "min_match": 0.6
     },
-
     "_comment_loudness": "Card audio clips are loudness-normalized to this integrated loudness (LUFS) so volume is consistent across episodes when reviewing. Set to null to keep the source volume untouched.",
     "clip_target_lufs": -16,
-
     "_comment": "note_type/field_map are optional: omit them to mint onto the built-in 'fullPipe Sentence Mining' model (auto-created). Set them to mint onto your own note type (must already exist in Anki). field_map keys: sentence, audio, english, image, lemma, reading, source, sequence — map only the fields your note type has. A value may be a list of field names (e.g. below: Anki requires the FIRST field of a note non-empty, so the sentence fills it too).",
     "note_type": "Sentence Cards",
     "field_map": {
-      "sentence": ["Sentence", "Japanese"],
+      "sentence": [
+        "Sentence",
+        "Japanese"
+      ],
       "english": "English",
       "image": "Image",
       "audio": "Audio"
     }
+  },
+  "autopilot": {
+    "_comment": "/autopilot (skills/autopilot): YouTube-only watchable stock. Below min_hours the loop curates prepared jobs and runs /recommend to refill the pipeline to target_hours (hysteresis). Cooldown stops back-to-back harvests. max_parallel_curate = Opus subagents per wave.",
+    "min_hours": 10,
+    "target_hours": 14,
+    "recommend_cooldown_hours": 3,
+    "curate_prepared_always": true,
+    "max_parallel_curate": 4
   }
 }

@@ -57,6 +57,8 @@ tools/      dumb CLIs (importable modules + argparse mains)
                   download) + lemma lookups; feeds GET /definitions — the
                   mobile player's any-word dictionary popup (lemma-keyed, so
                   no deinflection needed)
+  stock.py        YouTube-only watchable-stock gauge for /autopilot: staged /
+                  to-curate / in-flight hours + the curate/recommend/drain verdict
   render.py       coverage (+curate.json) → self-contained prep.html with
                   furigana throughout (annotate() tokenizes Japanese runs in
                   prose at build time); vocab grid word|reading|usage|english
@@ -69,6 +71,11 @@ skills/     /immerse (built) · next: /reconcile · /generate · /replace · /se
   debrief/SKILL.md        post-watch comprehension conversation (English
                           questions over the watched transcript) → answers
                           the exposure-confirmation queue (confirm/defer)
+  autopilot/SKILL.md      unattended top-up: `/loop 30m /autopilot` measures the
+                          YouTube-only watchable stock (tools/stock.py) and,
+                          under autopilot.min_hours, curates prepared jobs
+                          with parallel Opus subagents (/immerse per episode)
+                          and runs /recommend to refill the pipeline
   scripts/ensure_anki.sh  launch Anki + wait for stable AnkiConnect (preflight)
 render/     template.html (P9 tap/copy/share loop, ruby furigana, masked
             definitions w/ per-row peek + show-all) + demo-prep.html sample

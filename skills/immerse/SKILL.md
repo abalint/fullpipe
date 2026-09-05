@@ -662,9 +662,10 @@ per episode:
 - where the prep doc is: phone app pulls it automatically now that the job is
   `staged` (plus the `prep.html` path as fallback),
 - **the loop-closer** (queue path): on the phone — review, tap ✔ known /
-  ★ high-interest, **Submit feedback** (prunes/prioritizes the card pool,
-  updates the ledger), watch, then **Mark watched** (pushes the final cards
-  to Anki, activates exposures, cleans the phone copy). The copy-blob →
+  ★ high-interest (marks sync live — each one prunes/prioritizes the card
+  pool and updates the ledger as it's made; no submit step), watch, then
+  **Mark watched** (pushes the final cards to Anki, activates exposures,
+  cleans the phone copy). The copy-blob →
   `/reconcile` path is the offline fallback.
 
 When curating a batch, end with a one-line queue summary: N staged this

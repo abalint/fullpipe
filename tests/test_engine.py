@@ -337,3 +337,29 @@ class WordAlignTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PhraseSpanTest(unittest.TestCase):
+    """phrase_span: where a multi-word expression sits in a coverage sentence's
+    token list — the player paints that span as one unit."""
+
+    TOKENS = [{"s": "元", "l": "元"}, {"s": "バレー", "l": "バレー"}, {"s": "部", "l": "部"},
+              {"s": "の", "l": "の"}, {"s": "血", "l": "血"}, {"s": "が", "l": "が"},
+              {"s": "騒い", "l": "騒ぐ"}, {"s": "だ", "l": "だ"}, {"s": "。", "l": "。"}]
+
+    def test_lemma_sequence_match_is_inflection_proof(self):
+        # 血が騒いだ → the headword's own lemmas 血|が|騒ぐ, past tense and all
+        self.assertEqual(L.phrase_span(self.TOKENS, "血が騒ぐ", "血が騒いだ"), (4, 7))
+        # no surface needed for the lemma path
+        self.assertEqual(L.phrase_span(self.TOKENS, "血が騒ぐ"), (4, 7))
+
+    def test_surface_fallback_skips_whitespace(self):
+        toks = [{"s": "子供", "l": "子供"}, {"s": " ", "l": " "},
+                {"s": "気", "l": "気"}, {"s": " ", "l": " "}, {"s": "を", "l": "を"},
+                {"s": "つけ", "l": "つける"}, {"s": "て", "l": "て"}]
+        # lemma path misses (付ける ≠ つける), the surface run still places it
+        self.assertEqual(L.phrase_span(toks, "気を付ける", "気をつけて"), (2, 7))
+
+    def test_unplaceable_is_none(self):
+        self.assertIsNone(L.phrase_span(self.TOKENS, "気を付ける", "気を付けて"))
+        self.assertIsNone(L.phrase_span([], "血が騒ぐ", "血が騒いだ"))

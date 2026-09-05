@@ -985,11 +985,16 @@ def poll_lapses(conn, anki_call):
 def apply_taps(conn, payload, anki_call=None, watched=True):
     """Apply a phone correction batch.
 
-    payload: {"episode_id", "batch_id", "taps": [[lemma, mark], ...]}
+    payload: {"episode_id", "batch_id", "taps": [[key, mark, kind?], ...]}
     Marks: "k" → tap_known, "u" → tap_unknown (knowledge evidence, counted in
     `applied`). "h" → tap_interest, a durable "I want to learn this" want that
     is NOT knowledge (counted in `interest`): it persists across episodes and
     steers future card selection (tools.select) until the lemma becomes known.
+    kind (optional third element) is 'word' (default) or 'phrase' — the
+    player's phrase layer marks a multi-word expression (血が騒ぐ) as its
+    own item, independent of its component words (GRAMMAR.md): the evidence
+    row carries the kind, and the lemmas row is created as a phrase if the
+    key is new (a deliberate mark is as good as `phrase-add`).
 
     watched=True (the classic post-watch corrections blob) implies
     mark-watched (P5). The app's pre-watch feedback flow passes
@@ -1011,15 +1016,28 @@ def apply_taps(conn, payload, anki_call=None, watched=True):
     ts = now_iso()
     applied = interest = 0
     sources = {"k": "tap_known", "u": "tap_unknown", "h": "tap_interest"}
-    for lemma, verdict in payload.get("taps", []):
+    for entry in payload.get("taps", []):
+        lemma, verdict = entry[0], entry[1]
+        kind = entry[2] if len(entry) > 2 and entry[2] else "word"
         source = sources.get(verdict)
-        if source is None:
+        if source is None or kind not in ("word", "phrase"):
             continue
-        _touch_lemma(conn, lemma, ts=ts)
+        _touch_lemma(conn, lemma, ts=ts, kind=kind,
+                     pos="expression" if kind == "phrase" else None)
+        # The phone syncs marks live and each batch is the episode's *whole*
+        # mark set (so card selection sees every k/h), so the same tap arrives
+        # again with every later change. One tap on one word in one episode is
+        # one piece of evidence — never let re-sent snapshots stack weight.
+        if conn.execute(
+            """SELECT 1 FROM evidence
+               WHERE lemma = ? AND kind = ? AND source = ? AND episode_id IS ?""",
+            (lemma, kind, source, episode_id),
+        ).fetchone():
+            continue
         conn.execute(
-            """INSERT INTO evidence (lemma, source, polarity, weight, episode_id, context, ts)
-               VALUES (?, ?, ?, ?, ?, NULL, ?)""",
-            (lemma, source, POLARITY[source], WEIGHT[source], episode_id, ts),
+            """INSERT INTO evidence (lemma, kind, source, polarity, weight, episode_id, context, ts)
+               VALUES (?, ?, ?, ?, ?, ?, NULL, ?)""",
+            (lemma, kind, source, POLARITY[source], WEIGHT[source], episode_id, ts),
         )
         if verdict == "h":
             interest += 1
@@ -1380,6 +1398,34 @@ def confirm_words(conn):
         "SELECT lemma FROM lemmas WHERE kind = 'word' AND confirm_candidate = 1")}
 
 
+def phrase_statuses(conn, keys):
+    """{headword: status} for the given phrase keys — untracked keys read as
+    'unknown'. The transcript sidecar snapshots this per line so the player
+    can paint a phrase span before the live paint state arrives."""
+    keys = list(keys)
+    if not keys:
+        return {}
+    rows = conn.execute(
+        "SELECT lemma, status FROM lemmas WHERE kind = 'phrase' AND lemma IN (%s)"
+        % ",".join("?" * len(keys)), keys).fetchall()
+    out = {k: "unknown" for k in keys}
+    out.update({r[0]: r[1] for r in rows})
+    return out
+
+
+def known_phrases(conn):
+    """Known PHRASE keys (status = 'known') — the phrase half of the paint
+    state's additive known list (GET /episodes/{id}/paint)."""
+    return {r[0] for r in conn.execute(
+        "SELECT lemma FROM lemmas WHERE kind = 'phrase' AND status = 'known'")}
+
+
+def confirm_phrases(conn):
+    """The phrase-kind confirmation queue as a bare headword set."""
+    return {r[0] for r in conn.execute(
+        "SELECT lemma FROM lemmas WHERE kind = 'phrase' AND confirm_candidate = 1")}
+
+
 def known_words(conn):
     """The ledger's known WORDS as a bare lemma set (status = 'known' — every
     promoted tap/import/confirm). Ledger-only, no AnkiConnect, for hot read
@@ -1446,6 +1492,77 @@ def query_needs_review(conn):
     return [dict(r) for r in rows]
 
 
+def _watched_titles(conn, keys):
+    """(kind, key) → titles of the watched episodes the item was exposed in,
+    oldest first — the "seen in …" context on a review card."""
+    if not keys:
+        return {}
+    qmarks = ",".join("(?,?)" for _ in keys)
+    titles = {}
+    for r in conn.execute(
+            f"""SELECT e.lemma, e.kind, ep.title FROM evidence e
+                JOIN episodes ep ON ep.id = e.episode_id
+                WHERE e.source = 'exposure' AND ep.watched = 1
+                      AND (e.kind, e.lemma) IN (VALUES {qmarks})
+                ORDER BY ep.processed_at""",
+            [x for pair in keys for x in pair]):
+        seen = titles.setdefault((r["kind"], r["lemma"]), [])
+        if r["title"] and r["title"] not in seen:
+            seen.append(r["title"])
+    return titles
+
+
+def _enrich_word_row(d, titles):
+    """Wire shape shared by every word-review list (confirm queue, ★ list,
+    should-know list). Furigana over kanji only: reading_segs peels okurigana
+    off the lemma's dictionary reading (通す → 通[とお]す). Also normalize the
+    flat reading to hiragana, matching what coverage emits on the wire. Works
+    for phrases too — furigana() tokenizes the headword and rubies each kanji
+    core."""
+    from engine.lemma import furigana, kata_to_hira
+    if d.get("reading"):
+        d["reading"] = kata_to_hira(d["reading"])
+    d["reading_segs"] = furigana(d["lemma"])
+    if not d.get("reading") and d["reading_segs"]:
+        # a word the ledger never touched (should-know rows): flat reading
+        # from the tokenizer's segs so the card still shows one
+        d["reading"] = "".join(r or sfc for sfc, r in d["reading_segs"])
+    d["episodes"] = titles.get((d.get("kind") or "word", d["lemma"]), [])
+    return d
+
+
+def query_word_list(conn, lemmas):
+    """Review rows for an ordered list of word lemmas — the ★ high-interest
+    set and the should-know window, presented the way the confirm queue is
+    (LIVE_REVIEW.md §1: three lists, one card). Order is the caller's.
+    Words the ledger has never touched (a should-know word not yet met in a
+    watched episode) still get a row: corpus rank from `freq`, no reading,
+    zero exposures."""
+    lemmas = list(lemmas)
+    if not lemmas:
+        return []
+    qmarks = ",".join("?" for _ in lemmas)
+    by_lemma = {}
+    for r in conn.execute(
+            f"""SELECT lemma, reading, pos, freq_rank, exposure_count,
+                       episode_spread, last_seen
+                FROM lemmas WHERE lemma IN ({qmarks})""", lemmas):
+        by_lemma[r["lemma"]] = dict(r)
+    ranks = {r[0]: r[1] for r in conn.execute(
+        f"SELECT lemma, rank FROM freq WHERE lemma IN ({qmarks})", lemmas)}
+    titles = _watched_titles(conn, [("word", l) for l in lemmas])
+    out = []
+    for lemma in lemmas:
+        d = by_lemma.get(lemma) or {
+            "lemma": lemma, "reading": None, "pos": None, "freq_rank": None,
+            "exposure_count": 0, "episode_spread": 0, "last_seen": None}
+        if d["freq_rank"] is None:
+            d["freq_rank"] = ranks.get(lemma)
+        d["kind"] = "word"
+        out.append(_enrich_word_row(d, titles))
+    return out
+
+
 def query_confirm_queue(conn):
     """Items the exposure heuristic flagged for confirmation (confirm_candidate
     = 1) — "we think you know this; do you?". One queue, three kinds: words
@@ -1466,31 +1583,8 @@ def query_confirm_queue(conn):
         return []
     keys = [(r["kind"], r["lemma"]) for r in rows] + \
            [("grammar", g["pattern"]) for g in grows]
-    qmarks = ",".join("(?,?)" for _ in keys)
-    titles = {}
-    for r in conn.execute(
-            f"""SELECT e.lemma, e.kind, ep.title FROM evidence e
-                JOIN episodes ep ON ep.id = e.episode_id
-                WHERE e.source = 'exposure' AND ep.watched = 1
-                      AND (e.kind, e.lemma) IN (VALUES {qmarks})
-                ORDER BY ep.processed_at""",
-            [x for pair in keys for x in pair]):
-        seen = titles.setdefault((r["kind"], r["lemma"]), [])
-        if r["title"] and r["title"] not in seen:
-            seen.append(r["title"])
-    # Furigana over kanji only: reading_segs peels okurigana off the lemma's
-    # dictionary reading (通す → 通[とお]す). Also normalize the flat reading to
-    # hiragana, matching what coverage emits on the wire. Works for phrases
-    # too — furigana() tokenizes the headword and rubies each kanji core.
-    from engine.lemma import furigana, kata_to_hira
-    out = []
-    for r in rows:
-        d = dict(r)
-        if d.get("reading"):
-            d["reading"] = kata_to_hira(d["reading"])
-        d["reading_segs"] = furigana(r["lemma"])
-        d["episodes"] = titles.get((r["kind"], r["lemma"]), [])
-        out.append(d)
+    titles = _watched_titles(conn, keys)
+    out = [_enrich_word_row(dict(r), titles) for r in rows]
     for g in grows:
         out.append({
             "lemma": g["pattern"], "kind": "grammar", "pattern": g["pattern"],

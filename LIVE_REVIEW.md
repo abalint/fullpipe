@@ -213,6 +213,9 @@ arithmetic, as `hl-know` already does.
 4. ~~Should-know list~~ (`ledgerctl.should_know`, on both `/transcript` and
    `/paint`) — done 2026-09-04; the **alias table is still open**, so
    信ずる / いける-type rows will show green until ✓'d.
+4b. ~~Review the ★ and should-know lists like Confirm~~ — done 2026-09-04
+   (`GET /lists/{interest,should_know}` + `POST /lists/mark`; Progress-tab
+   banners → `#/list/…`, the same card as `#/confirm` with ✓ / ★ verbs).
 5. Mark semantics per list + lapse rule (§5a), glance-gloss (§5c).
 6. Due-word sort (§5d).
 7. Migration (§7) once the confirm queue is visibly moving.

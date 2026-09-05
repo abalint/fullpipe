@@ -296,10 +296,16 @@ def group_files(paths):
         else:
             subs.setdefault(key, []).append(p)
     episodes = []
+    # a single-season box set: subs named "Show - 01.ass" (no season, e.g. from
+    # kitsunekko) belong to the S01E01 videos
+    seasons = {k[0] for k in videos if k[0] is not None}
+    lone_season = next(iter(seasons)) if len(seasons) == 1 else None
     for key in sorted(videos, key=lambda k: (k[0] or 0, k[1])):
         vids = sorted(videos[key])
         # prefer a subtitle tagged Japanese, then .srt over .ass/.vtt, same dir first
-        cands = subs.get(key, [])
+        cands = list(subs.get(key, []))
+        if not cands and lone_season is not None and key[0] == lone_season:
+            cands = list(subs.get((None, key[1]), []))
         vdir = _wdir(vids[0])
         cands.sort(key=lambda s: (not _is_ja_sub(s), _wsuffix(s) != ".srt",
                                   _wdir(s) != vdir, s))
@@ -510,7 +516,11 @@ def ingest(cfg, remote_dir, slug=None, title=None, episodes=None, dry_run=False,
         raise RuntimeError(f"no episodes with parseable numbers under {remote_dir}"
                            + (f" (unparsed: {unparsed[:5]})" if unparsed else ""))
     wanted = parse_episode_spec(episodes)
-    picked = [e for e in found if wanted is None or e["ep_no"] in wanted]
+    # "--episodes 1" on a single-season S01Exx set means episode 1 (ep_no 101)
+    seasons = {e["season"] for e in found if e["season"] is not None}
+    plain_ok = len(seasons) <= 1
+    picked = [e for e in found if wanted is None or e["ep_no"] in wanted
+              or (plain_ok and e["ep"] in wanted)]
     for e in picked:
         log(f"  {e['label']:>6}  {_wname(e['remote_video'])}"
             f"  subs={'✓ ' + _wname(e['remote_subs']) if e['remote_subs'] else '— (probe)'}"

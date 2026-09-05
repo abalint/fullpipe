@@ -50,8 +50,10 @@ def select_picks(pool, coverage, taps, standing_interest=()):
     coverage candidates when a clean sentence exists — but rank just behind
     a fresh tap. This is what makes a wanted word keep surfacing card-worthy
     across shows until it's learned."""
-    known = {l for l, v in taps if v == "k"}
-    tapped = [l for l, v in taps if v == "h"]
+    # entries are [key, mark] or [key, mark, kind] (a phrase tap from the
+    # player's phrase layer) — the key space is shared, so both pass through
+    known = {e[0] for e in taps if e[1] == "k"}
+    tapped = [e[0] for e in taps if e[1] == "h"]
     fresh = set(tapped)
     # fresh taps first (tap order), then standing interest not re-tapped here
     interest = tapped + [l for l in standing_interest if l not in fresh]
