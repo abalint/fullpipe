@@ -22,7 +22,8 @@ from fastapi import Depends, FastAPI, HTTPException, Request  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import FileResponse  # noqa: E402
 
-from engine.lemma import build_phrase_index, match_phrase_units, phrase_span  # noqa: E402
+from engine.lemma import (  # noqa: E402
+    build_phrase_index, is_multi_token, match_phrase_units, phrase_span)
 from engine.paths import ffprobe_path  # noqa: E402
 from ledger import ledgerctl as lc  # noqa: E402
 from lib_config import load_config  # noqa: E402
@@ -82,8 +83,17 @@ def episode_phrases(coverage, curate, live=None):
     line; the curate surface wins when both know the phrase."""
     at: dict[int, list] = {}
 
+    single: dict[str, bool] = {}
+
     def add(idx, canonical, surface):
         if idx is None or not canonical:
+            return
+        # the curate pass sometimes emits a one-token headword (万が一) as a
+        # phrase; the recorder rejects those and so do we — it's a word, and
+        # the word layer already has it (identical popup entries otherwise)
+        if canonical not in single:
+            single[canonical] = not is_multi_token(canonical)
+        if single[canonical]:
             return
         lst = at.setdefault(idx, [])
         for p in lst:
@@ -445,6 +455,8 @@ def create_app(cfg, start_worker=True):
                 for p in phrases_at[s["idx"]]:
                     entry = {**p, "status": statuses.get(p["canonical"], "unknown")}
                     span = phrase_span(s["tokens"], p["canonical"], p.get("surface"))
+                    if span and span[1] - span[0] < 2:
+                        continue  # landed on a single token: a word, not a unit
                     if span:
                         entry["start"], entry["end"] = span
                     d["phrases"].append(entry)

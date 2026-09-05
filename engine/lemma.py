@@ -307,6 +307,18 @@ def match_phrase_units(lemmas, index):
     return units
 
 
+def is_multi_token(text):
+    """Does *text* split into 2+ Sudachi tokens? The phrase rule (GRAMMAR.md):
+    a headword the tokenizer keeps whole (万が一, 取り敢えず) is a WORD —
+    it already has a token, a lemma and a word-kind ledger row — and must
+    not be served as a phrase on top of it. True when the tokenizer is
+    unavailable (the recorder re-validates)."""
+    try:
+        return len(tokenize(text)) >= 2
+    except Exception:
+        return True
+
+
 def phrase_span(tokens, canonical, surface=None):
     """Token range [start, end) a phrase occupies in a coverage sentence's
     token list (dicts carrying "l"/"s"), or None when it can't be placed.

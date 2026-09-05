@@ -472,6 +472,20 @@ class TestRoutes(ServerTestBase):
         self.assertEqual(paint["phrase_confirm"], [])
         self.assertEqual(paint["phrase_interest"], [])
 
+    def test_single_token_headword_is_not_a_phrase(self):
+        """万が一-style: the curate pass emitted a one-token headword as a
+        phrase. It's a word (its own token + word row) — serving it as a
+        phrase too would give the popup two identical entries."""
+        ep_dir = self.stage_episode(with_curate=True)
+        write_json(ep_dir / "curate.json", {
+            "synopsis": "犬の話。", "keywords": [], "focal_points": [], "exclude": [],
+            "phrases": [{"sentence_idx": 1, "surface": "公園",
+                         "canonical": "公園", "classification": "i_plus_1"}]})
+        data = self.client.get(f"/transcript/{EP}", headers=self.auth).json()
+        self.assertNotIn("phrases", data["sentences"][1])
+        paint = self.client.get(f"/episodes/{EP}/paint", headers=self.auth).json()
+        self.assertEqual(paint["phrase_known"], [])
+
     def test_tracked_phrase_is_matched_live_on_the_transcript(self):
         """A phrase the ledger tracks (marked from the popup after coverage
         froze) is placed on the line by lemma sequence — no curate entry, no
