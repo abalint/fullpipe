@@ -1123,6 +1123,18 @@ def _judge(evs, theta, spread_needed, in_anki_known=False):
 
     needs_review = 0
     confirm_candidate = 0
+    cleared_bar = q_count >= theta and q_spread >= spread_needed
+
+    def _candidate():
+        # Exposures cleared the bar, but a fuzzy count can't *assert*
+        # knowledge — surface it for confirmation instead of promoting.
+        # Snooze after a "not yet": re-surface only once a qualifying
+        # exposure lands after the latest defer.
+        last_defer = max((e["ts"] for e in defers), default=None)
+        newest_qualifying = max((e["ts"] for e in qualifying), default=None)
+        return int(last_defer is None or
+                   (newest_qualifying is not None and newest_qualifying > last_defer))
+
     # Ties go to the negative: taps are deliberate strong evidence, and a
     # same-second exposure/tap pair only happens when they were written
     # by the same run.
@@ -1130,18 +1142,17 @@ def _judge(evs, theta, spread_needed, in_anki_known=False):
         status = "learning"
         if taps_known or confirms or in_anki_known:
             needs_review = 1
+        # A ✗ retracts the *known* claim, not the exposures: a word you have
+        # already met θ times in parseable lines goes straight onto the
+        # think-you-know list (LIVE_REVIEW.md §5a) rather than into limbo —
+        # the next encounter is the self-test. ✗ itself never snoozes.
+        if cleared_bar:
+            confirm_candidate = _candidate()
     elif taps_known or imports or confirms:
         status = "known"
-    elif q_count >= theta and q_spread >= spread_needed:
-        # Exposures cleared the bar, but a fuzzy count can't *assert*
-        # knowledge — surface it for confirmation instead of promoting.
-        # Snooze after a "not yet": re-surface only once a qualifying
-        # exposure lands after the latest defer.
+    elif cleared_bar:
         status = "learning"
-        last_defer = max((e["ts"] for e in defers), default=None)
-        newest_qualifying = max((e["ts"] for e in qualifying), default=None)
-        if last_defer is None or (newest_qualifying and newest_qualifying > last_defer):
-            confirm_candidate = 1
+        confirm_candidate = _candidate()
     elif mined:
         status = "learning"
     else:
@@ -1171,7 +1182,12 @@ def promote(conn, anki_known=None):
        → learning. needs_review when a strong positive (tap_known / confirm_known)
        also exists, or when the lemma is live-Anki-known — there the demotion is a
        union no-op and the tap means *the card isn't doing its job* (Q2):
-       route to REPLACE via the needs_review queue.
+       route to REPLACE via the needs_review queue. The negative only cancels
+       the knowledge claim: if the item's qualifying exposures already clear
+       θ (rule 3) it is flagged confirm_candidate at once — a ✗ on a word you
+       have met often enough lands it on the think-you-know list, and one on
+       a frequent word lets it fall into the should-know window (should_know
+       reads status ≠ known), instead of leaving it in an unlisted limbo.
     2. tap_known / confirm_known / import (bulk-seeded external list) → known.
        An import is weaker than a tap: a fresh negative demotes it without
        needs_review.
@@ -1387,6 +1403,20 @@ def should_know(conn, n=100):
         if len(out) >= n:
             break
     return out
+
+
+def marked_unknown(conn, kind="word"):
+    """Items the user has explicitly ✗'d (tap_unknown) and not since re-claimed
+    as known (status ≠ known — a later ✓ / confirm wins at promote). The paint
+    endpoint ships this so the phone can *un*-know a token whose sidecar `k`
+    flag froze back when coverage still believed the word was known: the
+    live paint's `known` list is additive, so without this a ✗ would never
+    reach the screen."""
+    return {r[0] for r in conn.execute(
+        """SELECT DISTINCT e.lemma FROM evidence e
+           JOIN lemmas l ON l.lemma = e.lemma AND l.kind = e.kind
+           WHERE e.source = 'tap_unknown' AND e.kind = ? AND l.status != 'known'""",
+        (kind,))}
 
 
 def confirm_words(conn):

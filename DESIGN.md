@@ -261,7 +261,10 @@ common unknowns are known" with a **per-lemma exposure threshold** scaled by `fr
 ### `promote` — derivation rules (first match wins)
 
 1. Fresh `tap_unknown` (newer than any positive) → **learning** (cancels known); set
-   `needs_review` if a strong positive also exists. **If the lemma is live-Anki-known,
+   `needs_review` if a strong positive also exists. It cancels only the *claim*: if the
+   item's qualifying exposures already clear rule 3's bar it is flagged
+   `confirm_candidate` in the same pass (a ✗ on a well-met word lands it on
+   think-you-know at once, LIVE_REVIEW.md §5a). **If the lemma is live-Anki-known,
    demotion is a no-op** (the union at `materialize` puts it straight back) — that tap
    means *the card isn't doing its job*: set `needs_review` and route to REPLACE as a
    rehab candidate instead *(resolved Q2)*.

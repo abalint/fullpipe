@@ -501,6 +501,10 @@ def create_app(cfg, start_worker=True):
         interest = lc.active_interest(conn)
         return {"episode_id": episode_id,
                 "known": sorted(lc.known_words(conn) & here),
+                # words the user ✗'d that the ledger no longer calls known —
+                # the one paint that must *subtract*: the sidecar's token
+                # `k` froze at coverage time, and `known` only ever adds
+                "unknown": sorted(lc.marked_unknown(conn) & here),
                 "confirm": sorted(lc.confirm_words(conn) & here),
                 "interest": sorted(interest & here),
                 "should_know": [l for l in lc.should_know(
@@ -931,15 +935,17 @@ def create_app(cfg, start_worker=True):
     @app.post("/lists/mark", dependencies=[Depends(auth)])
     def post_list_mark(body: dict):
         """A mark made from a list review rather than inside an episode:
-        {"lemma", "mark": "k"|"h"} — the same tap semantics as POST /taps
+        {"lemma", "mark": "k"|"h"|"u"} — the same tap semantics as POST /taps
         (LIVE_REVIEW.md §5a: ✓ on a ★ / green word → tap_known → known; ★ on
-        a green word → tap_interest → the ★ list). No episode, no card
-        selection; optional `batch_id` makes an outbox re-flush idempotent."""
+        a green word → tap_interest → the ★ list; ✗ → tap_unknown → out of
+        known, and straight onto blue / green if it already qualifies). No
+        episode, no card selection; optional `batch_id` makes an outbox
+        re-flush idempotent."""
         lemma = (body.get("lemma") or "").strip()
         mark = body.get("mark")
         if not lemma:
             raise HTTPException(422, "missing lemma")
-        if mark not in ("k", "h"):
+        if mark not in ("k", "h", "u"):
             raise HTTPException(422, f"unknown mark: {mark}")
         conn = ledger_conn()
         result = lc.apply_taps(conn, {"batch_id": body.get("batch_id"),

@@ -393,6 +393,7 @@ class TestRoutes(ServerTestBase):
         conn.close()
         data = self.client.get(f"/episodes/{EP}/paint", headers=self.auth).json()
         self.assertEqual(data["known"], ["公園"])
+        self.assertEqual(data["unknown"], [])
         self.assertEqual(data["confirm"], ["犬"])
         # 犬 graduated to the blue list, so it has left the ★ list
         self.assertEqual(data["interest"], [])
@@ -400,6 +401,14 @@ class TestRoutes(ServerTestBase):
         self.assertEqual(data["grammar_confirm"], ["〜てしまう"])
         self.assertEqual(
             self.client.get("/episodes/nope/paint", headers=self.auth).status_code, 404)
+        # ✗ from a list card: 公園 leaves known and the paint says so explicitly,
+        # because the sidecar's token `k` can only be undone by subtraction
+        r = self.client.post("/lists/mark", headers=self.auth,
+                             json={"lemma": "公園", "mark": "u"}).json()
+        self.assertEqual(r["status"], "learning")
+        data = self.client.get(f"/episodes/{EP}/paint", headers=self.auth).json()
+        self.assertEqual(data["known"], [])
+        self.assertEqual(data["unknown"], ["公園"])
 
     def test_transcript_carries_curated_grammar_and_phrases(self):
         # the player popup's line context (GRAMMAR.md): curate.json grammar/

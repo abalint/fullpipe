@@ -119,14 +119,16 @@ With both, θ for a top-2000 word is again ≈ 2–4 episodes rather than ≈ 12
 ## 5. Making each encounter count (all inside the player)
 
 **a. The popup is the review.** Unchanged card: word, reading, definition,
-line grammar, mark cycle ✓ → ★ → clear. What changes is what the marks
-*mean* per list, server-side, with no UI difference:
+line grammar, mark cycle ✓ → ★ → ✗ → clear (✗ "unknown" added 2026-09-05).
+What changes is what the marks *mean* per list, server-side, with no UI
+difference:
 
 | tapped | on a plain word | on ★ | on blue (think-you-know) | on green (should-know) |
 |---|---|---|---|---|
 | ✓ | tap_known → known | tap_known → known | confirm_known → known | tap_known → known |
-| ★ | tap_interest → interest | (cycle → clear) | confirm_defer + tap_interest → interest, snoozed | tap_interest → interest |
+| ★ | tap_interest → interest | (cycle → ✗) | confirm_defer + tap_interest → interest, snoozed | tap_interest → interest |
 | ★ on a **known** word | tap_interest newer than last positive → learning (the lapse signal; today a no-op) |
+| ✗ (any word, **built**) | tap_unknown → out of known; nothing else is special-cased: `promote` re-judges at once, so if its qualifying exposures already clear θ it is blue immediately, and if it sits in the frequency window it is green immediately (`should_know` reads status ≠ known). On the phone the ✗ paints the unknown wash on the spot, `/paint` ships an `unknown` list so the sidecar's frozen `k` is undone on every surface, and the surfaces re-pull `/paint` after the batch lands so the blue/green shows in the same sitting. |
 
 The Progress tab's confirm list stays as a batch surface but is no longer
 the primary path.

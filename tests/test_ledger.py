@@ -210,6 +210,52 @@ class LedgerTest(unittest.TestCase):
         self.assertEqual(row["status"], "learning")  # rule 1 cancels known
         self.assertEqual(row["needs_review"], 1)     # strong positive also exists
 
+    def test_tap_unknown_lands_on_think_you_know_when_exposures_qualify(self):
+        # ✗ only retracts the known claim (LIVE_REVIEW.md §5a): a word whose
+        # qualifying exposures already clear θ is a confirm candidate at once,
+        # not parked in an unlisted "learning" limbo.
+        self.conn.execute("INSERT INTO freq (lemma, rank, source) VALUES ('くれる', 7, 'show_graph')")
+        lc.apply_taps(self.conn, {"episode_id": None, "batch_id": "b1",
+                                  "taps": [["くれる", "k"]]})
+        self._expose_watched("くれる", 3)  # θ=2, spread 2 for rank < 2000
+        time.sleep(1.1)
+        lc.apply_taps(self.conn, {"episode_id": None, "batch_id": "b2",
+                                  "taps": [["くれる", "u"]]})
+        lc.promote(self.conn)
+        row = self.conn.execute(
+            "SELECT status, confirm_candidate FROM lemmas WHERE lemma='くれる'").fetchone()
+        self.assertEqual(row["status"], "learning")
+        self.assertEqual(row["confirm_candidate"], 1)
+        self.assertIn("くれる", lc.confirm_words(self.conn))
+        self.assertIn("くれる", lc.marked_unknown(self.conn))
+        # blue outranks green: not in the should-know window while a candidate
+        self.assertNotIn("くれる", lc.should_know(self.conn))
+        # a "not yet" from the confirm card still snoozes it as before
+        lc.defer_known_lemma(self.conn, "くれる")
+        lc.promote(self.conn)
+        self.assertNotIn("くれる", lc.confirm_words(self.conn))
+
+    def test_tap_unknown_drops_frequent_word_into_should_know(self):
+        # A frequent word ✗'d with too few exposures for blue falls into the
+        # should-know window by set subtraction — no special casing.
+        self.conn.execute("INSERT INTO freq (lemma, rank, source) VALUES ('行く', 12, 'show_graph')")
+        lc.import_known(self.conn, ["行く"])
+        lc.promote(self.conn)
+        self.assertNotIn("行く", lc.should_know(self.conn))
+        self.assertEqual(lc.marked_unknown(self.conn), set())
+        lc.apply_taps(self.conn, {"episode_id": None, "batch_id": "b1",
+                                  "taps": [["行く", "u"]]})
+        lc.promote(self.conn)
+        self.assertIn("行く", lc.should_know(self.conn))
+        self.assertEqual(lc.marked_unknown(self.conn), {"行く"})
+        # ✓ again later: known once more, and the ✗ paint is withdrawn
+        time.sleep(1.1)
+        lc.apply_taps(self.conn, {"episode_id": None, "batch_id": "b2",
+                                  "taps": [["行く", "k"]]})
+        lc.promote(self.conn)
+        self.assertNotIn("行く", lc.should_know(self.conn))
+        self.assertEqual(lc.marked_unknown(self.conn), set())
+
     def test_tap_unknown_on_anki_known_flags_replace(self):
         # Q2: demotion of a live-Anki-known word is a union no-op — the tap
         # means the card isn't working → needs_review.
