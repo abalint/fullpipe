@@ -295,6 +295,20 @@ class LedgerTest(unittest.TestCase):
         self.assertEqual(row["status"], "learning")   # tie goes to the negative
         self.assertEqual(row["needs_review"], 0)      # import ≠ deliberate tap
 
+    def test_materialize_is_ledger_only_no_anki(self):
+        # Retired Anki: the known set must come from the ledger alone — no
+        # AnkiConnect call, no cache, works with no known_words config at all.
+        from unittest import mock
+        lc.import_known(self.conn, ["諦める"], origin="anki_final")
+        lc.promote(self.conn)
+        with mock.patch("ledger.anki_known.anki_request",
+                        side_effect=AssertionError("AnkiConnect must not be called")):
+            bundle = lc.materialize_known(self.conn)
+            bundle2 = lc.materialize_known(self.conn, {"ledger_db": ":memory:"})
+        self.assertIn("諦める", bundle["known"])
+        self.assertEqual(bundle["known"], bundle2["known"])
+        self.assertEqual(bundle["sources"]["ledger"], 1)
+
     def test_materialize_bridges_external_lemma_forms(self):
         # MeCab-style kana lemmas from an import must join Sudachi tokens
         # via normalized_form (くる→来る, ところ→所).
@@ -305,6 +319,7 @@ class LedgerTest(unittest.TestCase):
             cfg = {"work_dir": tmp,
                    "known_words": {"sources": [], "cache_hours": 0}}
             bundle = lc.materialize_known(self.conn, cfg)
+        self.assertEqual(set(bundle["sources"]), {"ledger", "union"})
         self.assertIn("来る", bundle["norm_known"])
         self.assertIn("所", bundle["norm_known"])
         from engine.lemma import KnownSet, tokenize

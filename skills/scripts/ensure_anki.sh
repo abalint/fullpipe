@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # Ensure Anki + AnkiConnect are up and stable before a skill touches them.
 #
+# Only the opt-in card push (tools/deck.py, /immerse direct mode) and the
+# one-shot `ledgerctl import-anki` migration talk to Anki. Coverage and the
+# prepare/curate pipeline are ledger-only — never run this as a preflight
+# for them.
+#
 # Adapted from the sentence-mining skill: launches Anki if it's down, waits
 # for AnkiConnect to answer, and confirms it stays up (3 pings) so a one-shot
 # reply during a flaky big-collection load doesn't fool us. Idempotent: a

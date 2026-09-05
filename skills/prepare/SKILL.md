@@ -33,11 +33,9 @@ sources ──► enqueue ──► acquire ──► video.mp4 ──► covera
 
 1. **Config.** If `$FULLPIPE/config.json` is missing, stop: tell the user to
    copy `config.example.json` → `config.json` first. Don't invent one.
-2. **Anki up.** Coverage computes the known-set via AnkiConnect (cached ~6h
-   at `<work_dir>/.known_cache.json`). Run
-   `bash $FULLPIPE/skills/scripts/ensure_anki.sh`; if it fails but the cache
-   is fresher than `known_words.cache_hours`, continue — otherwise stop and
-   tell the user (a wrong known-set poisons the analysis).
+2. **No Anki needed.** Coverage reads the known-set from the ledger alone
+   (Anki was folded in once via `ledgerctl import-anki`; see LIVE_REVIEW.md
+   §7). Never launch or wait for Anki in this skill.
 3. **Server collision.** If the sync server is up, its worker thread is
    already draining this same queue — a local drain would race it job-by-job.
    Check health at the host/port from config's `server` block (`"host":
@@ -88,7 +86,6 @@ One tight block:
 |---|---|---|
 | acquire: "poor punctuation and no OPENAI_API_KEY" | choppier sentence merge | warn; artifacts still usable |
 | acquire: no subs + no ELEVENLABS_API_KEY + no `FULLPIPE_REAZONSPEECH_DIR` | no transcript possible | job lands `failed`; ask for a key or the offline model dir |
-| coverage: AnkiConnect failed after 3 attempts | Anki closed, no fresh cache | `ensure_anki.sh`, re-enqueue (failed → queued) |
 | "video unavailable: …" in progress | video staging failed, prep continued | mention it — phone won't have the video, everything else works |
 | job `failed` with a yt-dlp error | source gone/region-locked/needs cookies | show the error; retry only if the user says the source is fine |
 

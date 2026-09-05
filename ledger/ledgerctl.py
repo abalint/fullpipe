@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """ledgerctl — the ledger's verbs (DESIGN.md — The Ledger).
 
-    materialize-known    → live-Anki-known ∪ ledger-promoted; the set every mode reads
-    compute-anki-known   → live recompute via AnkiConnect (cached ~6h)
+    materialize-known    → the ledger's promoted known set; the set every mode reads
+    import-anki          ← one-shot: snapshot the live Anki known-set into the ledger
+                           as 'import' evidence (origin anki_final); needs Anki up
     record-exposure      ← written by /immerse at analysis time; inert until watched
     mark-watched         ← flips episodes.watched=1 (P5)
     apply-taps           ← phone corrections; implies mark-watched; polls lapses (P6)
@@ -1293,15 +1294,18 @@ def promote(conn, anki_known=None):
 
 # --- read verbs ----------------------------------------------------------------
 
-def materialize_known(conn, cfg, force_refresh=False):
-    """live-Anki-known ∪ ledger-promoted — the set every mode reads.
+def materialize_known(conn, cfg=None):
+    """The ledger's known set — the set every mode reads.
+
+    Ledger-only: no AnkiConnect, no cache. The Anki collection's known words
+    were folded in once as 'import' evidence (origin anki_final, verb
+    import-anki — LIVE_REVIEW.md §7), so the projection already holds
+    everything Anki ever knew. `cfg` is accepted for call-site compatibility
+    and unused.
 
     Returns the full known/learning picture plus the variant-matching sets
     engine.lemma.KnownSet consumes.
     """
-    from ledger.anki_known import compute_anki_known
-    anki_set, norm_known, stems = compute_anki_known(cfg, force_refresh=force_refresh)
-
     # Words only: phrase keys must not leak into the token-level known set —
     # their kanji stems would contaminate stem-matching (気を付ける → stem 気).
     # Phrases travel separately as {headword: status} for KnownSet's unit pass.
@@ -1312,7 +1316,8 @@ def materialize_known(conn, cfg, force_refresh=False):
     phrases = dict(conn.execute(
         "SELECT lemma, status FROM lemmas WHERE kind = 'phrase'").fetchall())
 
-    known = anki_set | ledger_known
+    known = set(ledger_known)
+    norm_known = set()
 
     # Bridge external-lemmatizer forms into SudachiPy space. Imported lists
     # (AnkiMorphs = MeCab) carry kana lemmas (くる, ところ) that never equal
@@ -1328,7 +1333,7 @@ def materialize_known(conn, cfg, force_refresh=False):
             if toks[0].normalized:
                 norm_known.add(toks[0].normalized)
 
-    stems |= {s for s in (extract_kanji_stem(x) for x in known) if s}
+    stems = {s for s in (extract_kanji_stem(x) for x in known) if s}
 
     return {
         "known": known,
@@ -1336,9 +1341,23 @@ def materialize_known(conn, cfg, force_refresh=False):
         "norm_known": norm_known,
         "known_stems": stems,
         "phrases": phrases,
-        "sources": {"anki": len(anki_set), "ledger": len(ledger_known),
-                    "union": len(known)},
+        "sources": {"ledger": len(ledger_known), "union": len(known)},
     }
+
+
+def import_anki(conn, cfg):
+    """One-shot migration off Anki (LIVE_REVIEW.md §7 step 1): scan the live
+    collection via AnkiConnect one last time and write every lemma whose
+    highest card interval meets the threshold as 'import' evidence (origin
+    anki_final), then promote. Idempotent via import_known's skip of lemmas
+    that already carry an import row. Not part of any pipeline step — run by
+    hand, with Anki open."""
+    from ledger.anki_known import compute_anki_known
+    known, _norm, _stems = compute_anki_known(cfg, force_refresh=True)
+    result = import_known(conn, sorted(known), origin="anki_final")
+    result["anki_known"] = len(known)
+    result["promote"] = promote(conn)
+    return result
 
 
 def active_interest(conn, known=()):
@@ -1737,10 +1756,9 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="verb", required=True)
 
     sub.add_parser("init", help="create the ledger database")
-    p = sub.add_parser("materialize-known", help="live-Anki-known ∪ ledger-promoted")
-    p.add_argument("--refresh", action="store_true", help="ignore the Anki-known cache")
-    p = sub.add_parser("compute-anki-known", help="recompute the live Anki known-set")
-    p.add_argument("--refresh", action="store_true")
+    sub.add_parser("materialize-known", help="the ledger's promoted known set")
+    sub.add_parser("import-anki", help="one-shot: fold the live Anki known-set into "
+                                       "the ledger as import evidence (needs Anki up)")
     p = sub.add_parser("record-exposure", help="write inert exposures for an episode")
     p.add_argument("payload", help="JSON file: {episode: {...}, exposures: {...}}")
     p = sub.add_parser("mark-watched", help="activate an episode's exposures")
@@ -1819,20 +1837,20 @@ def main(argv=None):
     p.add_argument("lemma", nargs="?")
 
     args = ap.parse_args(argv)
-    cfg = load_config(args.config, required=args.verb in
-                      ("materialize-known", "compute-anki-known") or not args.db)
+    cfg = load_config(args.config, required=args.verb == "import-anki" or not args.db)
     db_path = args.db or cfg["ledger_db"]
     conn = open_db(db_path)
 
     if args.verb == "init":
         _json_out({"db": db_path, "initialized": True})
     elif args.verb == "materialize-known":
-        _json_out(materialize_known(conn, cfg, force_refresh=args.refresh))
-    elif args.verb == "compute-anki-known":
-        from ledger.anki_known import compute_anki_known
-        known, norm_known, stems = compute_anki_known(cfg, force_refresh=args.refresh)
-        _json_out({"known": len(known), "norm_variants": len(norm_known),
-                   "kanji_stems": len(stems)})
+        b = materialize_known(conn)
+        _json_out({"known": len(b["known"]), "learning": len(b["learning"]),
+                   "norm_variants": len(b["norm_known"]),
+                   "kanji_stems": len(b["known_stems"]),
+                   "phrases": len(b["phrases"]), "sources": b["sources"]})
+    elif args.verb == "import-anki":
+        _json_out(import_anki(conn, cfg))
     elif args.verb == "record-exposure":
         payload = json.loads(Path(args.payload).read_text(encoding="utf-8"))
         _json_out(record_exposure(conn, payload["episode"], payload["exposures"]))

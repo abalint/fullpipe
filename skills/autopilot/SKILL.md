@@ -40,8 +40,8 @@ this skill — they stay manual.
 - Log: `<work_dir>/autopilot-log.jsonl`, one line per tick that acted.
 - **Never ask the user anything.** This skill runs while they're away. Every
   choice `/immerse` and `/recommend` would put to the user has a policy answer
-  in the subagent prompts below. If something is genuinely blocked (no Anki,
-  no config), log it, report it, and stop the tick — the next tick retries.
+  in the subagent prompts below. If something is genuinely blocked (no
+  config), log it, report it, and stop the tick — the next tick retries.
 
 ## Step 0 — measure
 
@@ -60,11 +60,8 @@ them: a yt-dlp failure usually means the source is gone or region-locked, and
 
 ## Step 1 — preflight (only when acting)
 
-1. **Anki.** `bash $FULLPIPE/skills/scripts/ensure_anki.sh`. If it fails and
-   `<work_dir>/.known_cache.json` is older than `known_words.cache_hours`,
-   **skip the curate lane** this tick (a wrong known-set poisons every
-   episode) — log it, still run the recommend lane (its coverage estimate
-   degrades gracefully). Retry next tick.
+1. **No Anki.** Coverage and curation read the known-set from the ledger
+   alone; never launch, ping, or wait for Anki in this skill.
 2. **Stage 1 executor.** If `verdict.drain` (queued jobs, no server): start
    `$PY -m server.worker` **in the background** (Bash `run_in_background`) so
    the queue keeps moving; the curate lane picks those up on a later tick.
@@ -113,7 +110,7 @@ SQLite (short writes, 5 s busy timeout — see Failure modes).
 > rules (write punct_out.json / repair_out.json, then `apply`). Card bar:
 > only genuinely excellent cards, zero is fine, no target count; every pool
 > entry needs english, notes, context and sentence_furigana. If a step fails
-> twice (Anki down, database locked after retries, missing artifact), stop
+> twice (database locked after retries, missing artifact), stop
 > and report the failure — do NOT mark the job staged.
 >
 > Reply with a compact report only: state reached, comprehensibility %,
@@ -183,12 +180,11 @@ Substitute FULLPIPE, WORK_DIR, PIPELINE_H, MIN_H, DEFICIT_H, PICKS_NEEDED.
   tick curates them — so a top-up normally completes across two or three
   ticks.
 - The session must be able to run tools without prompting (auto mode, or a
-  permission allowlist covering `.venv/bin/python -m …`, `bash
-  skills/scripts/ensure_anki.sh`, and file writes under `~/immersion`).
+  permission allowlist covering `.venv/bin/python -m …` and file writes
+  under `~/immersion`).
 - The sync server should be up for Stage 1 (memory: it's hand-started —
   `nohup .venv/bin/python -m server.app`); the drain fallback covers a down
   server but the phone can't sync until it's back.
-- Anki must be reachable for coverage (`ensure_anki.sh` launches it).
 
 ## Failure modes
 
@@ -200,7 +196,6 @@ Substitute FULLPIPE, WORK_DIR, PIPELINE_H, MIN_H, DEFICIT_H, PICKS_NEEDED.
 | jobs stuck in `queued` with `server_up: true` | the server's worker thread is wedged | note it; if it persists two ticks, say so in the report (restarting the server is the user's call) |
 | the recommend subagent enqueues < deficit | the pool ran dry under the quality bar | expected; next tick (after cooldown) harvests again |
 | a curate subagent can't run the Agent tool | subagents can't nest | it does the gate work inline (prompt policy) — same rules, same `apply` |
-| `ensure_anki.sh` fails, cache stale | no trustworthy known-set | curate lane skipped this tick, recommend still runs; retry next tick |
 | a `failed` job keeps showing | source gone / region-locked | never auto-retried; the hours get filled by other picks — report it each tick so the user can retry or delete from the phone |
 
 ## Notes

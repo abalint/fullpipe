@@ -192,7 +192,7 @@ one-flag mode for anyone who wants strict "ready = everything ready" atomicity.
 
 ## Server API
 
-Thin HTTP over `ledgerctl` verbs + the queue. (Verbs: `materialize-known`, `compute-anki-known`,
+Thin HTTP over `ledgerctl` verbs + the queue. (Verbs: `materialize-known`,
 `record-exposure`, `mark-watched`, `apply-taps`, `promote`, `rate`, `query` — see DESIGN.md.)
 
 | endpoint | maps to | notes |

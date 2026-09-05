@@ -103,8 +103,7 @@ class TestPageStage1(ServerTestBase):
 
     def setUp(self):
         super().setUp()
-        # real run_coverage → materialize_known: no Anki sources, no cache
-        self.cfg["known_words"] = {"sources": [], "cache_hours": 0}
+        # real run_coverage → materialize_known (ledger-only; no Anki involved)
 
     def run_page_job(self):
         conn = q.open_queue(queue_db_path_for(self.cfg))

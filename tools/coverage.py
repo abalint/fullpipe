@@ -13,7 +13,7 @@ Signal columns per candidate:
     leverage     corpus i+1 leverage — NULL until phrases-full re-parse (P1)
 
 CLI:
-    python -m tools.coverage EPISODE_ID [--refresh-known] [--no-record] [--config PATH]
+    python -m tools.coverage EPISODE_ID [--no-record] [--config PATH]
 """
 
 import argparse
@@ -181,11 +181,11 @@ def analyze(transcript, known_bundle, freq=None, already_carded=frozenset(),
     }
 
 
-def run_coverage(cfg, episode_id, refresh_known=False, record=True, conn=None):
+def run_coverage(cfg, episode_id, record=True, conn=None):
     transcript = load_transcript(cfg, episode_id)
     conn = conn or lc.open_db(cfg["ledger_db"])
 
-    known_bundle = lc.materialize_known(conn, cfg, force_refresh=refresh_known)
+    known_bundle = lc.materialize_known(conn)  # ledger-only; no Anki
     freq = dict(conn.execute("SELECT lemma, rank FROM freq").fetchall())
     # Live cards only: a deleted card (user culled a sub-par one) reopens the
     # lemma for a fresh mining candidate — matters for still-wanted words.
@@ -226,15 +226,13 @@ def run_coverage(cfg, episode_id, refresh_known=False, record=True, conn=None):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("episode_id")
-    ap.add_argument("--refresh-known", action="store_true")
     ap.add_argument("--no-record", action="store_true",
                     help="skip writing exposures to the ledger")
     ap.add_argument("--config")
     args = ap.parse_args(argv)
 
     cfg = load_config(args.config)
-    cov = run_coverage(cfg, args.episode_id, refresh_known=args.refresh_known,
-                       record=not args.no_record)
+    cov = run_coverage(cfg, args.episode_id, record=not args.no_record)
     s = cov["stats"]
     print(f"sentences={s['total_sentences']} comprehensibility="
           f"{s['token_comprehensibility']:.1%} i+1={s['i_plus_1']} "

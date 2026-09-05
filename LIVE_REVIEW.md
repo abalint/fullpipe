@@ -193,9 +193,11 @@ arithmetic, as `hl-know` already does.
 
 ## 7. Migration off Anki
 
-1. Final `compute-anki-known`; write every lemma whose highest interval
-   ≥ 21 d as `import` evidence (origin `anki_final`). Ledger-only known set
-   from then on; `materialize_known` stops calling AnkiConnect.
+1. ~~Final Anki scan; write every lemma whose highest interval ≥ 21 d as
+   `import` evidence (origin `anki_final`). Ledger-only known set from then
+   on; `materialize_known` stops calling AnkiConnect.~~ — done 2026-09-05
+   (`ledgerctl import-anki`; no pipeline step or skill preflight touches
+   Anki any more).
 2. Drop `mined_card` from the promote rule order → the ~600 card-only
    "learning" words become plain unknown/exposure-driven, and the
    should-know window fills from them first (they are the most frequent

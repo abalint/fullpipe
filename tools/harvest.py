@@ -559,7 +559,7 @@ def estimate_coverage(conn, cfg, video_ids, recheck=False):
 
     led = lc.open_db(cfg["ledger_db"])
     try:
-        kb = lc.materialize_known(led, cfg)
+        kb = lc.materialize_known(led)
         ks = L.KnownSet(kb["known"], kb.get("norm_known", ()),
                         kb.get("known_stems", ()), phrases=kb.get("phrases"))
         learning = set(kb.get("learning", ()))

@@ -127,14 +127,14 @@ recomputed by `promote`. This buys re-tunable thresholds (rerun `promote` over s
 already have), auditability ("why does it think I know 諦める?"), and conflict handling by
 rule rather than imperative spaghetti.
 
-**Key refinement (from the `sentence-mining` skill): don't persist what Anki already
-stores.** The Anki-known set is **recomputed live** each session (SudachiPy-tokenize the
-configured Anki fields via AnkiConnect; a lemma is known once its highest card interval ≥
-21d; cache ~6h). The ledger persists *only the evidence Anki structurally can't see* —
-exposure and taps. This removes the stale-export "resync" problem entirely.
+**Anki retired (2026-09-05, LIVE_REVIEW.md §7).** The known set is the ledger's alone.
+The Anki collection was folded in once: `ledgerctl import-anki` scanned the configured
+fields via AnkiConnect a final time and wrote every lemma whose highest card interval ≥
+21d as `import` evidence (origin `anki_final`). Nothing in the prepare/curate pipeline
+talks to Anki any more; the card push (`tools/deck.py`) is the one opt-in exception.
 
 ```
-materialize-known  =  live-Anki-known  ∪  ledger-promoted(exposure, taps)
+materialize-known  =  ledger-promoted(import, exposure, taps, confirms)
 ```
 
 The ledger's persistent surface is exactly the **delta between what Anki knows and what
@@ -290,8 +290,9 @@ one run wrote both.
 ### Verbs (the public contract every tool/skill calls)
 
 ```
-materialize-known    → live-Anki-known ∪ ledger-promoted; the set every mode reads
-compute-anki-known   → live recompute via AnkiConnect (cached ~6h)  [replaces resync]
+materialize-known    → the ledger's promoted known set; the set every mode reads
+import-anki          ← one-shot migration: live Anki known-set → 'import' evidence
+                       (origin anki_final); needs Anki up; never run by the pipeline
 record-exposure      ← written by /immerse at analysis time; inert until watched
 mark-watched         ← flips episodes.watched=1; apply-taps implies it for its
                        episode, manual for episodes watched without tapping (P5)
@@ -310,8 +311,8 @@ AnkiMorphs import join transcript tokens 来る/所 via `normalized_form`).
 
 ### Bootstrap
 
-First run, `compute-anki-known` derives the known lemmas from the Anki collection,
-and `import-known` can seed from an external list — as built, this install was
+First run, `import-anki` (if there is an Anki collection to inherit) folds its
+known lemmas in as import evidence, and `import-known` can seed from an external list — as built, this install was
 seeded with a 3,046-lemma AnkiMorphs known-morphs export (the mining deck itself
 was brand new, so the live Anki scan contributed 0 until minted cards mature).
 Everything else is `unknown`. Early prep docs over-flag words you actually know

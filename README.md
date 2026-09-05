@@ -41,7 +41,8 @@ ledger/     the spine (event-sourced; see DESIGN.md — The Ledger)
                   materialize-known bridges external-lemmatizer forms into
                   Sudachi space (MeCab kana lemmas くる/ところ → 来る/所 via
                   normalized_form) so imported lists join transcripts
-  anki_known.py   live Anki known-set via AnkiConnect (~6h cache)
+  anki_known.py   AnkiConnect scan — only for the one-shot `import-anki`
+                  migration; the pipeline never calls it
   build_freq.py   P7: show-penetration freq ranks from japaneseShowGraph.db
 tools/      dumb CLIs (importable modules + argparse mains)
   acquire.py      source → cleaned subs → punctuation → merged sentences,
@@ -73,7 +74,8 @@ skills/     /immerse (built) · next: /reconcile · /generate · /replace · /se
                           under autopilot.min_hours, curates prepared jobs
                           with parallel Opus subagents (/immerse per episode)
                           and runs /recommend to refill the pipeline
-  scripts/ensure_anki.sh  launch Anki + wait for stable AnkiConnect (preflight)
+  scripts/ensure_anki.sh  launch Anki + wait for AnkiConnect (deck push only —
+                          coverage/prepare never touch Anki)
 render/     template.html (P9 tap/copy/share loop, ruby furigana, masked
             definitions w/ per-row peek + show-all) + demo-prep.html sample
 tests/      unittest suites (44 passing)
@@ -92,8 +94,8 @@ them when PRIME mode is built.
 | verb | what |
 |---|---|
 | `init` | create the database |
-| `materialize-known [--refresh]` | live-Anki-known ∪ ledger-promoted |
-| `compute-anki-known [--refresh]` | recompute the live Anki set (cached ~6h) |
+| `materialize-known` | the ledger's promoted known set (ledger-only, no Anki) |
+| `import-anki` | one-shot: fold the live Anki known-set into the ledger as import evidence |
 | `record-exposure payload.json` | inert exposures for an analyzed episode |
 | `mark-watched EPISODE_ID` | activate an episode's exposures (P5) |
 | `apply-taps payload.json` | tap batch → implies mark-watched + lapse poll + promote |
@@ -102,7 +104,7 @@ them when PRIME mode is built.
 | `confirm LEMMA` / `defer LEMMA` | answer the exposure prompt: known ('yes') / snooze ('not yet') |
 | `query summary\|needs-review\|confirm-queue\|why LEMMA\|unwatched` | read the ledger |
 
-Bootstrap order: `init` → `build_freq` → `compute-anki-known`, plus
+Bootstrap order: `init` → `build_freq` → `import-anki` (if inheriting an Anki collection), plus
 `import-known` if you have an external known list (e.g. an AnkiMorphs
 known-morphs export — how this install was seeded, 3,046 lemmas). Imports are
 strong positive evidence but weaker than a deliberate tap: a fresh

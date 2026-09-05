@@ -48,12 +48,10 @@ queue ──► acquire ──► coverage ────────────�
    known-morphs export), seed it too:
    `$PY -m ledger.ledgerctl import-known list.csv` (idempotent; MeCab kana
    lemma forms are bridged to Sudachi automatically at materialize).
-3. **Anki up.** Coverage recomputes the live Anki known-set via AnkiConnect
-   (cached ~6h under `<work_dir>/.known_cache.json`). Run
-   `bash $FULLPIPE/skills/scripts/ensure_anki.sh`. If it fails **but** the
-   known-cache is fresher than `known_words.cache_hours`, continue (coverage
-   will hit the cache); otherwise stop and tell the user — the known-set is the
-   core of the analysis, don't run with a wrong one.
+3. **No Anki for coverage.** The known-set is the ledger's alone (the Anki
+   collection was folded in once via `ledgerctl import-anki`, LIVE_REVIEW.md
+   §7). Do not launch, ping, or wait for Anki before analysis; `ensure_anki.sh`
+   exists only for the opt-in direct-mode deck push (Step 5).
 4. **Keys** (from `$FULLPIPE/.env`, loaded automatically): `OPENAI_API_KEY`
    is the worker's unattended punctuation restore — **in this live skill you
    punctuate with a subagent instead** (Step 2.5), so the key is irrelevant
@@ -173,10 +171,9 @@ subtitle discovery and goes straight to ASR — only on user request or when the
 source subs turn out to be garbage. Coverage classifies every sentence
 (comprehensible / reinforcement / i+1 / too-hard), ranks up to 50 candidate
 unknowns, and **records inert exposures** to the ledger (activation happens at
-mark-watched — the watched-gate). Re-runs are idempotent. `--refresh-known`
-forces a live Anki rescan past the ~6h cache — use when the user says they
-just reviewed a lot (worth offering when curating a job the worker prepared
-many hours ago).
+mark-watched — the watched-gate). Re-runs are idempotent, and the known-set
+is read live from the ledger each run — re-running coverage is how a job the
+worker prepared long ago picks up everything marked known since.
 
 Relay the coverage stats line to the user (sentences, comprehensibility %,
 i+1 count, candidates) before curating — it sets expectations. If token
@@ -237,7 +234,7 @@ $PY -m tools.punctuate check EPISODE_ID     # stdout = blocks path, or empty
 - **After `apply`, coverage is stale** — sentence indices changed. Re-run it:
   direct path, this IS the Step 2 coverage call (run it now, after BOTH
   gates); queue path, re-run `$PY -m tools.coverage EPISODE_ID` before Step 3
-  (offer `--refresh-known` if the worker prepared it long ago).
+  (this also refreshes the known-set from the ledger).
 
 ## Step 2.6 — repair gate (subagent transcript repair + adjudication)
 
@@ -695,7 +692,6 @@ session, M still in flight, any failures awaiting a retry decision.
 | acquire: "poor punctuation…" / "deferring restore to the /immerse subagent" | subs lack sentence punctuation | expected — the punctuation gate (Step 2.5) restores it via subagent; no key needed |
 | `punctuate apply`: "got N blocks, expected M" | subagent dropped/merged/added lines | re-spawn the subagent, stressing one entry per input block in the same order |
 | acquire: no subs + no ELEVENLABS_API_KEY + no `FULLPIPE_REAZONSPEECH_DIR` | no transcript possible | stop; ask for a key or the offline model dir |
-| coverage: AnkiConnect failed after 3 attempts | Anki closed mid-run, no fresh cache | `ensure_anki.sh`, re-run coverage |
 | job `failed` with a yt-dlp error | source gone/region-locked/needs cookies | show the error; retry only if the user says the source is fine |
 | deck: "skip <lemma>: … duplicate" | note already exists | fine — report it |
 | deck: "skip <lemma>: clip audio doesn't match text …" / "no clean speech" | audio gate rejected the clip (mistimed span, BGM-drowned, silence) | fine — fewer, better cards; report which lemmas were gated. The lemma stays uncarded and re-mineable |
