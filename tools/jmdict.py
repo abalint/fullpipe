@@ -232,11 +232,45 @@ def merge_curate_defs(result, curate):
     return result
 
 
+# Sudachi top-level POS that make a run a LEXICAL unit rather than grammar
+# glue. Particles, auxiliaries, pronouns, conjunctions and symbols carry no
+# meaning of their own to a learner who knows the words — a run needs two
+# of these to be a compound/idiom (世界遺産, 気を付ける, うまくいく).
+CONTENT_POS = frozenset(
+    {"名詞", "動詞", "形容詞", "形状詞", "副詞", "連体詞", "接頭辞", "接尾辞", "感動詞"})
+CHAIN_POS = frozenset({"助詞", "助動詞"})
+
+
+def content_count(toks):
+    """How many of a run's tokens are content words (numerals excluded —
+    一つ/一日 are counter forms, not compounds)."""
+    return sum(1 for t in toks
+               if t.pos in CONTENT_POS and not (t.pos == "名詞" and t.pos2 == "数詞"))
+
+
+def same_lexeme(form_toks, key_toks):
+    """Do two tokenizations spell the SAME words? Token by token: equal
+    normalized forms (という ↔ と言う unify via 言う), or — a kana/kanji
+    spelling Sudachi doesn't normalize — the same reading AND the same
+    part of speech. Homophones differ in POS or normalized form: こう+する
+    (adverb + verb) is not 航する (noun + verb), し+ない is not 市内."""
+    if len(form_toks) != len(key_toks):
+        return False
+    for a, b in zip(form_toks, key_toks):
+        if a.normalized == b.normalized:
+            continue
+        if a.reading == b.reading and a.pos == b.pos:
+            continue
+        return False
+    return True
+
+
 def compound_entries(conn, sentences, max_entries=2):
     """JMdict entries for compounds and expressions Sudachi (SplitMode C)
-    still splits into adjacent tokens: 帝王切開 → 帝王|切開, そういう →
-    そう|いう, 気を付ける → 気|を|付ける. Keyed by the joined span so the
-    popup can answer a tap on any component with the whole's meaning.
+    still splits into adjacent tokens: 帝王切開 → 帝王|切開, 気を付ける →
+    気|を|付ける, うまくいく → うまく|いく. Keyed by the joined span so the
+    popup can answer a tap on any component with the whole's meaning, and
+    so the whole is a phrase key the ledger can track (GRAMMAR.md).
 
     For every run of 2..COMPOUND_MAX_TOKENS adjacent lookup-worthy tokens,
     two candidate keys: the surface concat, and surfaces+final-LEMMA (an
@@ -245,21 +279,33 @@ def compound_entries(conn, sentences, max_entries=2):
     it reproduces the run's exact lemma sequence — same determinism trick as
     GRAMMAR.md's phrase validator, and what rejects accidental
     concatenations (は+いる is NOT 入る: tokenize(はいる) → [はいる]).
-    Each ENTRY must ALSO tokenize its own canonical form (first kanji form,
-    else first reading) back to the same segmentation — matched on Sudachi
-    normalized forms OR reading sequences, since each alone wobbles on a
-    spelling variant (という↔と言う unify via normalized 言う but read
-    イウ/ユウ; じゃない↔じゃ無い read ジャ|ナイ but じゃ normalizes だ/で
-    depending on spelling). Homographs differ in SEGMENTATION, so both
-    checks fail together: する+た writes した, a JMdict key — but only for
-    舌 "tongue", one token, not two. 舌/仕手/死ね die here; という/そういう/
-    じゃない/気にする pass. Runs of
-    nothing but single-kana grammar tokens (た+し, ん+だ) are skipped — those
-    are auxiliary clusters, the inflection chain's job, and their JMdict
-    coincidences (たし "want to") mislead more than they help.
+
+    The served set is LEXICAL units, not grammar. Three gates (measured
+    2026-09-05 on real episodes: ~360 keys → ~150 on a 47-min travel vlog,
+    with everything cut being glue, patterns or homophones):
+
+    - A run can't START inside a particle/auxiliary chain. に関して,
+      において, として, という, ですが, のです, かもしれない are grammar
+      patterns — the grammar axis's taxonomy owns them (〜に関して, 〜として
+      … are `grammar_points`), and the word layer already breaks the
+      inflection down (関して = 関する + て). Serving them as phrases put
+      two near-identical layers (に関して / に関し) over the tapped word.
+    - A run needs TWO content tokens (CONTENT_POS). A word plus its own
+      particle or auxiliary (本当に, 呼ばれる, 曲がった, 何か, 一つ) is the
+      word — the popup's inflection chain and dictionary entry cover it.
+      Runs of nothing but single-kana grammar tokens (た+し, ん+だ) fall
+      here too.
+    - Each ENTRY must be the same words as the run (same_lexeme on its
+      canonical form — first kanji form, else first reading). Sudachi reads
+      市内 as 市|内 = シ|ナイ and 参賀 as 参|賀, so a bare reading-sequence
+      match admitted every homophone of a kana run (し+ない "within the
+      city", さん+が "longevity celebration", こう+する "to voyage"); the
+      POS check on top of the reading closes that. Sane variants still
+      unify: という ↔ と言う (normalized 言う), 気をつける ↔ 気を付ける.
 
     The mobile player mirrors the run/key construction on tap
-    (compoundKeysAt), so the two sides MUST stay in lockstep."""
+    (compoundKeysAt) and shows whatever keys were served, so filtering
+    lives here alone; only KEY construction must stay in lockstep."""
     from engine.lemma import tokenize
     out, checked = {}, set()
     for s in sentences:
@@ -288,19 +334,16 @@ def compound_entries(conn, sentences, max_entries=2):
                     key_toks = tokenize(key)
                     if tuple(t.lemma for t in key_toks) != lemmas:
                         continue  # accidental concat, not this span
-                    key_norm = tuple(t.normalized for t in key_toks)
-                    key_read = tuple(t.reading for t in key_toks)
+                    if key_toks[0].pos in CHAIN_POS:
+                        continue  # grammar pattern, not a lexical unit
+                    if content_count(key_toks) < 2:
+                        continue  # a word + its own glue
                     good = []
                     for e in lookup_many(conn, [key],
                                          max_entries + 2).get(key, []):
                         form = e["k"][0] if e["k"] else e["r"][0]
-                        if form != key:
-                            form_toks = tokenize(form)
-                            if (tuple(t.normalized for t in form_toks)
-                                    != key_norm
-                                    and tuple(t.reading for t in form_toks)
-                                    != key_read):
-                                continue  # same key, different word
+                        if form != key and not same_lexeme(tokenize(form), key_toks):
+                            continue  # same key, different word (homophone)
                         good.append(e)
                     if good:
                         out[key] = good[:max_entries]

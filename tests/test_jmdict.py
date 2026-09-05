@@ -107,8 +107,21 @@ MINI_JMDICT = """<?xml version="1.0" encoding="UTF-8"?>
 <entry>
 <ent_seq>15</ent_seq>
 <k_ele><keb>気を付ける</keb></k_ele>
+<k_ele><keb>気をつける</keb></k_ele>
 <r_ele><reb>きをつける</reb></r_ele>
 <sense><pos>&v1;</pos><gloss>to be careful</gloss></sense>
+</entry>
+<entry>
+<ent_seq>17</ent_seq>
+<k_ele><keb>市内</keb></k_ele>
+<r_ele><reb>しない</reb></r_ele>
+<sense><pos>&n;</pos><gloss>within the city</gloss></sense>
+</entry>
+<entry>
+<ent_seq>18</ent_seq>
+<k_ele><keb>航する</keb></k_ele>
+<r_ele><reb>こうする</reb></r_ele>
+<sense><pos>&vs;</pos><gloss>to voyage</gloss></sense>
 </entry>
 <entry>
 <ent_seq>16</ent_seq>
@@ -127,7 +140,7 @@ class TestJmdict(unittest.TestCase):
             self.conn, jmdict.parse_entries(io.BytesIO(MINI_JMDICT.encode())))
 
     def test_build_skips_glossless_entries(self):
-        self.assertEqual(self.count, 15)  # entry 4 (骨) has no glosses, dropped
+        self.assertEqual(self.count, 17)  # entry 4 (骨) has no glosses, dropped
 
     def test_lookup_by_kanji_and_kana(self):
         out = jmdict.lookup_many(self.conn, ["公園", "する", "ない"])
@@ -210,12 +223,36 @@ class TestJmdict(unittest.TestCase):
         self.assertEqual(out["気を付ける"][0]["s"][0]["g"], ["to be careful"])
 
     def test_compound_entries_spelling_variant_canonical(self):
-        # という run ↔ canonical と言う: unified via normalized/reading union
+        # 気をつけて run ↔ canonical 気を付ける: the kana spelling is a key of
+        # the same entry, and same_lexeme unifies つける/付ける via
+        # Sudachi's normalized form
+        sentences = [{"tokens": [
+            {"s": "気", "l": "気"}, {"s": "を", "l": "を"},
+            {"s": "つけ", "l": "つける"}, {"s": "て", "l": "て"}]}]
+        out = jmdict.compound_entries(self.conn, sentences)
+        self.assertEqual(out["気をつける"][0]["s"][0]["g"], ["to be careful"])
+
+    def test_compound_entries_skips_grammar_patterns(self):
+        # と+いう joins to という, a real headword — but a run that starts
+        # inside a particle chain is a grammar pattern (〜という, 〜に関して),
+        # the grammar axis's job, not a lexical unit
         sentences = [{"tokens": [
             {"s": "犬", "l": "犬"}, {"s": "と", "l": "と"},
             {"s": "いう", "l": "いう"}, {"s": "話", "l": "話"}]}]
+        self.assertNotIn("という", jmdict.compound_entries(self.conn, sentences))
+
+    def test_compound_entries_rejects_homophones(self):
+        # し+ない reads しない = 市内 "within the city"; Sudachi reads 市内 as
+        # 市|内 = シ|ナイ, so a reading-sequence match alone admitted it. One
+        # content token (する) → glue; and こう+する (adverb + verb) is not
+        # 航する (noun + verb) even though both read コウ|スル
+        sentences = [{"tokens": [
+            {"s": "し", "l": "する"}, {"s": "ない", "l": "ない"},
+            {"s": "。", "l": "。"},
+            {"s": "こう", "l": "こう"}, {"s": "する", "l": "する"}]}]
         out = jmdict.compound_entries(self.conn, sentences)
-        self.assertEqual(out["という"][0]["s"][0]["g"], ["called; named"])
+        self.assertNotIn("しない", out)
+        self.assertNotIn("こうする", out)
 
     def test_compound_entries_rejects_accidental_concats(self):
         # は+いる joins to はいる — a key for 入る "to enter", but 入る

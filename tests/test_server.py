@@ -559,8 +559,11 @@ class TestRoutes(ServerTestBase):
         self.assertIn("公園", data)  # content lemma with an entry
         self.assertIn("が", data)  # any-word popup: non-content lemmas too
         self.assertNotIn("犬", data)  # lemma with no dict entry
-        # adjacent と+いう run → compound key served alongside the lemmas
-        self.assertEqual(data["という"][0]["s"][0]["g"], ["called; named"])
+        # adjacent と+いう run joins to a headword, but a particle-led run is
+        # a grammar pattern (〜という), not a lexical unit — never a compound
+        # key (tools/jmdict.py compound_entries); a deliberately tracked
+        # phrase still reaches the popup via episode_phrases (test above)
+        self.assertNotIn("という", data)
         self.assertEqual(data["公園"][0]["s"][0]["g"], ["(public) park"])
         self.assertEqual(self.client.get("/definitions/nope", headers=self.auth)
                          .status_code, 404)
