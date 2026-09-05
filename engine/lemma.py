@@ -267,28 +267,44 @@ class KnownSet:
         if not self.phrases:
             return []
         if self._phrase_index is None:
-            idx = {}
-            for hw in self.phrases:
-                seq = tuple(t.lemma for t in tokenize(hw))
-                if len(seq) < 2:
-                    continue  # single-token keys are words, not phrases
-                idx.setdefault(seq[0], []).append((hw, seq))
-            for cands in idx.values():
-                cands.sort(key=lambda c: -len(c[1]))
-            self._phrase_index = idx
-        lemmas = [t.lemma for t in tokens]
-        units = []
-        i = 0
-        while i < len(lemmas):
-            for hw, seq in self._phrase_index.get(lemmas[i], ()):
-                if tuple(lemmas[i:i + len(seq)]) == seq:
-                    units.append({"phrase": hw,
-                                  "status": self.phrases.get(hw, "unknown"),
-                                  "start": i, "end": i + len(seq)})
-                    i += len(seq) - 1
-                    break
-            i += 1
+            self._phrase_index = build_phrase_index(self.phrases)
+        units = match_phrase_units([t.lemma for t in tokens], self._phrase_index)
+        for u in units:
+            u["status"] = self.phrases.get(u["phrase"], "unknown")
         return units
+
+
+def build_phrase_index(headwords):
+    """{first lemma: [(headword, lemma_seq)]} for a set of tracked phrase
+    headwords — each tokenized once, longest sequences first. Single-token
+    keys are words, not phrases, and are skipped."""
+    idx = {}
+    for hw in headwords:
+        seq = tuple(t.lemma for t in tokenize(hw))
+        if len(seq) < 2:
+            continue
+        idx.setdefault(seq[0], []).append((hw, seq))
+    for cands in idx.values():
+        cands.sort(key=lambda c: -len(c[1]))
+    return idx
+
+
+def match_phrase_units(lemmas, index):
+    """Occurrences of indexed phrases in a lemma sequence — greedy
+    left-to-right, longest first, non-overlapping. [{phrase, start, end}]
+    with end exclusive. Shared by Stage-1 coverage (KnownSet.phrase_units)
+    and the server's live pass over a staged transcript, so a phrase the
+    user marks today is placed on tomorrow's open the same way."""
+    units = []
+    i = 0
+    while i < len(lemmas):
+        for hw, seq in index.get(lemmas[i], ()):
+            if tuple(lemmas[i:i + len(seq)]) == seq:
+                units.append({"phrase": hw, "start": i, "end": i + len(seq)})
+                i += len(seq) - 1
+                break
+        i += 1
+    return units
 
 
 def phrase_span(tokens, canonical, surface=None):

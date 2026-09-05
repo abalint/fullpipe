@@ -22,7 +22,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import FileResponse  # noqa: E402
 
-from engine.lemma import phrase_span  # noqa: E402
+from engine.lemma import build_phrase_index, match_phrase_units, phrase_span  # noqa: E402
 from engine.paths import ffprobe_path  # noqa: E402
 from ledger import ledgerctl as lc  # noqa: E402
 from lib_config import load_config  # noqa: E402
@@ -39,12 +39,47 @@ def queue_db_path(cfg):
     return str(Path(cfg["work_dir"]) / "queue.db")
 
 
-def episode_phrases(coverage, curate):
+_phrase_index_cache: dict = {}
+
+
+def tracked_phrase_index(conn):
+    """The ledger's phrase headwords as a match index (engine.lemma), rebuilt
+    only when the phrase set changes — a mark from the popup creates a new
+    phrase row, and the next request sees it."""
+    sig = tuple(conn.execute(
+        "SELECT COUNT(*), MAX(updated_at), MAX(last_seen) FROM lemmas "
+        "WHERE kind = 'phrase'").fetchone())
+    if _phrase_index_cache.get("sig") != sig:
+        hws = [r[0] for r in conn.execute(
+            "SELECT lemma FROM lemmas WHERE kind = 'phrase'")]
+        _phrase_index_cache.update(sig=sig, index=build_phrase_index(hws))
+    return _phrase_index_cache["index"]
+
+
+def live_phrases(conn, coverage):
+    """{sentence_idx: [headword]} — every ledger-tracked phrase on each line,
+    matched NOW the way Stage 1 matches them (lemma sequence). coverage.json
+    froze the tracked set at prepare time; a phrase the user marked since
+    (from the popup's phrase layer — often a compound the dictionary pass
+    surfaced) is placed here so it paints on the next open."""
+    index = tracked_phrase_index(conn)
+    if not index:
+        return {}
+    out: dict[int, list] = {}
+    for s in coverage.get("sentences", []):
+        units = match_phrase_units([t.get("l") for t in s["tokens"]], index)
+        if units:
+            out[s["idx"]] = [u["phrase"] for u in units]
+    return out
+
+
+def episode_phrases(coverage, curate, live=None):
     """{sentence_idx: [{canonical, surface}]} — every multi-word expression on
     each line: the curate pass's emissions (curate.json `phrases`, GRAMMAR.md)
     merged with the already-tracked phrases Stage 1 matched deterministically
-    (coverage.json per-sentence `phrases`). One entry per canonical per line;
-    the curate surface wins when both know the phrase."""
+    (coverage.json per-sentence `phrases`) and the ledger's tracked phrases
+    matched live (`live`, from live_phrases). One entry per canonical per
+    line; the curate surface wins when both know the phrase."""
     at: dict[int, list] = {}
 
     def add(idx, canonical, surface):
@@ -63,6 +98,9 @@ def episode_phrases(coverage, curate):
     for s in coverage.get("sentences", []):
         for u in s.get("phrases") or []:
             add(s.get("idx"), u.get("phrase"), "")
+    for idx, hws in (live or {}).items():
+        for hw in hws:
+            add(idx, hw, "")
     return at
 
 
@@ -374,7 +412,8 @@ def create_app(cfg, start_worker=True):
             if not pattern:
                 note["proposed"] = True
             grammar_at.setdefault(idx, []).append(note)
-        phrases_at = episode_phrases(coverage, curate)
+        phrases_at = episode_phrases(
+            coverage, curate, live_phrases(ledger_conn(), coverage))
         statuses = lc.phrase_statuses(
             ledger_conn(), {p["canonical"] for ps in phrases_at.values() for p in ps})
         interest = lc.active_interest(ledger_conn())
@@ -444,9 +483,9 @@ def create_app(cfg, start_worker=True):
         curate = read_json(curate_path) if curate_path.exists() else {}
         patterns = {g.get("pattern") or g.get("proposed_pattern")
                     for g in curate.get("grammar", [])} - {None}
-        phrases = {p["canonical"]
-                   for ps in episode_phrases(coverage, curate).values() for p in ps}
         conn = ledger_conn()
+        phrases = {p["canonical"] for ps in episode_phrases(
+            coverage, curate, live_phrases(conn, coverage)).values() for p in ps}
         interest = lc.active_interest(conn)
         return {"episode_id": episode_id,
                 "known": sorted(lc.known_words(conn) & here),
@@ -492,8 +531,8 @@ def create_app(cfg, start_worker=True):
                   for t in s["tokens"] if t.get("l")}
         # the line's phrases too (血が騒ぐ) — JMdict headwords by construction,
         # keyed by canonical so the popup's phrase layer can gloss them
-        lemmas |= {p["canonical"]
-                   for ps in episode_phrases(coverage, curate).values() for p in ps}
+        lemmas |= {p["canonical"] for ps in episode_phrases(
+            coverage, curate, live_phrases(ledger_conn(), coverage)).values() for p in ps}
         conn = jmdict.open_db(path)  # per-request: sqlite handles are thread-bound
         try:
             result = jmdict.lookup_many(conn, lemmas)

@@ -472,6 +472,27 @@ class TestRoutes(ServerTestBase):
         self.assertEqual(paint["phrase_confirm"], [])
         self.assertEqual(paint["phrase_interest"], [])
 
+    def test_tracked_phrase_is_matched_live_on_the_transcript(self):
+        """A phrase the ledger tracks (marked from the popup after coverage
+        froze) is placed on the line by lemma sequence — no curate entry, no
+        coverage entry needed — so it paints on the next open."""
+        self.stage_episode(with_curate=True)
+        conn = lc.open_db(self.cfg["ledger_db"])
+        lc.add_phrase(conn, "という")  # と|いう on sentence 1
+        conn.close()
+        data = self.client.get(f"/transcript/{EP}", headers=self.auth).json()
+        self.assertEqual(data["sentences"][1]["phrases"], [
+            {"canonical": "という", "surface": "", "status": "unknown",
+             "start": 1, "end": 3}])
+        self.assertNotIn("phrases", data["sentences"][0])
+        # the paint state's phrase axis is narrowed to the same live set
+        conn = lc.open_db(self.cfg["ledger_db"])
+        lc.confirm_known_lemma(conn, "という", kind="phrase")
+        lc.promote(conn)
+        conn.close()
+        paint = self.client.get(f"/episodes/{EP}/paint", headers=self.auth).json()
+        self.assertEqual(paint["phrase_known"], ["という"])
+
     def test_phrase_tap_lands_as_phrase_evidence(self):
         """The popup's phrase layer marks the expression, not its words: a
         [key, mark, "phrase"] tap creates/updates the phrase item only, and
