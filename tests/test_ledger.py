@@ -172,6 +172,117 @@ class LedgerTest(unittest.TestCase):
         self.assertEqual(row["status"], "unknown")
         self.assertEqual(row["exposure_count"], 6)  # activated, just not qualifying
 
+    def test_one_other_gap_qualifies(self):
+        # 2026-09-07 calibration: a sentence with one other gap parses well
+        # enough — the count is as predictive as the only-gap count was.
+        self._expose_watched("蝶", 6, other_unknown=1)
+        lc.promote(self.conn)
+        row = self.conn.execute(
+            "SELECT status, confirm_candidate FROM lemmas WHERE lemma='蝶'").fetchone()
+        self.assertEqual(row["status"], "learning")
+        self.assertEqual(row["confirm_candidate"], 1)
+
+    def _session(self, sid, episode_id, kind, secs, duration=100.0):
+        lc.record_view_session(self.conn, {
+            "id": sid, "episode_id": episode_id, "kind": kind, "day": "2026-09-07",
+            "start": "2026-09-07T10:00:00Z", "secs": secs, "duration": duration})
+
+    def test_times_seen_tallies(self):
+        # occ rides in the exposure context; a watched episode is one play.
+        ep, exp = _exposure_payload("e1", ["猫"])
+        exp["猫"].update({"occ": 5, "occ_clean": 4, "occ_near": 1})
+        lc.record_exposure(self.conn, ep, exp)
+        lc.mark_watched(self.conn, "e1")
+        lc.promote(self.conn)
+        ctx = json.loads(self.conn.execute(
+            "SELECT context FROM evidence WHERE lemma='猫'").fetchone()[0])
+        self.assertEqual((ctx["occ"], ctx["occ_clean"], ctx["occ_near"]), (5, 4, 1))
+        row = self.conn.execute(
+            "SELECT seen_active, seen_passive FROM lemmas WHERE lemma='猫'").fetchone()
+        self.assertEqual((row["seen_active"], row["seen_passive"]), (5, 0))
+        # Two Listen-tab loops (200 s over a 100 s file) = 2 passive plays;
+        # passive never touches the active tally or θ.
+        self._session("l1", "e1", "listen", 200.0)
+        lc.promote(self.conn)
+        row = self.conn.execute(
+            "SELECT seen_active, seen_passive, exposure_count FROM lemmas WHERE lemma='猫'").fetchone()
+        self.assertEqual((row["seen_active"], row["seen_passive"]), (5, 10))
+        self.assertEqual(row["exposure_count"], 1)
+        # Two full player sittings recorded → active 5 × 2.
+        self._session("w1", "e1", "watch", 200.0)
+        lc.promote(self.conn)
+        self.assertEqual(self.conn.execute(
+            "SELECT seen_active FROM lemmas WHERE lemma='猫'").fetchone()[0], 10)
+        # Rows without a count (pre-tracking) read as one occurrence.
+        ep2, exp2 = _exposure_payload("e2", ["猫"])
+        lc.record_exposure(self.conn, ep2, exp2)
+        lc.mark_watched(self.conn, "e2")
+        lc.promote(self.conn)
+        self.assertEqual(self.conn.execute(
+            "SELECT seen_active FROM lemmas WHERE lemma='猫'").fetchone()[0], 11)
+
+    def test_player_sitting_activates_episode(self):
+        # Subtitles off, no taps, never closed out: a player sitting past
+        # 80 % of the episode still activates its exposures. A Listen-tab
+        # play of an unwatched episode does not.
+        for eid in ("w", "l"):
+            ep, exp = _exposure_payload(eid, ["鳥"])
+            exp["鳥"]["occ"] = 3
+            lc.record_exposure(self.conn, ep, exp)
+        self._session("s1", "w", "watch", 85.0)
+        self._session("s2", "l", "listen", 100.0)
+        lc.promote(self.conn)
+        watched = dict(self.conn.execute("SELECT id, watched FROM episodes").fetchall())
+        self.assertEqual(watched, {"w": 1, "l": 0})
+        row = self.conn.execute(
+            "SELECT exposure_count, seen_active, seen_passive FROM lemmas WHERE lemma='鳥'").fetchone()
+        self.assertEqual((row["exposure_count"], row["seen_active"], row["seen_passive"]),
+                         (1, 3, 3))
+
+    def test_backfill_occurrences_from_coverage(self):
+        import tempfile
+        ep, exp = _exposure_payload("e9", ["犬", "走る"])
+        lc.record_exposure(self.conn, ep, exp)
+        lc.record_exposure(self.conn, *_exposure_payload("gone", ["犬"]))
+        cov = {"episode_id": "e9", "sentences": [
+            {"unknown": [], "tokens": [{"l": "犬", "c": True}, {"l": "が", "c": False},
+                                       {"l": "走る", "c": True}]},
+            {"unknown": ["守る"], "tokens": [{"l": "犬", "c": True}, {"l": "守る", "c": True}]},
+            {"unknown": ["A", "B"], "tokens": [{"l": "犬", "c": True}, {"l": "A", "c": True},
+                                              {"l": "B", "c": True}]},
+        ]}
+        with tempfile.TemporaryDirectory() as root:
+            d = Path(root) / "e9"
+            d.mkdir()
+            (d / "coverage.json").write_text(json.dumps(cov), encoding="utf-8")
+            r = lc.backfill_occurrences(self.conn, root)
+            self.assertEqual(r, {"episodes": 1, "rows_updated": 2})
+            # re-run is a no-op
+            self.assertEqual(lc.backfill_occurrences(self.conn, root)["rows_updated"], 0)
+        ctx = {r["episode_id"]: json.loads(r["context"]) for r in self.conn.execute(
+            "SELECT episode_id, context FROM evidence WHERE lemma='犬'")}
+        self.assertEqual((ctx["e9"]["occ"], ctx["e9"]["occ_clean"], ctx["e9"]["occ_near"]),
+                         (3, 1, 1))
+        self.assertEqual(ctx["e9"]["other_unknown_count"], 0)  # untouched
+        self.assertNotIn("occ", ctx["gone"])  # no coverage.json on disk
+
+    def test_calibration_report(self):
+        self._expose_watched("蝶", 6)
+        lc.promote(self.conn)
+        lc.confirm_known_lemma(self.conn, "蝶")
+        self._expose_watched("鯨", 6)
+        lc.promote(self.conn)
+        lc.defer_known_lemma(self.conn, "鯨")
+        lc.apply_taps(self.conn, {"episode_id": None, "batch_id": "b",
+                                  "taps": [["諦める", "k"]]})
+        rep = lc.query_calibration(self.conn)
+        self.assertEqual(rep["confirm_answers"], 2)
+        self.assertEqual(rep["confirm_yes_rate"], 0.5)
+        self.assertEqual(rep["yes_rate_by_qualifying"]["rare"]["6"], {"yes": 1, "n": 2, "rate": 0.5})
+        self.assertEqual(rep["suggested_theta"], {"rare": None})
+        self.assertEqual(rep["tap_known_by_episodes_seen"], {"rare": {"0": 1}})
+        self.assertEqual(rep["occurrence_coverage"], {"rows": 12, "with_count": 0})
+
     def test_tap_known_promotes(self):
         lc.apply_taps(self.conn, {"episode_id": None, "batch_id": "b1",
                                   "taps": [["諦める", "k"]]})

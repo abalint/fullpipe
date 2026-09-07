@@ -102,7 +102,23 @@ them when PRIME mode is built.
 | `import-known list.csv` | bulk-seed knowns from an external list (AnkiMorphs export etc.) + promote |
 | `promote` | recompute the projection (retunes thresholds for free) |
 | `confirm LEMMA` / `defer LEMMA` | answer the exposure prompt: known ('yes') / snooze ('not yet') |
-| `query summary\|needs-review\|confirm-queue\|why LEMMA\|unwatched` | read the ledger |
+| `backfill-occurrences` | stamp per-episode occurrence counts onto exposure rows from the coverage.json files still on disk (+ promote) |
+| `query summary\|needs-review\|confirm-queue\|why LEMMA\|unwatched\|calibration` | read the ledger |
+
+**Times seen (2026-09-07).** Every exposure row carries how often the word
+occurred in that episode (`occ`, plus `occ_clean` / `occ_near` = occurrences
+in sentences with zero / one other gap). `promote` multiplies that by the
+phone's recorded plays (`view_sessions`) into two lemma tallies: `seen_active`
+(occurrences × in-player plays over watched episodes; a watched episode is at
+least one play) and `seen_passive` (occurrences × Listen-tab plays, whether or
+not the episode was ever watched with subtitles). Passive exposure counts, but
+counts apart — it never feeds θ. A player sitting past 80 % of an episode
+activates its exposures like a close-out would (subtitles off, no taps, still
+watched). `query calibration` reports the think-you-know bar against the
+ledger's own confirm answers (yes-rate by band × qualifying / episodes /
+occurrences) and suggests θ per band; it is meant to be re-run as occurrence
+data accrues — rows from before 2026-09-07 whose episode was purged read as one
+occurrence.
 
 Bootstrap order: `init` → `build_freq` → `import-anki` (if inheriting an Anki collection), plus
 `import-known` if you have an external known list (e.g. an AnkiMorphs

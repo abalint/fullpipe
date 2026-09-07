@@ -270,10 +270,16 @@ common unknowns are known" with a **per-lemma exposure threshold** scaled by `fr
    rehab candidate instead *(resolved Q2)*.
 2. `tap_known` → **known**.
 3. Qualifying exposures ≥ θ(freq_rank) **and** `episode_spread ≥ k` → **known**. An
-   exposure *qualifies* when its episode is watched and `other_unknown_count = 0` —
-   the target was the sentence's only gap, a true i+1 acquisition event. (Relax to
-   "allow 1 other unknown on sentences of 8+ content tokens" later if convergence
-   feels slow — retunable by rerunning `promote`.) *(resolved Q1)*
+   exposure *qualifies* when its episode is watched and `other_unknown_count ≤ 1` —
+   the target was the sentence's only gap or one of two. It was 0 until 2026-09-07;
+   the calibration over 245 confirm answers (`ledgerctl query calibration`) found the
+   0-gap, ≤1-gap and ≤2-gap counts equally (un)predictive of a "yes" (AUC .53–.55)
+   while the 0-gap bar starved every band below the top 2,000 (31 of 814
+   mid-frequency words met in 6+ watched episodes had cleared θ; ≤1 clears 117).
+   Retunable by rerunning `promote`. *(resolved Q1; relaxed 2026-09-07)*
+   θ counts *episodes*, not occurrences: the lemma row also carries `seen_active`
+   / `seen_passive` (occurrences × plays, README — Times seen) for the day the
+   calibration has enough occurrence-stamped rows to move θ onto them.
 4. `mined_card`, no stronger positive → **learning**.
 5. else → **unknown**.
 

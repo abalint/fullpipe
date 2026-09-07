@@ -99,6 +99,15 @@ tap lands. Otherwise the list is 30 % noise on day one.
 
 ## 4. Fixing the starved pipe
 
+*2026-09-07 status:* neither change below shipped as written. What did: the
+word qualifying bar moved from `other_unknown_count = 0` to `≤ 1`
+(`WORD_QUALIFYING_MAX_OTHER_UNKNOWN`), on the calibration finding that the
+0 / ≤1 / ≤2 counts predict a confirm "yes" equally badly (AUC .53–.55, so the
+looser bar costs no precision) while the strict bar had cleared θ for 31 of
+814 mid-frequency words met in 6+ watched episodes. Occurrence counts and
+play-multiplied `seen_active` / `seen_passive` tallies were added alongside
+(README — Times seen); `ledgerctl query calibration` re-runs the check.
+
 Two changes to exposure recording / `_judge`, independent of the lists:
 
 1. **Record the classification on word exposures** (one line in

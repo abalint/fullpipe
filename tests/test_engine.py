@@ -257,6 +257,20 @@ class LemmaTest(unittest.TestCase):
         self.assertIn("縄張り", exp)
         self.assertEqual(exp["縄張り"]["other_unknown_count"], 1)
 
+    def test_analyze_transcript_counts_occurrences(self):
+        ks = L.KnownSet(known={"犬", "走る"})
+        sentences = [(0.0, 2.0, "犬が走る。"), (2.0, 4.0, "犬が縄張りを守る。"),
+                     (4.0, 6.0, "犬が走る、犬が走る。")]
+        exp = L.analyze_transcript(sentences, ks)["exposures"]
+        # 犬: 4 occurrences; 3 in gap-free sentences, none with exactly one
+        # other gap (sentence 2 has two: 縄張り + 守る).
+        self.assertEqual((exp["犬"]["occ"], exp["犬"]["occ_clean"],
+                          exp["犬"].get("occ_near")), (4, 3, None))
+        self.assertEqual((exp["走る"]["occ"], exp["走る"]["occ_clean"]), (3, 3))
+        self.assertEqual((exp["縄張り"]["occ"], exp["縄張り"]["occ_near"]), (1, 1))
+        # the best-context swap keeps the running tallies
+        self.assertEqual(exp["犬"]["other_unknown_count"], 0)
+
     # --- phrase units (GRAMMAR.md — i+1 with phrases) -----------------------
 
     def test_phrase_units_match_inflected(self):

@@ -15,6 +15,7 @@ counting them as unknown "words" was the dominant noise source in coverage
 """
 
 import re
+import threading
 from collections import namedtuple
 
 # SudachiPy top-level POS categories (part_of_speech()[0]). Current
@@ -56,6 +57,12 @@ Token = namedtuple("Token", "surface lemma normalized reading pos pos2",
 
 _sudachi_tokenizer = None
 _sudachi_split = None
+# SudachiPy's tokenizer is a PyO3 object with a RefCell inside: two threads
+# calling tokenize() at once raise "RuntimeError: Already borrowed". The sync
+# server runs endpoints in a threadpool and the phone fetches several prep
+# docs in parallel, so serialize every call (observed 2026-09-06: /prep and
+# /definitions 500s during the morning sync).
+_sudachi_lock = threading.Lock()
 
 
 def _sudachi():
@@ -81,16 +88,17 @@ def tokenize(text):
     """
     tok, mode = _sudachi()
     out = []
-    for m in tok.tokenize(text, mode):
-        p = m.part_of_speech()
-        out.append(Token(
-            m.surface(),
-            m.dictionary_form(),
-            m.normalized_form(),
-            m.reading_form(),
-            p[0],
-            p[1],
-        ))
+    with _sudachi_lock:
+        for m in tok.tokenize(text, mode):
+            p = m.part_of_speech()
+            out.append(Token(
+                m.surface(),
+                m.dictionary_form(),
+                m.normalized_form(),
+                m.reading_form(),
+                p[0],
+                p[1],
+            ))
     return out
 
 
@@ -436,13 +444,25 @@ def analyze_transcript(sentences, known_set, learning=frozenset(),
     Returns dict with per-sentence details (each carries index/start/end and
     the analyze_sentence fields) plus summary stats and the exposure payload
     shape record-exposure expects: every content lemma with its sentence
-    context (known_ratio, other_unknown_count).
+    context (known_ratio, other_unknown_count) plus how often the item
+    occurs in the episode: `occ` (every occurrence), `occ_clean` (in
+    sentences where it was the only gap — other_unknown_count 0) and
+    `occ_near` (one other gap). The ledger multiplies `occ` by plays to
+    keep the "times seen" tally per word (DESIGN.md — Times seen).
     """
     details = []
     counts = {"comprehensible": 0, "reinforcement": 0, "i_plus_1": 0, "too_hard": 0}
     total_tokens = 0
     known_tokens = 0
     exposures = {}  # lemma -> best (lowest other_unknown_count) context
+
+    def _count(key, other_unknown):
+        ctx = exposures[key]
+        ctx["occ"] = ctx.get("occ", 0) + 1
+        if other_unknown == 0:
+            ctx["occ_clean"] = ctx.get("occ_clean", 0) + 1
+        elif other_unknown == 1:
+            ctx["occ_near"] = ctx.get("occ_near", 0) + 1
 
     for idx, (start, end, text) in enumerate(sentences):
         d = analyze_sentence(text, known_set, learning, non_vocab)
@@ -465,7 +485,11 @@ def analyze_transcript(sentences, known_set, learning=frozenset(),
             }
             best = exposures.get(t.lemma)
             if best is None or ctx["other_unknown_count"] < best["other_unknown_count"]:
+                if best is not None:
+                    ctx.update({k: best[k] for k in ("occ", "occ_clean", "occ_near")
+                                if k in best})
                 exposures[t.lemma] = ctx
+            _count(t.lemma, other_unknown)
 
         # Already-tracked phrases met in this sentence accrue exposure too
         # (kind rides in the context; record_exposure routes it). New phrase
@@ -481,7 +505,11 @@ def analyze_transcript(sentences, known_set, learning=frozenset(),
             }
             best = exposures.get(u["phrase"])
             if best is None or ctx["other_unknown_count"] < best["other_unknown_count"]:
+                if best is not None:
+                    ctx.update({k: best[k] for k in ("occ", "occ_clean", "occ_near")
+                                if k in best})
                 exposures[u["phrase"]] = ctx
+            _count(u["phrase"], other_unknown)
 
     return {
         "sentences": details,

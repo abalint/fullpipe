@@ -124,16 +124,40 @@ def grammar_theta_for(level):
 
 
 # An exposure "qualifies" toward θ when the learner could parse the sentence
-# around the item. Words carry other_unknown_count == 0 (Q1); phrase/grammar
+# around the item. Words carry other_unknown_count (Q1) — at most
+# WORD_QUALIFYING_MAX_OTHER_UNKNOWN other gaps in the sentence; phrase/grammar
 # exposures carry the sentence's coverage classification instead — anything
 # short of too_hard parses.
+#
+# The bar was 0 (the item is the sentence's only gap) until 2026-09-07. The
+# 2026-09-07 calibration (`ledgerctl query calibration`, 245 confirm answers)
+# found the yes-rate flat across 0-gap, ≤1-gap and ≤2-gap counts (AUC .53 /
+# .54 / .55 — none separates "yes" from "not yet"), while the 0-gap bar
+# starved everything below the top 2,000: of 814 mid-frequency words met in
+# 6+ watched episodes, 31 had cleared θ. ≤1 clears 117 at the same precision.
+WORD_QUALIFYING_MAX_OTHER_UNKNOWN = 1
 QUALIFYING_CLASSIFICATIONS = frozenset(("comprehensible", "i_plus_1", "reinforcement"))
+
+# A player (`watch`) sitting that covers this fraction of an episode activates
+# its exposures like a close-out would: watching with the subtitles off and
+# never tapping is still watching. Listen-tab (`listen`) plays never activate
+# — passive exposure is tallied apart (seen_passive), not counted toward θ.
+PLAY_ACTIVATION_FRACTION = 0.8
+# A session that reports no media length at all: one play if it ran this long.
+_PLAY_UNKNOWN_DURATION_SECS = 600.0
 
 
 def _exposure_qualifies(ctx):
-    if ctx.get("other_unknown_count", 99) == 0:
+    if ctx.get("other_unknown_count", 99) <= WORD_QUALIFYING_MAX_OTHER_UNKNOWN:
         return True
     return ctx.get("classification") in QUALIFYING_CLASSIFICATIONS
+
+
+def _ctx(e):
+    try:
+        return json.loads(e["context"] or "{}")
+    except ValueError:
+        return {}
 
 
 def now_iso():
@@ -176,6 +200,9 @@ def _migrate(conn):
         conn.execute("ALTER TABLE lemmas ADD COLUMN confirm_candidate INTEGER NOT NULL DEFAULT 0")
     if "kind" not in lemma_cols:
         conn.execute("ALTER TABLE lemmas ADD COLUMN kind TEXT NOT NULL DEFAULT 'word'")
+    for col in ("seen_active", "seen_passive"):
+        if col not in lemma_cols:
+            conn.execute(f"ALTER TABLE lemmas ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0")
     vs_cols = {r["name"] for r in conn.execute("PRAGMA table_info(view_sessions)")}
     if vs_cols and "source" not in vs_cols:
         conn.execute("ALTER TABLE view_sessions ADD COLUMN source TEXT NOT NULL DEFAULT 'app'")
@@ -283,7 +310,8 @@ def record_exposure(conn, episode, exposures):
         kind = ctx.get("kind", "word")
         _touch_lemma(conn, lemma, ctx.get("reading"), ctx.get("pos"), ts, kind=kind)
         context = {k: ctx[k] for k in ("sentence_idx", "known_ratio",
-                                       "other_unknown_count", "classification")
+                                       "other_unknown_count", "classification",
+                                       "occ", "occ_clean", "occ_near")
                    if k in ctx}
         cur = conn.execute(
             """INSERT OR IGNORE INTO evidence
@@ -1086,10 +1114,18 @@ def defer_known_lemma(conn, key, kind="word"):
 
 # --- promote (the state machine) ----------------------------------------------
 
-def _judge(evs, theta, spread_needed, in_anki_known=False):
+def _judge(evs, theta, spread_needed, in_anki_known=False, plays=None):
     """Apply promote's rule order to one item's evidence rows (any kind —
     word, phrase, or grammar; sources an item never receives simply yield
-    empty lists). Returns the projection fields."""
+    empty lists). Returns the projection fields.
+
+    plays: {episode_id: (active_plays, passive_plays)} from episode_plays —
+    multiplies each exposure's per-episode occurrence count (`occ`; 1 when
+    the row predates occurrence tracking) into the "times seen" tallies:
+    seen_active over watched exposures (a watched episode is at least one
+    play), seen_passive over every exposure (Listen-tab plays count whether
+    or not the episode was ever watched with subtitles)."""
+    plays = plays or {}
     taps_known = [e for e in evs if e["source"] == "tap_known"]
     imports = [e for e in evs if e["source"] == "import"]
     confirms = [e for e in evs if e["source"] == "confirm_known"]
@@ -1099,13 +1135,15 @@ def _judge(evs, theta, spread_needed, in_anki_known=False):
     active_exposures = [e for e in evs if e["source"] == "exposure" and e["watched"]]
 
     qualifying = []
+    seen_active = 0.0
     for e in active_exposures:
-        try:
-            ctx = json.loads(e["context"] or "{}")
-        except ValueError:
-            ctx = {}
+        ctx = _ctx(e)
         if _exposure_qualifies(ctx):
             qualifying.append(e)
+        seen_active += ctx.get("occ", 1) * max(1.0, plays.get(e["episode_id"], (0.0, 0.0))[0])
+    seen_passive = sum(
+        _ctx(e).get("occ", 1) * plays.get(e["episode_id"], (0.0, 0.0))[1]
+        for e in evs if e["source"] == "exposure")
     q_count = len(qualifying)
     q_spread = len({e["episode_id"] for e in qualifying})
 
@@ -1160,6 +1198,8 @@ def _judge(evs, theta, spread_needed, in_anki_known=False):
         "confidence": max(-1.0, min(1.0, signed / 6.0)),
         "exposure_count": len(active_exposures),
         "episode_spread": len({e["episode_id"] for e in active_exposures}),
+        "seen_active": int(round(seen_active)),
+        "seen_passive": int(round(seen_passive)),
         "first_seen": min(e["ts"] for e in evs),
         "last_seen": max(e["ts"] for e in evs),
     }
@@ -1199,6 +1239,8 @@ def promote(conn, anki_known=None):
     5. else → unknown.
     """
     anki_known = anki_known or set()
+    activate_played_episodes(conn)
+    plays = episode_plays(conn)
     rows = conn.execute(
         """SELECT e.lemma, e.kind, e.source, e.ts, e.context, e.episode_id,
                   COALESCE(ep.watched, 0) AS watched
@@ -1247,18 +1289,22 @@ def promote(conn, anki_known=None):
         # misses → rare-word θ, per the docstring.
         freq_rank = freq.get(lemma)
         theta, spread_needed = theta_for(freq_rank)
-        v = _judge(evs, theta, spread_needed, in_anki_known=lemma in anki_known)
+        v = _judge(evs, theta, spread_needed, in_anki_known=lemma in anki_known,
+                   plays=plays)
         conn.execute(
             """INSERT INTO lemmas (lemma, kind, freq_rank, status, confidence,
-                                   exposure_count, episode_spread, needs_review,
-                                   confirm_candidate, first_seen, last_seen, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                   exposure_count, episode_spread, seen_active,
+                                   seen_passive, needs_review, confirm_candidate,
+                                   first_seen, last_seen, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(lemma) DO UPDATE SET
                    freq_rank = excluded.freq_rank,
                    status = excluded.status,
                    confidence = excluded.confidence,
                    exposure_count = excluded.exposure_count,
                    episode_spread = excluded.episode_spread,
+                   seen_active = excluded.seen_active,
+                   seen_passive = excluded.seen_passive,
                    needs_review = excluded.needs_review,
                    confirm_candidate = excluded.confirm_candidate,
                    first_seen = COALESCE(lemmas.first_seen, excluded.first_seen),
@@ -1266,8 +1312,9 @@ def promote(conn, anki_known=None):
                    updated_at = excluded.updated_at
                """,
             (lemma, kind, freq_rank, v["status"], v["confidence"],
-             v["exposure_count"], v["episode_spread"], v["needs_review"],
-             v["confirm_candidate"], v["first_seen"], v["last_seen"], ts_now),
+             v["exposure_count"], v["episode_spread"], v["seen_active"],
+             v["seen_passive"], v["needs_review"], v["confirm_candidate"],
+             v["first_seen"], v["last_seen"], ts_now),
         )
 
     # Heal grammar rows whose evidence vanished (episode purge): back to the
@@ -1290,6 +1337,116 @@ def promote(conn, anki_known=None):
     return {"lemmas_recomputed": len(by_key) - grammar_seen,
             "grammar_recomputed": grammar_seen,
             "status_counts": counts}
+
+
+def episode_plays(conn):
+    """{episode_id: (active_plays, passive_plays)} from the phone's recorded
+    sittings (view_sessions, source='app'). A play is wall-clock playing time
+    over the media length, unclipped — a Listen-tab loop that ran an episode
+    twice is two plays. `watch` (the in-app player, subtitles on or off) is
+    active; `listen` (the Listen tab's queue) is passive. The two are kept
+    apart all the way to the lemma row (seen_active / seen_passive): passive
+    exposure counts, but it counts differently. Hand-typed and imported
+    sittings carry no real episode id and fall out naturally."""
+    durations = dict(conn.execute(
+        "SELECT id, duration FROM episodes WHERE duration IS NOT NULL").fetchall())
+    plays = {}
+    for r in conn.execute(
+            "SELECT episode_id, kind, secs, duration FROM view_sessions "
+            "WHERE source = 'app'"):
+        dur = r["duration"] or durations.get(r["episode_id"])
+        if dur and dur > 0:
+            frac = r["secs"] / dur
+        else:
+            frac = 1.0 if r["secs"] >= _PLAY_UNKNOWN_DURATION_SECS else 0.0
+        a, p = plays.get(r["episode_id"], (0.0, 0.0))
+        if r["kind"] == "watch":
+            a += frac
+        else:
+            p += frac
+        plays[r["episode_id"]] = (a, p)
+    return plays
+
+
+def activate_played_episodes(conn):
+    """Flip watched=1 on episodes the player has carried past
+    PLAY_ACTIVATION_FRACTION of their length — the no-taps, subtitles-off
+    watch that never went through the close-out. Idempotent; promote calls
+    it first so those exposures judge as active. Returns the ids flipped."""
+    flipped = []
+    for ep, (active, _passive) in episode_plays(conn).items():
+        if active >= PLAY_ACTIVATION_FRACTION:
+            cur = conn.execute(
+                "UPDATE episodes SET watched = 1 WHERE id = ? AND watched = 0", (ep,))
+            if cur.rowcount:
+                flipped.append(ep)
+    if flipped:
+        conn.commit()
+    return flipped
+
+
+def occurrences_from_coverage(cov):
+    """{item key: {occ, occ_clean, occ_near}} recounted from a coverage.json
+    (its per-sentence tokens and phrase units) — the same tally
+    engine.lemma.analyze_transcript stamps on fresh exposures, for rows
+    written before occurrence tracking. Phrase keys are prefixed 'phrase:'."""
+    out = {}
+
+    def bump(key, other):
+        o = out.setdefault(key, {"occ": 0, "occ_clean": 0, "occ_near": 0})
+        o["occ"] += 1
+        if other == 0:
+            o["occ_clean"] += 1
+        elif other == 1:
+            o["occ_near"] += 1
+
+    for sent in cov.get("sentences", []):
+        unknown = set(sent.get("unknown") or ())
+        for t in sent.get("tokens", []):
+            if not t.get("c"):
+                continue
+            bump(t["l"], len(unknown) - (1 if t["l"] in unknown else 0))
+        for u in sent.get("phrases") or ():
+            hw = u["phrase"]
+            bump("phrase:" + hw, len(unknown) - (1 if hw in unknown else 0))
+    return out
+
+
+def backfill_occurrences(conn, episodes_root):
+    """Stamp occ / occ_clean / occ_near onto exposure rows whose episode still
+    has a coverage.json under episodes_root (purged episodes can't be
+    recounted; their rows keep reading as one occurrence). Re-runnable — a
+    row already carrying `occ` is left alone unless the recount differs."""
+    root = Path(episodes_root)
+    episodes = 0
+    updated = 0
+    for cov_path in sorted(root.glob("*/coverage.json")):
+        try:
+            cov = json.loads(cov_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        ep = cov.get("episode_id") or cov_path.parent.name
+        counts = occurrences_from_coverage(cov)
+        if not counts:
+            continue
+        episodes += 1
+        rows = conn.execute(
+            "SELECT id, lemma, kind, context FROM evidence "
+            "WHERE source = 'exposure' AND episode_id = ?", (ep,)).fetchall()
+        for r in rows:
+            key = ("phrase:" + r["lemma"]) if r["kind"] == "phrase" else r["lemma"]
+            c = counts.get(key)
+            if not c:
+                continue
+            ctx = _ctx(r)
+            if all(ctx.get(k) == v for k, v in c.items()):
+                continue
+            ctx.update(c)
+            conn.execute("UPDATE evidence SET context = ? WHERE id = ?",
+                         (json.dumps(ctx, ensure_ascii=False), r["id"]))
+            updated += 1
+    conn.commit()
+    return {"episodes": episodes, "rows_updated": updated}
 
 
 # --- read verbs ----------------------------------------------------------------
@@ -1585,7 +1742,7 @@ def query_word_list(conn, lemmas):
     by_lemma = {}
     for r in conn.execute(
             f"""SELECT lemma, reading, pos, freq_rank, exposure_count,
-                       episode_spread, last_seen
+                       episode_spread, seen_active, seen_passive, last_seen
                 FROM lemmas WHERE lemma IN ({qmarks})""", lemmas):
         by_lemma[r["lemma"]] = dict(r)
     ranks = {r[0]: r[1] for r in conn.execute(
@@ -1595,7 +1752,8 @@ def query_word_list(conn, lemmas):
     for lemma in lemmas:
         d = by_lemma.get(lemma) or {
             "lemma": lemma, "reading": None, "pos": None, "freq_rank": None,
-            "exposure_count": 0, "episode_spread": 0, "last_seen": None}
+            "exposure_count": 0, "episode_spread": 0, "seen_active": 0,
+            "seen_passive": 0, "last_seen": None}
         if d["freq_rank"] is None:
             d["freq_rank"] = ranks.get(lemma)
         d["kind"] = "word"
@@ -1612,7 +1770,7 @@ def query_confirm_queue(conn):
     in as context."""
     rows = conn.execute(
         """SELECT lemma, kind, reading, pos, freq_rank, exposure_count,
-                  episode_spread, last_seen
+                  episode_spread, seen_active, seen_passive, last_seen
            FROM lemmas WHERE confirm_candidate = 1
            ORDER BY freq_rank IS NULL, freq_rank, exposure_count DESC""").fetchall()
     grows = conn.execute(
@@ -1647,6 +1805,114 @@ def query_why(conn, lemma):
     return {
         "lemma": dict(lrow) if lrow else None,
         "evidence": [dict(r) for r in evs],
+    }
+
+
+def query_calibration(conn, target=0.6):
+    """Does the think-you-know bar fire when the learner actually knows the
+    word? Re-runnable report over the ledger's own answers (words only;
+    bulk-imported lemmas excluded — no exposure trail).
+
+    Labels: the exposure prompt's answers (confirm_known = yes,
+    confirm_defer = not yet) are the calibration set — each is a direct
+    "do you know this?" at a recorded exposure state. ✓/✗ taps are listed
+    apart: a ✓ is near-certain by construction (you tap what you know), so
+    its *timing* — how many watched episodes the word had appeared in — is
+    the useful number, not its yes-rate.
+
+    For every answer the state at that moment: watched episodes containing
+    the word (`eps`), exposures clearing the current qualifying bar (`q`),
+    and occurrences seen in those episodes (`occ`; rows without a count read
+    as 1, so this only means something once backfill-occurrences / fresh
+    Stage-1 runs have stamped them — `occ_known` says how many rows had a
+    real count). Yes-rates are bucketed per freq band; `suggested_theta` is
+    the smallest q bucket (n ≥ 10) whose yes-rate reaches `target`, or null
+    when no bucket does — which is the 2026-09-07 finding (the count doesn't
+    separate yes from not-yet in the 2–8 range; see
+    WORD_QUALIFYING_MAX_OTHER_UNKNOWN)."""
+    watched = {r[0] for r in conn.execute("SELECT id FROM episodes WHERE watched = 1")}
+    freq = dict(conn.execute("SELECT lemma, rank FROM freq").fetchall())
+    by_lemma = {}
+    for r in conn.execute(
+            "SELECT lemma, source, episode_id, context, ts FROM evidence "
+            "WHERE kind = 'word' ORDER BY ts, id"):
+        by_lemma.setdefault(r["lemma"], []).append(r)
+
+    def band(rank):
+        if rank is None:
+            return "rare"
+        for max_rank, _t, _s in THETA_TABLE:
+            if max_rank is None:
+                return f"{THETA_TABLE[-2][0]}+"
+            if rank < max_rank:
+                return f"<{max_rank}"
+
+    def bucket(n):
+        return str(n) if n < 8 else "8+"
+
+    answers, taps = [], []
+    occ_known = occ_rows = 0
+    for lemma, evs in by_lemma.items():
+        if any(e["source"] == "import" for e in evs):
+            continue
+        seen = []
+        for e in evs:
+            if e["source"] == "exposure":
+                seen.append(e)
+                continue
+            if e["source"] not in ("confirm_known", "confirm_defer", "tap_known", "tap_unknown"):
+                continue
+            ctxs = [_ctx(x) for x in seen if x["episode_id"] in watched]
+            occ_rows += len(ctxs)
+            occ_known += sum("occ" in c for c in ctxs)
+            state = {"band": band(freq.get(lemma)), "eps": len(ctxs),
+                     "q": sum(_exposure_qualifies(c) for c in ctxs),
+                     "occ": sum(c.get("occ", 1) for c in ctxs),
+                     "yes": e["source"] in ("confirm_known", "tap_known")}
+            (answers if e["source"].startswith("confirm") else taps).append(state)
+
+    def rates(rows, key):
+        g = {}
+        for r in rows:
+            k = (r["band"], bucket(r[key]))
+            y, n = g.get(k, (0, 0))
+            g[k] = (y + r["yes"], n + 1)
+        out = {}
+        for (b, k), (y, n) in sorted(g.items()):
+            out.setdefault(b, {})[k] = {"yes": y, "n": n, "rate": round(y / n, 2)}
+        return out
+
+    by_q = rates(answers, "q")
+    suggested = {}
+    for b, buckets in by_q.items():
+        pick = None
+        for k, v in buckets.items():
+            if k != "8+" and v["n"] >= 10 and v["rate"] >= target:
+                pick = int(k)
+                break
+        suggested[b] = pick
+    tap_eps = {}
+    for t in taps:
+        if t["yes"]:
+            k = (t["band"], bucket(t["eps"]))
+            tap_eps[k] = tap_eps.get(k, 0) + 1
+    tap_timing = {}
+    for (b, k), n in sorted(tap_eps.items()):
+        tap_timing.setdefault(b, {})[k] = n
+    return {
+        "target_yes_rate": target,
+        "qualifying_bar": {"word_max_other_unknown": WORD_QUALIFYING_MAX_OTHER_UNKNOWN,
+                           "theta_table": THETA_TABLE},
+        "confirm_answers": len(answers),
+        "confirm_yes_rate": round(sum(a["yes"] for a in answers) / len(answers), 2)
+                            if answers else None,
+        "yes_rate_by_qualifying": by_q,
+        "yes_rate_by_episodes": rates(answers, "eps"),
+        "yes_rate_by_occurrences": rates(answers, "occ"),
+        "occurrence_coverage": {"rows": occ_rows, "with_count": occ_known},
+        "suggested_theta": suggested,
+        "tap_known_by_episodes_seen": tap_timing,
+        "tap_unknown": sum(1 for t in taps if not t["yes"]),
     }
 
 
@@ -1830,11 +2096,18 @@ def main(argv=None):
     p = sub.add_parser("record-view-session",
                        help="store one phone-recorded playback session (JSON file)")
     p.add_argument("session_json")
+    p = sub.add_parser("backfill-occurrences",
+                       help="stamp per-episode occurrence counts onto exposure rows "
+                            "from the coverage.json files still on disk")
+    p.add_argument("--episodes", help="episodes root (default: <work_dir>/episodes)")
     p = sub.add_parser("query", help="read the ledger")
     p.add_argument("what", choices=["summary", "needs-review", "confirm-queue",
                                     "why", "unwatched", "ratings", "channels",
-                                    "grammar-proposed", "non-vocab", "viewtime"])
+                                    "grammar-proposed", "non-vocab", "viewtime",
+                                    "calibration"])
     p.add_argument("lemma", nargs="?")
+    p.add_argument("--target", type=float, default=0.6,
+                   help="calibration: yes-rate a θ bucket must reach (default 0.6)")
 
     args = ap.parse_args(argv)
     cfg = load_config(args.config, required=args.verb == "import-anki" or not args.db)
@@ -1882,6 +2155,14 @@ def main(argv=None):
         _json_out(result)
     elif args.verb == "promote":
         _json_out(promote(conn))
+    elif args.verb == "backfill-occurrences":
+        root = args.episodes or ((cfg or {}).get("work_dir") and
+                                 str(Path(cfg["work_dir"]) / "episodes"))
+        if not root:
+            ap.error("backfill-occurrences needs --episodes or a config with work_dir")
+        result = backfill_occurrences(conn, root)
+        result["promote"] = promote(conn)
+        _json_out(result)
     elif args.verb == "confirm":
         confirm_known_lemma(conn, args.lemma, kind=args.kind)
         _json_out({"lemma": args.lemma, "kind": args.kind, "confirmed": True,
@@ -1967,6 +2248,8 @@ def main(argv=None):
                 "ORDER BY ts DESC, key")])
         elif args.what == "viewtime":
             _json_out(query_view_totals(conn))
+        elif args.what == "calibration":
+            _json_out(query_calibration(conn, target=args.target))
 
 
 if __name__ == "__main__":
