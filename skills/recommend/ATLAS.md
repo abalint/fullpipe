@@ -99,6 +99,47 @@ clean-turn-taking variant; never drop the cluster.
   Distinct from 心霊スポット検証 (that's a location run, this is a telling).
   First offered 2026-09-03.
 
+
+## Radio & podcast (audio-native; first mapped 2026-09-05, "20 h audio" pass)
+
+- **ラジオ人生相談（テレフォン人生相談）** — ニッポン放送's long-running call-in
+  show: one caller, one host, one expert, clean turn-taking, real people's
+  problems in colloquial register. `テレフォン人生相談` · `人生相談 ラジオ 名回答` —
+  hybrid. Risk: YouTube carries it only as fan reposts (compilation channels
+  with clickbait titles); some add AI-voiced intros — ear-check. First offered
+  2026-09-05.
+- **深夜ラジオ フリートーク（ANN / JUNK）** — the big commercial late-night
+  comedian shows (オードリーANN, バナナムーン, 爆笑問題カーボーイ); duo free-talk,
+  the most-listened spoken Japanese there is. `オールナイトニッポン フリートーク` ·
+  `深夜ラジオ 芸人 フリートーク` — fun. Risk: reposts only (official channels post
+  clips, not full talk); 作業用 multi-hour compilations are the junk tier — take a
+  single-show cut. First offered 2026-09-05.
+- **芸人ポッドキャスト（公式）** — duo comedians' own podcast feeds posted with
+  video (マユリカのうなげろりん, 紅しょうがは好きズキ, こたけ正義感, TBS/ニッポン放送
+  Podcast labels). `芸人 ポッドキャスト 公式` — fun. Clean, official, 30-60 min.
+  Risk: guest episodes go to 3-4 voices. First offered 2026-09-05.
+- **歴史・科学ポッドキャスト（COTEN RADIO / サイエントーク）** — the award-winning
+  "learn X through conversation" podcasts; one explainer + one or two listeners.
+  `コテンラジオ` · `サイエントーク` · `歴史 ポッドキャスト 二人` — hybrid. near-box:
+  the ゆる哲学ラジオ shape with a different subject. First offered 2026-09-05.
+- **声優ラジオ番組** — anime-tie-in web radio with the cast talking off-script
+  (フリーレン「トークの魔法」, かぐや様 告RADIO). `声優 ラジオ番組 公式` — fun.
+  Risk: 4-person episodes overlap; take the 2-host ones. First offered 2026-09-05.
+- **芸能人ラジオ対談（TOKYO FM 公式 etc.）** — a star host and one guest for an
+  hour (福山雅治 福のラジオ, 安住紳一郎 日曜天国). `ラジオ 対談 ノーカット 公式` —
+  fun. First offered 2026-09-05.
+- **ラジオ深夜便 明日へのことば** — NHK's late-night life-story interview, one
+  elderly guest, unhurried. `ラジオ深夜便 明日へのことば` — edu/hybrid. near-box:
+  singular person in interview clothes. Reposts only. First offered 2026-09-05.
+- **浪曲** — sung-and-spoken narrative with shamisen (玉川奈々福, 日本浪曲協会
+  official). `浪曲 口演` — hybrid. near-box to 落語/講談. First offered 2026-09-05.
+- **ラジオドキュメンタリー（CBC / TBS）** — broadcast audio documentaries posted
+  in full by the station. `ラジオ ドキュメンタリー 音声番組` — edu. near-box:
+  singular-person doc without pictures. First offered 2026-09-05.
+- **文化系トークラジオ Life / 荻上チキ 特集** — panel-format cultural talk; the
+  sampled 荻上チキ vein at ★4. Risk: 4-5 voice panels, 3-4 h full shows — take
+  the 45-min 特集 cuts.
+
 ## The してみた economy (challenge & experiment)
 
 - **検証してみた** — "we actually tested it" — urban claims, products, physics.
@@ -196,6 +237,13 @@ clean-turn-taking variant; never drop the cluster.
   real difficulty above the coverage %; TEDx talks are short (10-20 min) while
   the university lectures run 40-75. First offered 2026-09-04.
 
+- **授業系エンタメ解説（中田敦彦のYouTube大学 shape）** — one performer at a
+  whiteboard "teaching" history/myth/books as a show; enormous native reach.
+  `YouTube大学 歴史` · `わかりやすく解説 授業` — hybrid. Solo, projected, scripted.
+  First offered 2026-09-05.
+- **医師解説** — a real doctor explaining one illness to camera (精神科医 益田,
+  MedLife). `医師 解説 病気 わかりやすい` — edu. Solo, clean; jargon pulls the
+  coverage estimate down. First offered 2026-09-05.
 - **Vtuber雑談・切り抜き** — real human voices (not TTS) behind avatars;
   clear solo talk. `Vtuber 雑談 切り抜き` — fun.
   Risk: heavy net-slang register; NOT the synthetic-TTS veto (real voice), but
@@ -211,6 +259,18 @@ clean-turn-taking variant; never drop the cluster.
   near-box: quirky-experiment adjacency.
 - **車中泊 / バンライフ** — `車中泊 旅` — hybrid. near-box: day-in-the-life
   adjacency.
+- **ソロ登山 / 縦走** — one hiker filming and narrating a serious mountain route
+  (MARiA麻莉亜, とよの山遊び). `登山 ソロ 縦走` — hybrid. Risk: wind, long silent
+  stretches, and some uploads carry no ja auto-caption (the gate can't score
+  them). Apply the re-skin test honestly against the walking vein: the
+  danger/endurance frame is what's new. First offered 2026-09-05.
+- **モトブログ / ソロツーリング** — helmet-cam riders talking the whole way
+  (Rena.motovlog). `モトブログ ソロツーリング` — hybrid. Risk: several top
+  channels' auto-captions come back non-Japanese → gate drops them; recheck by
+  ear. Not yet sampled.
+- **海外在住日本人 vlog** — Japanese people abroad talking to camera about the
+  move (Yu in London, Elie in スイス). `海外 移住 日本人 リアル` — hybrid.
+  near-box: day-in-the-life adjacency. First offered 2026-09-05.
 - **スポーツ企画（プロ vs 素人）** — `プロ vs 素人 サッカー` · `野球 対決` — fun.
 - **筋トレ / フィットネス検証** — `筋トレ 検証` — fun.
 

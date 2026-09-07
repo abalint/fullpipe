@@ -142,12 +142,63 @@ def _validate_edits(edits, sentences):
     return ok, rejected
 
 
-def _non_vocab_lemmas(names, nonwords):
+# A component lemma ranked better than this in the freq table, or present in
+# JMdict as a headword, is an ordinary word (道場 7205, 孤独 1995, 魔女 5654,
+# 絨毯), not a name fragment (矢崎 37278,
+# ヒカル 26074, 颯太 45378 — or absent). Registering it would shadow real
+# vocabulary in every later episode (observed 2026-09-06: 小谷道場 → 道場,
+# 孤独の魔女 → 孤独/魔女, 亀十 → 亀/十).
+COMMON_RANK = 20000
+
+
+def _common_lemmas(cfg, lemmas):
+    """Subset of `lemmas` the ledger's freq table ranks as common words."""
+    lemmas = [l for l in set(lemmas) if l]
+    db = (cfg or {}).get("ledger_db")
+    if not lemmas or not db:
+        return set()
+    import os
+    import sqlite3
+    path = os.path.expanduser(db)
+    if not os.path.exists(path):
+        return set()
+    conn = sqlite3.connect(path)
+    try:
+        common = set()
+        for i in range(0, len(lemmas), 500):
+            chunk = lemmas[i:i + 500]
+            q = ("select distinct lemma from freq where rank < ? and lemma in (%s)"
+                 % ",".join("?" * len(chunk)))
+            common.update(r[0] for r in conn.execute(q, [COMMON_RANK, *chunk]))
+    finally:
+        conn.close()
+    # JMdict headwords are real words too (絨毯, ヘチマ, レモンサワー sit
+    # far below COMMON_RANK yet are plainly vocabulary; 矢崎/颯太/白村 are not
+    # headwords). Names are only ever registered as their whole string.
+    try:
+        from tools import jmdict as J
+        jpath = os.path.expanduser(str(J.db_path(cfg)))
+        if os.path.exists(jpath):
+            jconn = J.open_db(jpath)
+            try:
+                for l in lemmas:
+                    if l not in common and J.is_headword(jconn, l):
+                        common.add(l)
+            finally:
+                jconn.close()
+    except Exception:
+        pass
+    return common
+
+
+def _non_vocab_lemmas(names, nonwords, cfg=None):
     """Expand adjudicated strings into the lemma/surface keys coverage
     excludes. Each string contributes itself plus every content token's
     lemma (矢崎ヒカル → 矢崎, ヒカル) so membership survives however the
-    surrounding sentence tokenizes."""
+    surrounding sentence tokenizes — except components that are ordinary
+    dictionary words by frequency rank, which stay mineable."""
     keys = set()
+    parts = set()
     for s in list(names) + list(nonwords):
         s = (s or "").strip()
         if not s:
@@ -155,8 +206,10 @@ def _non_vocab_lemmas(names, nonwords):
         keys.add(s)
         for t in L.tokenize(s):
             if L.is_content_word(t.pos) and L.is_card_worthy(t.lemma):
-                keys.add(t.lemma)
-    return sorted(keys)
+                parts.add(t.lemma)
+    parts -= keys  # a whole flagged string is always registered as itself
+    parts -= _common_lemmas(cfg, parts)
+    return sorted(keys | parts)
 
 
 def cmd_apply(cfg, episode_id, repair_json, log):
@@ -172,7 +225,7 @@ def cmd_apply(cfg, episode_id, repair_json, log):
     names = [n if isinstance(n, str) else n.get("surface", "")
              for n in data.get("names") or []]
     nonwords = [str(w) for w in data.get("nonwords") or []]
-    non_vocab = _non_vocab_lemmas(names, nonwords)
+    non_vocab = _non_vocab_lemmas(names, nonwords, cfg)
 
     ep_dir = episode_dir(cfg, episode_id)
     if edits:
