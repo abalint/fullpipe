@@ -477,6 +477,48 @@ class LedgerTest(unittest.TestCase):
         self.assertEqual(self.conn.execute(
             "SELECT COUNT(*) FROM evidence").fetchone()[0], 1)
 
+    def test_lookups_are_counted_never_judged(self):
+        # A popup open with no mark: one zero-weight row per word per
+        # episode, replaced (not stacked) by every re-sent batch; the word's
+        # status and lists are untouched.
+        self._expose_watched("窓", 6)
+        lc.promote(self.conn)
+        before = dict(self.conn.execute(
+            "SELECT status, confirm_candidate FROM lemmas WHERE lemma='窓'").fetchone())
+        r = lc.apply_taps(self.conn, {"episode_id": "ep0", "batch_id": "l1", "taps": [],
+                                      "lookups": [["窓", 2, {"confirm": 2}],
+                                                  ["鍵", 1, {"none": 1}],
+                                                  ["気を付ける", 1, {"interest": 1}, "phrase"],
+                                                  ["bad", 0, {}], ["", 3, {}]]},
+                          watched=False)
+        self.assertEqual(r["lookups"], 3)
+        r = lc.apply_taps(self.conn, {"episode_id": "ep0", "batch_id": "l2", "taps": [],
+                                      "lookups": [["窓", 3, {"confirm": 2, "known": 1}]]},
+                          watched=False)
+        self.assertEqual(r["lookups"], 1)  # replaced, not a second row
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM evidence WHERE source='lookup' AND lemma='窓'").fetchone()[0], 1)
+        lc.apply_taps(self.conn, {"episode_id": "ep9", "batch_id": "l3", "taps": [],
+                                  "lookups": [["窓", 1, {"should_know": 1}]]}, watched=False)
+        lc.promote(self.conn)
+        row = self.conn.execute(
+            "SELECT status, confirm_candidate, lookups, lookups_listed, kind "
+            "FROM lemmas WHERE lemma='窓'").fetchone()
+        self.assertEqual((row["status"], row["confirm_candidate"]),
+                         (before["status"], before["confirm_candidate"]))
+        self.assertEqual((row["lookups"], row["lookups_listed"]), (4, 3))
+        self.assertEqual(self.conn.execute(
+            "SELECT kind, lookups FROM lemmas WHERE lemma='気を付ける'").fetchone()[:], ("phrase", 1))
+        self.assertEqual(self.conn.execute(
+            "SELECT status FROM lemmas WHERE lemma='鍵'").fetchone()[0], "unknown")
+        # then a ✓: the calibration reports 4 lookups before it was known
+        lc.apply_taps(self.conn, {"episode_id": "ep9", "batch_id": "l4",
+                                  "taps": [["窓", "k"]]}, watched=False)
+        rep = lc.query_calibration(self.conn)
+        self.assertEqual(rep["lookups_before_known"], {"rare": {"4": 1}})
+        self.assertEqual(rep["lookups_by_list"],
+                         {"confirm": 2, "known": 1, "none": 1, "should_know": 1})  # words only
+
     def test_apply_taps_implies_mark_watched(self):
         ep, exp = _exposure_payload("epw", ["犬"])
         lc.record_exposure(self.conn, ep, exp)

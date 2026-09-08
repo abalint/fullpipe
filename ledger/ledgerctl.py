@@ -48,10 +48,15 @@ SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
 # prompt — a knowledge claim as strong as a tap. confirm_defer ("not yet") is a
 # scheduling signal, not knowledge: neutral polarity/weight, it only snoozes the
 # re-prompt (see promote — the candidate rule).
-POLARITY = {"exposure": 1, "tap_known": 1, "tap_unknown": -1, "tap_interest": 0,
+# lookup: the popup opened on a word and no mark followed — a "what was that
+# again?" that is neither knowledge nor its absence (weight 0, never moves
+# status or lists). Counted per word per episode with the list the word was
+# painted from at the tap, so the ledger can say how many lookups precede a ✓
+# and how often a listed word is looked up (query calibration).
+POLARITY = {"exposure": 1, "tap_known": 1, "tap_unknown": -1, "tap_interest": 0, "lookup": 0,
             "mined_card": 0, "card_lapse": -1, "import": 1,
             "confirm_known": 1, "confirm_defer": 0}
-WEIGHT = {"exposure": 1.0, "tap_known": 3.0, "tap_unknown": 3.0, "tap_interest": 0.0,
+WEIGHT = {"exposure": 1.0, "tap_known": 3.0, "tap_unknown": 3.0, "tap_interest": 0.0, "lookup": 0.0,
           "mined_card": 1.0, "card_lapse": 2.0, "import": 2.0,  # import: strong, but below a deliberate tap
           "confirm_known": 3.0, "confirm_defer": 0.0}
 
@@ -200,7 +205,7 @@ def _migrate(conn):
         conn.execute("ALTER TABLE lemmas ADD COLUMN confirm_candidate INTEGER NOT NULL DEFAULT 0")
     if "kind" not in lemma_cols:
         conn.execute("ALTER TABLE lemmas ADD COLUMN kind TEXT NOT NULL DEFAULT 'word'")
-    for col in ("seen_active", "seen_passive"):
+    for col in ("seen_active", "seen_passive", "lookups", "lookups_listed"):
         if col not in lemma_cols:
             conn.execute(f"ALTER TABLE lemmas ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0")
     vs_cols = {r["name"] for r in conn.execute("PRAGMA table_info(view_sessions)")}
@@ -1064,6 +1069,8 @@ def apply_taps(conn, payload, anki_call=None, watched=True):
         else:
             applied += 1
 
+    lookups = _apply_lookups(conn, episode_id, payload.get("lookups") or [], ts)
+
     if batch_id:
         conn.execute(
             "INSERT INTO tap_batches (batch_id, episode_id, applied_at) VALUES (?, ?, ?)",
@@ -1072,7 +1079,7 @@ def apply_taps(conn, payload, anki_call=None, watched=True):
     conn.commit()
 
     result = {"batch_id": batch_id, "episode_id": episode_id, "interest": interest,
-              "applied": applied, "duplicate": False}
+              "applied": applied, "lookups": lookups, "duplicate": False}
     if episode_id and watched:
         # Pasting a prep doc's corrections is proof you watched it (P5).
         try:
@@ -1083,6 +1090,65 @@ def apply_taps(conn, payload, anki_call=None, watched=True):
     if anki_call is not None:
         result["lapse_poll"] = poll_lapses(conn, anki_call)
     return result
+
+
+LOOKUP_LISTS = ("confirm", "interest", "should_know", "known", "none")
+
+
+def _apply_lookups(conn, episode_id, entries, ts):
+    """Land a batch's popup lookups: [[key, n, {list: n, …}, kind?], …] —
+    the phone's cumulative count for this episode, so every re-sent batch
+    carries the whole set and the row is replaced, never stacked (one
+    lookup row per item per episode). `n` is every open of the popup on the
+    item; the per-list split says what it was painted as at each tap
+    (LOOKUP_LISTS; 'none' = plain). Returns the number of rows written."""
+    written = 0
+    for entry in entries:
+        if not isinstance(entry, (list, tuple)) or len(entry) < 2:
+            continue
+        lemma, n = entry[0], entry[1]
+        lists = entry[2] if len(entry) > 2 and isinstance(entry[2], dict) else {}
+        kind = entry[3] if len(entry) > 3 and entry[3] else "word"
+        if not isinstance(lemma, str) or not lemma or kind not in ("word", "phrase"):
+            continue
+        if isinstance(n, bool) or not isinstance(n, (int, float)) or n <= 0:
+            continue
+        lists = {k: int(v) for k, v in lists.items()
+                 if k in LOOKUP_LISTS and isinstance(v, (int, float)) and v > 0}
+        context = json.dumps({"n": int(n), "lists": lists}, ensure_ascii=False)
+        _touch_lemma(conn, lemma, ts=ts, kind=kind,
+                     pos="expression" if kind == "phrase" else None)
+        row = conn.execute(
+            """SELECT id, context FROM evidence
+               WHERE lemma = ? AND kind = ? AND source = 'lookup' AND episode_id IS ?""",
+            (lemma, kind, episode_id)).fetchone()
+        if row:
+            if row["context"] != context:
+                conn.execute("UPDATE evidence SET context = ?, ts = ? WHERE id = ?",
+                             (context, ts, row["id"]))
+                written += 1
+            continue
+        conn.execute(
+            """INSERT INTO evidence (lemma, kind, source, polarity, weight, episode_id, context, ts)
+               VALUES (?, ?, 'lookup', 0, 0.0, ?, ?, ?)""",
+            (lemma, kind, episode_id, context, ts))
+        written += 1
+    return written
+
+
+def _lookup_totals(evs):
+    """(lookups, lookups_listed) over an item's lookup rows — every popup
+    open, and the opens made while the word sat on a list (blue / ★ /
+    green; 'known' and 'none' are not lists)."""
+    total = listed = 0
+    for e in evs:
+        if e["source"] != "lookup":
+            continue
+        ctx = _ctx(e)
+        total += int(ctx.get("n", 0))
+        listed += sum(int(v) for k, v in (ctx.get("lists") or {}).items()
+                      if k in ("confirm", "interest", "should_know"))
+    return total, listed
 
 
 def _record_confirm(conn, key, source, kind="word"):
@@ -1144,6 +1210,7 @@ def _judge(evs, theta, spread_needed, in_anki_known=False, plays=None):
     seen_passive = sum(
         _ctx(e).get("occ", 1) * plays.get(e["episode_id"], (0.0, 0.0))[1]
         for e in evs if e["source"] == "exposure")
+    lookups, lookups_listed = _lookup_totals(evs)
     q_count = len(qualifying)
     q_spread = len({e["episode_id"] for e in qualifying})
 
@@ -1200,6 +1267,8 @@ def _judge(evs, theta, spread_needed, in_anki_known=False, plays=None):
         "episode_spread": len({e["episode_id"] for e in active_exposures}),
         "seen_active": int(round(seen_active)),
         "seen_passive": int(round(seen_passive)),
+        "lookups": lookups,
+        "lookups_listed": lookups_listed,
         "first_seen": min(e["ts"] for e in evs),
         "last_seen": max(e["ts"] for e in evs),
     }
@@ -1294,9 +1363,10 @@ def promote(conn, anki_known=None):
         conn.execute(
             """INSERT INTO lemmas (lemma, kind, freq_rank, status, confidence,
                                    exposure_count, episode_spread, seen_active,
-                                   seen_passive, needs_review, confirm_candidate,
+                                   seen_passive, lookups, lookups_listed,
+                                   needs_review, confirm_candidate,
                                    first_seen, last_seen, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(lemma) DO UPDATE SET
                    freq_rank = excluded.freq_rank,
                    status = excluded.status,
@@ -1305,6 +1375,8 @@ def promote(conn, anki_known=None):
                    episode_spread = excluded.episode_spread,
                    seen_active = excluded.seen_active,
                    seen_passive = excluded.seen_passive,
+                   lookups = excluded.lookups,
+                   lookups_listed = excluded.lookups_listed,
                    needs_review = excluded.needs_review,
                    confirm_candidate = excluded.confirm_candidate,
                    first_seen = COALESCE(lemmas.first_seen, excluded.first_seen),
@@ -1313,7 +1385,8 @@ def promote(conn, anki_known=None):
                """,
             (lemma, kind, freq_rank, v["status"], v["confidence"],
              v["exposure_count"], v["episode_spread"], v["seen_active"],
-             v["seen_passive"], v["needs_review"], v["confirm_candidate"],
+             v["seen_passive"], v["lookups"], v["lookups_listed"],
+             v["needs_review"], v["confirm_candidate"],
              v["first_seen"], v["last_seen"], ts_now),
         )
 
@@ -1742,7 +1815,8 @@ def query_word_list(conn, lemmas):
     by_lemma = {}
     for r in conn.execute(
             f"""SELECT lemma, reading, pos, freq_rank, exposure_count,
-                       episode_spread, seen_active, seen_passive, last_seen
+                       episode_spread, seen_active, seen_passive, lookups,
+                       lookups_listed, last_seen
                 FROM lemmas WHERE lemma IN ({qmarks})""", lemmas):
         by_lemma[r["lemma"]] = dict(r)
     ranks = {r[0]: r[1] for r in conn.execute(
@@ -1753,7 +1827,7 @@ def query_word_list(conn, lemmas):
         d = by_lemma.get(lemma) or {
             "lemma": lemma, "reading": None, "pos": None, "freq_rank": None,
             "exposure_count": 0, "episode_spread": 0, "seen_active": 0,
-            "seen_passive": 0, "last_seen": None}
+            "seen_passive": 0, "lookups": 0, "lookups_listed": 0, "last_seen": None}
         if d["freq_rank"] is None:
             d["freq_rank"] = ranks.get(lemma)
         d["kind"] = "word"
@@ -1770,7 +1844,8 @@ def query_confirm_queue(conn):
     in as context."""
     rows = conn.execute(
         """SELECT lemma, kind, reading, pos, freq_rank, exposure_count,
-                  episode_spread, seen_active, seen_passive, last_seen
+                  episode_spread, seen_active, seen_passive, lookups,
+                  lookups_listed, last_seen
            FROM lemmas WHERE confirm_candidate = 1
            ORDER BY freq_rank IS NULL, freq_rank, exposure_count DESC""").fetchall()
     grows = conn.execute(
@@ -1852,20 +1927,36 @@ def query_calibration(conn, target=0.6):
 
     answers, taps = [], []
     occ_known = occ_rows = 0
+    lookups_before_known = {}   # band → bucket(lookups before the first ✓/yes) → words
+    lookups_by_list = {}        # list → popup opens while painted as that list
     for lemma, evs in by_lemma.items():
         if any(e["source"] == "import" for e in evs):
             continue
+        b = band(freq.get(lemma))
         seen = []
+        looked = 0
+        known_at = None
         for e in evs:
             if e["source"] == "exposure":
                 seen.append(e)
                 continue
+            if e["source"] == "lookup":
+                ctx = _ctx(e)
+                for k, v in (ctx.get("lists") or {}).items():
+                    lookups_by_list[k] = lookups_by_list.get(k, 0) + int(v)
+                if known_at is None:
+                    looked += int(ctx.get("n", 0))
+                continue
             if e["source"] not in ("confirm_known", "confirm_defer", "tap_known", "tap_unknown"):
                 continue
+            if e["source"] in ("confirm_known", "tap_known") and known_at is None:
+                known_at = e["ts"]
+                d = lookups_before_known.setdefault(b, {})
+                d[bucket(looked)] = d.get(bucket(looked), 0) + 1
             ctxs = [_ctx(x) for x in seen if x["episode_id"] in watched]
             occ_rows += len(ctxs)
             occ_known += sum("occ" in c for c in ctxs)
-            state = {"band": band(freq.get(lemma)), "eps": len(ctxs),
+            state = {"band": b, "eps": len(ctxs),
                      "q": sum(_exposure_qualifies(c) for c in ctxs),
                      "occ": sum(c.get("occ", 1) for c in ctxs),
                      "yes": e["source"] in ("confirm_known", "tap_known")}
@@ -1913,6 +2004,11 @@ def query_calibration(conn, target=0.6):
         "suggested_theta": suggested,
         "tap_known_by_episodes_seen": tap_timing,
         "tap_unknown": sum(1 for t in taps if not t["yes"]),
+        # popup opens (no mark) before the word's first ✓ / confirm-yes, per
+        # band; and how the opens split by what the word was painted as.
+        "lookups_before_known": {b: dict(sorted(d.items())) for b, d in
+                                 sorted(lookups_before_known.items())},
+        "lookups_by_list": dict(sorted(lookups_by_list.items())),
     }
 
 

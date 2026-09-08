@@ -120,6 +120,13 @@ occurrences) and suggests θ per band; it is meant to be re-run as occurrence
 data accrues — rows from before 2026-09-07 whose episode was purged read as one
 occurrence.
 
+**Lookups (2026-09-07).** Opening the popup on a word without marking it is a
+`lookup`: zero weight, never moves status or lists. The tap batch carries the
+episode's cumulative opens per item with what the word was painted as at each
+tap (blue think-you-know / ★ / green should-know / known / none); the lemma
+row keeps `lookups` and `lookups_listed`, and `query calibration` reports how
+many lookups precede a ✓ per band and how the opens split by list.
+
 Bootstrap order: `init` → `build_freq` → `import-anki` (if inheriting an Anki collection), plus
 `import-known` if you have an external known list (e.g. an AnkiMorphs
 known-morphs export — how this install was seeded, 3,046 lemmas). Imports are

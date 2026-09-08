@@ -24,6 +24,8 @@ CREATE TABLE IF NOT EXISTS lemmas (
     episode_spread INTEGER NOT NULL DEFAULT 0,         -- distinct watched episodes
     seen_active    INTEGER NOT NULL DEFAULT 0,         -- times seen: Σ occurrences × player plays over watched episodes
     seen_passive   INTEGER NOT NULL DEFAULT 0,         -- times heard: Σ occurrences × Listen-tab plays (never feeds θ)
+    lookups        INTEGER NOT NULL DEFAULT 0,         -- popup opens with no mark (source='lookup' rows, Σ n)
+    lookups_listed INTEGER NOT NULL DEFAULT 0,         -- …of which while the word sat on a list (blue / ★ / green)
     needs_review   INTEGER NOT NULL DEFAULT 0,         -- conflict → /reconcile queue
     confirm_candidate INTEGER NOT NULL DEFAULT 0,      -- exposures crossed θ → ask the user (not auto-known)
     first_seen TEXT, last_seen TEXT, updated_at TEXT NOT NULL

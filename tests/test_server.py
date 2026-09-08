@@ -492,6 +492,22 @@ class TestRoutes(ServerTestBase):
         paint = self.client.get(f"/episodes/{EP}/paint", headers=self.auth).json()
         self.assertEqual(paint["phrase_known"], ["という"])
 
+    def test_taps_batch_carries_lookups(self):
+        """Popup opens ride in the tap batch as `lookups` and land as
+        zero-weight rows — no status change, no card-selection effect."""
+        self.stage_episode(with_curate=True)
+        r = self.client.post("/taps", json={
+            "episode_id": EP, "batch_id": "L" * 16, "taps": [],
+            "lookups": [["犬", 2, {"should_know": 1, "none": 1}]]}, headers=self.auth)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["lookups"], 1)
+        conn = lc.open_db(self.cfg["ledger_db"])
+        row = conn.execute(
+            "SELECT status, lookups, lookups_listed FROM lemmas WHERE lemma='犬'").fetchone()
+        self.assertEqual((row["status"], row["lookups"], row["lookups_listed"]),
+                         ("unknown", 2, 1))
+        conn.close()
+
     def test_phrase_tap_lands_as_phrase_evidence(self):
         """The popup's phrase layer marks the expression, not its words: a
         [key, mark, "phrase"] tap creates/updates the phrase item only, and
