@@ -103,6 +103,8 @@ them when PRIME mode is built.
 | `promote` | recompute the projection (retunes thresholds for free) |
 | `confirm LEMMA` / `defer LEMMA` | answer the exposure prompt: known ('yes') / snooze ('not yet') |
 | `backfill-occurrences` | stamp per-episode occurrence counts onto exposure rows from the coverage.json files still on disk (+ promote) |
+| `backfill-snapshots` | stamp claim snapshots onto historical ✓/✗/yes/not-yet rows (one-off; new claims snapshot as they land) |
+| `fit-confirm-model [--target 0.8]` | fit the adaptive think-you-know scorer on the claim snapshots (+ promote); `promote` also refits on its own every 25 new labeled claims |
 | `query summary\|needs-review\|confirm-queue\|why LEMMA\|unwatched\|calibration` | read the ledger |
 
 **Times seen (2026-09-07).** Every exposure row carries how often the word
@@ -112,7 +114,10 @@ phone's recorded plays (`view_sessions`) into two lemma tallies: `seen_active`
 (occurrences × in-player plays over watched episodes; a watched episode is at
 least one play) and `seen_passive` (occurrences × Listen-tab plays, whether or
 not the episode was ever watched with subtitles). Passive exposure counts, but
-counts apart — it never feeds θ. A player sitting past 80 % of an episode
+counts apart — it never feeds θ. Each sitting also reports its seconds per
+subtitle state (on / keyword-only / off / 🎧 audio), so `lemmas.seen_by_mode`
+says how many of a word's sightings had subtitles under them; lookups and
+marks record the state they were made in (`context.mode`). A player sitting past 80 % of an episode
 activates its exposures like a close-out would (subtitles off, no taps, still
 watched). `query calibration` reports the think-you-know bar against the
 ledger's own confirm answers (yes-rate by band × qualifying / episodes /
@@ -289,8 +294,14 @@ failed job (the app's `↻ retry` button). See `AUDIT.md` for the full gap list.
 `GET /confirm` (candidates + JMdict senses + the watched episodes they appeared
 in), `POST /confirm {lemma, known}`, `ledgerctl confirm/defer`, `query
 confirm-queue`. Answering "yes" appends `confirm_known` (→ known); "not yet"
-appends `confirm_defer` (stays learning, snoozed until a fresh qualifying
-exposure lands). The app grows a **Confirm words** queue reached from a banner on
+appends `confirm_defer` (stays learning; it comes back only once the exposures
+landing after the "not yet" re-clear θ / k by themselves). Since 2026-09-07 a
+word is flagged only when the sentences it was met in were mostly understood
+(mean `known_ratio` ≥ 0.7, verbs ≥ 0.8) — the blue list is a precision
+surface, and θ alone was right 61 % of the time (DESIGN.md — promote rule 3).
+Once enough claims carry snapshots the fitted scorer's cutoff replaces that
+hand gate and adapts as answers accrue (DESIGN.md — Adaptive confirm model);
+`lemmas.confirm_score` is its P(known), shown on the confirm card. The app grows a **Confirm words** queue reached from a banner on
 the Progress tab. Re-promoting the live ledger moved 85 exposure-only knowns into
 the queue (deliberate taps + the AnkiMorphs import are unaffected).
 

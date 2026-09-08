@@ -26,6 +26,8 @@ CREATE TABLE IF NOT EXISTS lemmas (
     seen_passive   INTEGER NOT NULL DEFAULT 0,         -- times heard: Σ occurrences × Listen-tab plays (never feeds θ)
     lookups        INTEGER NOT NULL DEFAULT 0,         -- popup opens with no mark (source='lookup' rows, Σ n)
     lookups_listed INTEGER NOT NULL DEFAULT 0,         -- …of which while the word sat on a list (blue / ★ / green)
+    confirm_score  REAL,                               -- adaptive model's P(known) once it is fitted (words only)
+    seen_by_mode   TEXT,                               -- JSON {on, kw, off, audio, listen, unknown}: times seen split by subtitle state
     needs_review   INTEGER NOT NULL DEFAULT 0,         -- conflict → /reconcile queue
     confirm_candidate INTEGER NOT NULL DEFAULT 0,      -- exposures crossed θ → ask the user (not auto-known)
     first_seen TEXT, last_seen TEXT, updated_at TEXT NOT NULL
@@ -167,6 +169,16 @@ CREATE TABLE IF NOT EXISTS freq (
 
 -- Idempotent tap flushes from the mobile client (MOBILE.md — sync semantics):
 -- a re-POST of the same batch_id is a no-op.
+-- Fitted models (DESIGN.md — Adaptive confirm model): name → JSON params.
+-- 'confirm' is the think-you-know scorer (ledger/confirm_model.py), refit by
+-- promote as claims accrue; lemmas.confirm_score is its P(known) projection.
+CREATE TABLE IF NOT EXISTS models (
+    name       TEXT PRIMARY KEY,
+    params     TEXT NOT NULL,
+    n_rows     INTEGER NOT NULL,
+    trained_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS tap_batches (
     batch_id   TEXT PRIMARY KEY,
     episode_id TEXT,
@@ -204,6 +216,7 @@ CREATE TABLE IF NOT EXISTS view_sessions (
     reached     REAL,               -- furthest media position seen (s)
     duration    REAL,               -- media length (s), when the client knew it
     source      TEXT NOT NULL DEFAULT 'app',  -- app (recorded) | manual (typed in) | import (historic sheet)
+    modes       TEXT,               -- JSON {on|kw|off|audio: secs}: the sitting's seconds per subtitle state (watch kind)
     received_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_view_sessions_day ON view_sessions(day);

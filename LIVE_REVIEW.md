@@ -107,6 +107,12 @@ looser bar costs no precision) while the strict bar had cleared θ for 31 of
 814 mid-frequency words met in 6+ watched episodes. Occurrence counts and
 play-multiplied `seen_active` / `seen_passive` tallies were added alongside
 (README — Times seen); `ledgerctl query calibration` re-runs the check.
+Later the same day the list, now 345 words, got a precision gate instead of a
+tighter count: mean known_ratio ≥ 0.7 (verbs 0.8) and a full re-earn after a
+"not yet" — the two things the answers actually separated on (DESIGN.md rule 3).
+That gate is now the fallback behind the adaptive scorer (DESIGN.md — Adaptive
+confirm model): every claim snapshots its history, a logistic fit picks the
+cutoff for 80 % precision, and it refits as claims accrue. First fit: 30 words.
 
 Two changes to exposure recording / `_judge`, independent of the lists:
 

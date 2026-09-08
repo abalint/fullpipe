@@ -277,6 +277,31 @@ common unknowns are known" with a **per-lemma exposure threshold** scaled by `fr
    while the 0-gap bar starved every band below the top 2,000 (31 of 814
    mid-frequency words met in 6+ watched episodes had cleared θ; ≤1 clears 117).
    Retunable by rerunning `promote`. *(resolved Q1; relaxed 2026-09-07)*
+   **Precision gate (2026-09-07):** a word is flagged only if the mean `known_ratio`
+   of the sentences it was met in is ≥ 0.7 (verbs ≥ 0.8 — Sudachi's potential /
+   classical lemma forms read as "wrong word"), and after a "not yet" only the
+   exposures that land afterwards count, and they must re-clear θ / k on their own.
+   Over 226 confirm answers θ alone was right 61 % of the time; the gate reads 82 %
+   at 55 % recall (`ledgerctl query calibration` → `yes_rate_by_known_ratio`).
+   **Adaptive confirm model (2026-09-07, `ledger/confirm_model.py`).** The hand gate
+   above is the fallback. Every knowledge claim — ✓ / ✗ from the popup or a list, yes /
+   not-yet from the exposure prompt — stores in its own evidence row a *snapshot* of how
+   the word had been met up to that moment (`context.snap`: watched episodes, qualifying
+   and only-gap exposures, mean/max known_ratio, occurrences, lookups, days since
+   first/last sighting, prior not-yets, POS, kana, length) and what the phone had painted
+   it as (`context.list`: confirm / interest / should_know / known / none, `prompt` for
+   the queue) and, since 2026-09-08, where it was met (`context.mode`: subtitle state
+   on / kw / off / audio, or listen / page / prep). `backfill-snapshots` stamped the
+   1,092 historical claims. A logistic
+   regression is fit on the claims that judged a *listed* word (prompt answers and marks
+   on a blue word — the population the list scores); the cutoff is the smallest score
+   whose out-of-fold precision reaches the target (0.8); `promote` refits automatically
+   every 25 new labeled claims and stores `lemmas.confirm_score`. When the cutoff exists
+   it replaces the known-ratio gate; when the data can't reach the target the hand gate
+   stays. First fit: 246 rows, AUC .70, 80 % precision at 55 % recall; the learned
+   weights say verbs and prior not-yets against, understood context, only-gap sightings
+   and occurrences for. Words known before this system show up as ✓ at first sight
+   (`first_sight`) and are a feature, not noise. `query calibration` → `model`.
    θ counts *episodes*, not occurrences: the lemma row also carries `seen_active`
    / `seen_passive` (occurrences × plays, README — Times seen) for the day the
    calibration has enough occurrence-stamped rows to move θ onto them.

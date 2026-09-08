@@ -151,9 +151,13 @@ class LedgerTest(unittest.TestCase):
         self.assertEqual(self.conn.execute(
             "SELECT status FROM lemmas WHERE lemma='蝶'").fetchone()["status"], "learning")
 
-        # a fresh qualifying exposure AFTER the defer re-surfaces it
-        time.sleep(1.1)  # ts resolution is seconds — land the exposure past the defer
-        self._expose_watched("蝶", 1, start_idx=6)
+        # after a "not yet" the word re-earns the bar: one fresh sighting is
+        # not enough, θ/k fresh qualifying exposures (rare: 6 / 4) are
+        time.sleep(1.1)  # ts resolution is seconds — land the exposures past the defer
+        self._expose_watched("蝶", 5, start_idx=6)
+        lc.promote(self.conn)
+        self.assertEqual(lc.query_confirm_queue(self.conn), [])
+        self._expose_watched("蝶", 1, start_idx=11)
         lc.promote(self.conn)
         self.assertEqual([c["lemma"] for c in lc.query_confirm_queue(self.conn)], ["蝶"])
 
@@ -163,6 +167,34 @@ class LedgerTest(unittest.TestCase):
         self.assertEqual(lc.query_confirm_queue(self.conn), [])
         self.assertEqual(self.conn.execute(
             "SELECT status FROM lemmas WHERE lemma='蝶'").fetchone()["status"], "known")
+
+    def test_confirm_needs_understood_context(self):
+        # Precision gate: θ cleared in sentences that were mostly gaps is not
+        # a candidate; the same word met in understood sentences is. Verbs
+        # face the higher bar.
+        def expose(lemma, n, kr, start):
+            for i in range(start, start + n):
+                ep, exp = _exposure_payload(f"c{i}", [lemma])
+                exp[lemma]["known_ratio"] = kr
+                lc.record_exposure(self.conn, ep, exp)
+                lc.mark_watched(self.conn, f"c{i}")
+        expose("薔薇", 6, 0.55, 0)
+        expose("泳ぐ", 6, 0.75, 10)
+        self.conn.execute("UPDATE lemmas SET pos='動詞' WHERE lemma='泳ぐ'")
+        lc.promote(self.conn)
+        rows = {r[0]: (r[1], r[2]) for r in self.conn.execute(
+            "SELECT lemma, status, confirm_candidate FROM lemmas")}
+        self.assertEqual(rows["薔薇"], ("learning", 0))  # θ met, context not understood
+        self.assertEqual(rows["泳ぐ"], ("learning", 0))  # 0.75 clears the word bar, not the verb bar
+        expose("薔薇", 6, 0.95, 20)   # mean now 0.75
+        expose("泳ぐ", 6, 0.9, 30)    # mean 0.825
+        lc.promote(self.conn)
+        rows = {r[0]: r[1] for r in self.conn.execute(
+            "SELECT lemma, confirm_candidate FROM lemmas")}
+        self.assertEqual((rows["薔薇"], rows["泳ぐ"]), (1, 1))
+        rep = lc.query_calibration(self.conn)
+        self.assertEqual(rep["qualifying_bar"]["min_known_ratio"], 0.7)
+        self.assertIn("yes_rate_by_known_ratio", rep)
 
     def test_exposure_comprehension_bar(self):
         # Q1: exposures with other unknowns in the sentence don't qualify.
@@ -220,6 +252,53 @@ class LedgerTest(unittest.TestCase):
         lc.promote(self.conn)
         self.assertEqual(self.conn.execute(
             "SELECT seen_active FROM lemmas WHERE lemma='猫'").fetchone()[0], 11)
+
+    def test_times_seen_split_by_subtitle_state(self):
+        # A sitting reports seconds per subtitle state; the lemma's times
+        # seen split the same way, with plays no sitting described as
+        # "unknown" and Listen-tab plays as "listen".
+        ep, exp = _exposure_payload("e1", ["猫"])
+        exp["猫"]["occ"] = 4
+        lc.record_exposure(self.conn, ep, exp)
+        lc.mark_watched(self.conn, "e1")
+        lc.record_view_session(self.conn, {
+            "id": "s1", "episode_id": "e1", "kind": "watch", "day": "2026-09-08",
+            "start": "2026-09-08T10:00:00Z", "secs": 100.0, "duration": 100.0,
+            "modes": {"on": 25.0, "off": 75.0}})
+        lc.record_view_session(self.conn, {
+            "id": "s2", "episode_id": "e1", "kind": "watch", "day": "2026-09-08",
+            "start": "2026-09-08T11:00:00Z", "secs": 50.0, "duration": 100.0})  # old app: no modes
+        lc.record_view_session(self.conn, {
+            "id": "s3", "episode_id": "e1", "kind": "listen", "day": "2026-09-08",
+            "start": "2026-09-08T12:00:00Z", "secs": 100.0, "duration": 100.0})
+        lc.promote(self.conn)
+        row = self.conn.execute(
+            "SELECT seen_active, seen_passive, seen_by_mode FROM lemmas WHERE lemma='猫'").fetchone()
+        self.assertEqual((row["seen_active"], row["seen_passive"]), (6, 4))
+        self.assertEqual(json.loads(row["seen_by_mode"]),
+                         {"on": 1, "off": 3, "unknown": 2, "listen": 4})
+        self.assertEqual(lc.query_view_sessions(self.conn)[0]["modes"], {"on": 25.0, "off": 75.0})
+        with self.assertRaises(ValueError):
+            lc.record_view_session(self.conn, {
+                "id": "s4", "episode_id": "e1", "kind": "watch", "day": "2026-09-08",
+                "start": "2026-09-08T13:00:00Z", "secs": 1.0, "modes": {"subs": 1.0}})
+        self.assertEqual(lc.query_confirm_queue(self.conn), [])  # shape check only
+
+    def test_claims_and_lookups_record_where_the_word_was_met(self):
+        lc.apply_taps(self.conn, {"episode_id": "ep0", "batch_id": "m1",
+                                  "taps": [["窓", "k", "", "confirm", "off"],
+                                           ["扉", "k", "", "", "prep"],
+                                           ["壁", "k", "", "", "bogus"]],
+                                  "lookups": [["窓", 3, {"confirm": 3}, "", {"on": 1, "audio": 2}]]},
+                      watched=False)
+        ctx = {r[0]: json.loads(r[1]) for r in self.conn.execute(
+            "SELECT lemma, context FROM evidence WHERE source='tap_known'")}
+        self.assertEqual((ctx["窓"]["list"], ctx["窓"]["mode"]), ("confirm", "off"))
+        self.assertEqual((ctx["扉"]["list"], ctx["扉"]["mode"]), (None, "prep"))
+        self.assertIsNone(ctx["壁"]["mode"])
+        look = json.loads(self.conn.execute(
+            "SELECT context FROM evidence WHERE source='lookup'").fetchone()[0])
+        self.assertEqual(look, {"n": 3, "lists": {"confirm": 3}, "modes": {"on": 1, "audio": 2}})
 
     def test_player_sitting_activates_episode(self):
         # Subtitles off, no taps, never closed out: a player sitting past
@@ -518,6 +597,86 @@ class LedgerTest(unittest.TestCase):
         self.assertEqual(rep["lookups_before_known"], {"rare": {"4": 1}})
         self.assertEqual(rep["lookups_by_list"],
                          {"confirm": 2, "known": 1, "none": 1, "should_know": 1})  # words only
+
+    def test_claims_carry_snapshots_and_paint(self):
+        # Every ✓ / ✗ / yes / not-yet stores what led up to it: the word's
+        # exposure history at that moment plus what it was painted as.
+        self._expose_watched("窓", 3)
+        lc.apply_taps(self.conn, {"episode_id": "ep2", "batch_id": "s1", "taps": [],
+                                  "lookups": [["窓", 2, {"confirm": 2}]]}, watched=False)
+        lc.apply_taps(self.conn, {"episode_id": "ep2", "batch_id": "s2",
+                                  "taps": [["窓", "k", "", "confirm"], ["扉", "k"]]}, watched=False)
+        ctx = {r[0]: json.loads(r[1]) for r in self.conn.execute(
+            "SELECT lemma, context FROM evidence WHERE source='tap_known'")}
+        snap = ctx["窓"]["snap"]
+        self.assertEqual(ctx["窓"]["list"], "confirm")
+        self.assertEqual((snap["eps"], snap["q"], snap["q0"], snap["lookups"],
+                          snap["lookups_listed"], snap["defers"]), (3, 3, 3, 2, 2, 0))
+        self.assertEqual(snap["kr_mean"], 0.9)
+        self.assertEqual(snap["known_set_size"], 0)  # taken before the claim landed
+        self.assertIsNone(ctx["扉"]["list"])
+        self.assertEqual(ctx["扉"]["snap"]["eps"], 0)  # never met: first sight
+        # the prompt's answers snapshot too, tagged as coming from the queue
+        self._expose_watched("鯨", 6, start_idx=10)
+        lc.promote(self.conn)
+        lc.defer_known_lemma(self.conn, "鯨")
+        ctx = json.loads(self.conn.execute(
+            "SELECT context FROM evidence WHERE source='confirm_defer'").fetchone()[0])
+        self.assertEqual((ctx["list"], ctx["snap"]["eps"]), ("prompt", 6))
+        # training rows: prompt answers + marks on blue words; 扉's plain ✓ is not one
+        rows = lc.training_rows(self.conn)
+        self.assertEqual(sorted((r[0]["eps"], r[1]) for r in rows), [(3, True), (6, False)])
+
+    def test_backfill_snapshots_is_idempotent(self):
+        self._expose_watched("窓", 2)
+        self.conn.execute(
+            "INSERT INTO evidence (lemma, kind, source, polarity, weight, episode_id, context, ts) "
+            "VALUES ('窓', 'word', 'tap_known', 1, 3.0, 'ep1', NULL, ?)", (lc.now_iso(),))
+        self.assertEqual(lc.backfill_snapshots(self.conn), {"claims": 1, "stamped": 1})
+        self.assertEqual(lc.backfill_snapshots(self.conn), {"claims": 1, "stamped": 0})
+        snap = json.loads(self.conn.execute(
+            "SELECT context FROM evidence WHERE source='tap_known'").fetchone()[0])["snap"]
+        self.assertEqual(snap["eps"], 2)
+
+    def test_adaptive_scorer_replaces_hand_gate_once_fitted(self):
+        # Below MODEL_MIN_ROWS the hand gate rules; with enough judged
+        # snapshots the fitted cutoff does, and confirm_score is projected.
+        import random
+        rnd = random.Random(3)
+        for i in range(lc.MODEL_MIN_ROWS + 5):
+            kr = 0.3 + 0.7 * rnd.random()
+            snap = {"rank": rnd.randint(1, 3000), "eps": 4, "q": 3, "q0": 2, "kr_mean": kr,
+                    "kr_max": min(1.0, kr + 0.1), "occ": 4, "lookups": 0, "lookups_listed": 0,
+                    "days_first": 10, "days_last": 1, "defers": 0, "is_verb": False,
+                    "is_kana": False, "length": 2}
+            yes = rnd.random() < (0.1 + 0.85 * kr)
+            self.conn.execute(
+                "INSERT INTO evidence (lemma, kind, source, polarity, weight, episode_id, context, ts) "
+                "VALUES (?, 'word', ?, ?, 3.0, NULL, ?, ?)",
+                (f"w{i}", "confirm_known" if yes else "confirm_defer", 1 if yes else 0,
+                 json.dumps({"snap": snap, "list": "prompt"}), f"2026-01-01T00:00:{i % 60:02d}+00:00"))
+        self.conn.commit()
+        self.assertEqual(lc.fit_confirm_model(self.conn)["fitted"], True)
+        model = lc.load_confirm_model(self.conn)
+        self.assertIsNotNone(model["cutoff"])
+        # a word met in well-understood sentences scores high, a gappy one low
+        def expose(lemma, kr, start):
+            for i in range(start, start + 6):
+                ep, exp = _exposure_payload(f"m{i}", [lemma])
+                exp[lemma]["known_ratio"] = kr
+                lc.record_exposure(self.conn, ep, exp)
+                lc.mark_watched(self.conn, f"m{i}")
+        expose("薔薇", 0.35, 0)
+        expose("光", 0.98, 10)
+        lc.promote(self.conn)
+        rows = {r[0]: (r[1], r[2]) for r in self.conn.execute(
+            "SELECT lemma, confirm_candidate, confirm_score FROM lemmas WHERE lemma IN ('薔薇','光')")}
+        self.assertLess(rows["薔薇"][1], rows["光"][1])
+        # candidacy is exactly "score clears the fitted cutoff"
+        for lemma in ("薔薇", "光"):
+            self.assertEqual(rows[lemma][0], int(rows[lemma][1] >= model["cutoff"]), lemma)
+        self.assertEqual(rows["光"][0], 1)
+        self.assertTrue(lc.query_calibration(self.conn)["model"]["active"])
 
     def test_apply_taps_implies_mark_watched(self):
         ep, exp = _exposure_payload("epw", ["犬"])
@@ -1168,10 +1327,15 @@ class PhraseGrammarTest(unittest.TestCase):
         lc.promote(self.conn)
         self.assertEqual([c for c in lc.query_confirm_queue(self.conn)
                           if c["kind"] == "grammar"], [])
-        # a fresh qualifying exposure after the defer re-surfaces it
+        # re-surfaces once fresh exposures re-clear its bar (N5: 2 / 2)
         time.sleep(1.1)
         self._curate_grammar("g9")
         lc.mark_watched(self.conn, "g9")
+        lc.promote(self.conn)
+        self.assertEqual([c for c in lc.query_confirm_queue(self.conn)
+                          if c["kind"] == "grammar"], [])
+        self._curate_grammar("g10")
+        lc.mark_watched(self.conn, "g10")
         lc.promote(self.conn)
         self.assertTrue([c for c in lc.query_confirm_queue(self.conn)
                          if c["kind"] == "grammar"])

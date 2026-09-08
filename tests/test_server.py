@@ -898,6 +898,20 @@ class TestRoutes(ServerTestBase):
             {"day": "2026-09-01", "watch": 0.0, "listen": 600.0},
         ])
 
+    def test_viewtime_carries_subtitle_state(self):
+        """A sitting's seconds per subtitle state ride along and come back
+        decoded; an unknown state is refused."""
+        seg = {"id": "ghi789", "episode_id": "yt_x", "kind": "watch", "day": "2026-08-31",
+               "start": "2026-08-31T20:00:00-06:00", "secs": 30, "duration": 100,
+               "modes": {"kw": 10, "off": 20}}
+        self.assertEqual(self.client.post("/viewtime", json=seg, headers=self.auth)
+                         .status_code, 200)
+        got = self.client.get("/viewtime", headers=self.auth).json()["sessions"]
+        self.assertEqual(got[0]["modes"], {"kw": 10.0, "off": 20.0})
+        r = self.client.post("/viewtime", json={**seg, "id": "bad1", "modes": {"subs": 1}},
+                             headers=self.auth)
+        self.assertEqual(r.status_code, 422, r.text)
+
     def test_viewtime_source_and_delete(self):
         """`source` rides along (app by default; manual for hand-typed entries,
         import for the spreadsheet), comes back on GET, and DELETE removes a
