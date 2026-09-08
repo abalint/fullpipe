@@ -212,14 +212,23 @@ def ai_entry(d):
 
 
 def merge_curate_defs(result, curate):
-    """Fold curate.json's `defs` into a lookup_many result.
+    """Fold curate.json's `defs` (and its glossed `phrases`) into a
+    lookup_many result.
 
     Words JMdict lacks get the AI entry as their only entry. Words JMdict
     HAS get the AI entry PREPENDED: curate wrote it from the episode's
     actual context, so the popup leads with the sense the viewer just heard
     — full dictionary entries follow, so a wrong AI gloss can demote but
     never hide the real lookup."""
-    for d in curate.get("defs", []):
+    rows = list(curate.get("defs") or [])
+    # curate `phrases` that carry a gloss: idioms the tokenizer shattered AND
+    # JMdict lacks (背中を追いかける) — keyed by canonical, which is the key the
+    # popup's phrase layer looks up, so the gloss lands on the phrase item
+    for p in curate.get("phrases") or []:
+        if p.get("canonical") and p.get("gloss"):
+            rows.append({"word": p["canonical"], "reading": p.get("reading"),
+                         "gloss": p["gloss"], "pos": p.get("pos") or "expression"})
+    for d in rows:
         word = d.get("word")
         if not word or not d.get("gloss"):
             continue
@@ -377,7 +386,9 @@ def merge_repair_names(result, repair):
 
 def missing(cfg, episode_id):
     """[{lemma, count, example}] for the episode's lemmas with no JMdict
-    entry — the curate pass's worklist for `defs`.
+    entry — the curate pass's worklist for `defs` — plus, once curate.json
+    exists, its `phrases` that JMdict lacks and carry no `gloss` yet
+    (rows tagged kind="phrase"; the fix is a gloss on the phrase entry).
 
     ALL lemmas, not just content/vocab ones — /definitions serves every
     token's lemma, so the worklist must cover the same keyset or the popup
@@ -409,11 +420,26 @@ def missing(cfg, episode_id):
     conn = open_db(path)
     try:
         found = lookup_many(conn, lemmas)
+        rows = [{"lemma": lm, "count": count[lm], "example": example[lm]}
+                for lm in sorted(lemmas - set(found),
+                                 key=lambda x: (-count[x], x))]
+        # curate-emitted phrases JMdict lacks and the curate pass hasn't
+        # glossed — a dead tap on the popup's phrase layer until it does
+        curate_path = episode_dir(cfg, episode_id) / "curate.json"
+        curate = read_json(curate_path) if curate_path.exists() else {}
+        seen = set()
+        for p in curate.get("phrases") or []:
+            hw = p.get("canonical")
+            if not hw or hw in seen or p.get("gloss") or is_headword(conn, hw):
+                continue
+            seen.add(hw)
+            rows.append({"lemma": hw, "kind": "phrase", "count": 1,
+                         "surface": p.get("surface", ""),
+                         "example": example.get(hw, ""),
+                         "fix": "add gloss (+ reading) to this phrase entry"})
     finally:
         conn.close()
-    return [{"lemma": lm, "count": count[lm], "example": example[lm]}
-            for lm in sorted(lemmas - set(found),
-                             key=lambda x: (-count[x], x))]
+    return rows
 
 
 def build(cfg, xml_path=None):

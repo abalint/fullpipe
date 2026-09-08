@@ -798,10 +798,14 @@ def record_curate_items(conn, episode_id, curation, jmdict_conn=None):
     server-validates: the LLM proposes, this function decides what may become
     a tracked key — nothing is key-minted silently.
 
-    curation["phrases"]: [{sentence_idx, surface, canonical, classification}]
+    curation["phrases"]: [{sentence_idx, surface, canonical, classification,
+                           gloss?, reading?}]
       canonical must be a JMdict headword (deinflection sidestepped: the LLM
-      returns the dictionary form, we only check it's a real key) AND must
-      itself tokenize to ≥2 Sudachi tokens — the canonical form, NOT the
+      returns the dictionary form, we only check it's a real key) — OR, when
+      JMdict lacks it, carry a curate-authored `gloss` (the AI pass fills the
+      dictionary's gaps the same way `defs` does for words; the gloss is the
+      deliberate act that mints the key, and /definitions serves it) — AND
+      must itself tokenize to ≥2 Sudachi tokens — the canonical form, NOT the
       surface span, because inflected single words split on their auxiliaries
       (食べて → 食べ|て would qualify every te-form verb). Failures are
       returned in `rejected`, never written.
@@ -831,15 +835,18 @@ def record_curate_items(conn, episode_id, curation, jmdict_conn=None):
             rejected.append({"canonical": canonical, "reason": "jmdict_unavailable"})
             continue
         from tools import jmdict as J
-        if not J.is_headword(jmdict_conn, canonical):
-            rejected.append({"canonical": canonical, "reason": "not_a_jmdict_headword"})
+        gloss = (p.get("gloss") or "").strip()
+        if not J.is_headword(jmdict_conn, canonical) and not gloss:
+            rejected.append({"canonical": canonical, "reason": "not_a_jmdict_headword",
+                             "hint": "add a gloss (+ reading) to the phrase entry to track it"})
             continue
         if len(tokenize(canonical)) < 2:
             rejected.append({"canonical": canonical, "reason": "single_token"})
             continue
         entries = J.lookup_many(jmdict_conn, [canonical], max_entries=1)
         readings = (entries.get(canonical) or [{}])[0].get("r") or []
-        _touch_lemma(conn, canonical, reading=readings[0] if readings else None,
+        reading = readings[0] if readings else (p.get("reading") or "").strip() or None
+        _touch_lemma(conn, canonical, reading=reading,
                      pos="expression", ts=ts, kind="phrase")
         context = {k: p[k] for k in ("sentence_idx", "classification") if k in p}
         cur = conn.execute(

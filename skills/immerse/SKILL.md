@@ -381,6 +381,17 @@ Then produce, in `<episode_dir>/curate.json`:
   `coverage.json` entry already lists the phrase (a `phrases` array on the
   sentence) don't need re-emitting — those are already-tracked keys recorded
   at Stage 1.
+  **When JMdict lacks the idiom, gloss it yourself**: add `"gloss"` (plain
+  English, what the speaker is doing) and `"reading"` (hiragana) to the
+  phrase entry. The popup's phrase layer looks the canonical up in the
+  dictionary, so an unglossed non-JMdict phrase is a dead tap ("no
+  dictionary entry"), and the recorder rejects it (`not_a_jmdict_headword`,
+  with a hint). A gloss is the deliberate act that fills that gap: it lands
+  on the popup and mints the phrase as a tracked key the user can mark and
+  confirm exactly like a word. `tools.jmdict missing` lists these too (rows
+  tagged `"kind": "phrase"`), so the defs completeness check covers them.
+  A gloss on a phrase JMdict *has* is optional and prepends the episode
+  sense, same as `defs` for words.
 - **grammar — pattern usages, matched into the fixed taxonomy** (GRAMMAR.md).
   Tag notable grammar usages with the canonical `pattern` key from
   `grammar_points` (`ledgerctl query summary` shows the taxonomy exists; when
@@ -450,8 +461,11 @@ Denormalizes `genre`/`format`/`difficulty_felt` onto the episode row and
 (DESIGN.md — Taste metadata) — **and** lands the `phrases`/`grammar` blocks as
 inert exposure evidence (validated against JMdict / the grammar taxonomy;
 GRAMMAR.md). The output reports `items.phrases.rejected` and
-`items.grammar.proposed` — relay both to the user rather than silently moving
-on. Idempotent: safe to re-run if you revise `curate.json`.
+`items.grammar.proposed`. A `not_a_jmdict_headword` reject is yours to fix:
+add `gloss` + `reading` to that phrase entry in `curate.json` and re-run —
+never leave a real idiom rejected. Relay `grammar.proposed` (and any reject
+you chose not to gloss) to the user rather than silently moving on.
+Idempotent: safe to re-run if you revise `curate.json`.
 
 **Update the presenter fingerprint** (SURVEY.md §4c) — only for sources with a
 `channel_id` (skip local files / provenance-less sources). This is the ONE place

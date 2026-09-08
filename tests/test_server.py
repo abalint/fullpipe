@@ -601,6 +601,50 @@ class TestRoutes(ServerTestBase):
         self.assertTrue(data["犬"][0]["ai"])
         self.assertNotIn("謎", data)
 
+    def test_definitions_gloss_curated_phrases(self):
+        # the popup's phrase layer looks up the canonical: a curate phrase
+        # JMdict lacks gets its curate gloss as the sole entry (no more
+        # "no dictionary entry" on 背中を追いかける); one JMdict has gets the
+        # episode sense prepended, dictionary after — the same rule as `defs`
+        import sqlite3
+
+        from tools import jmdict
+        ep_dir = self.stage_episode()
+        conn = sqlite3.connect(jmdict.db_path(self.cfg))
+        jmdict.build_db(conn, iter([
+            (2, {"気を付ける", "きをつける"},
+             {"k": ["気を付ける"], "r": ["きをつける"],
+              "s": [{"pos": ["expression"], "g": ["to be careful"]}]}),
+        ]))
+        conn.close()
+        write_json(ep_dir / "curate.json", {
+            "synopsis": "", "keywords": [], "focal_points": [], "exclude": [],
+            "phrases": [
+                {"sentence_idx": 0, "surface": "背中を追いかけて",
+                 "canonical": "背中を追いかける", "classification": "too_hard",
+                 "reading": "せなかをおいかける",
+                 "gloss": "follow in someone's footsteps"},
+                {"sentence_idx": 0, "surface": "気を付けて",
+                 "canonical": "気を付ける", "classification": "comprehensible",
+                 "gloss": "watch yourself (a parting warning)"},
+                {"sentence_idx": 1, "surface": "血が騒いだ",
+                 "canonical": "血が騒ぐ", "classification": "too_hard"},
+            ],
+        })
+        data = self.client.get(f"/definitions/{EP}", headers=self.auth).json()
+        self.assertEqual(data["背中を追いかける"], [
+            {"k": ["背中を追いかける"], "r": ["せなかをおいかける"],
+             "s": [{"pos": ["expression"], "g": ["follow in someone's footsteps"]}],
+             "ai": True}])
+        self.assertEqual(len(data["気を付ける"]), 2)
+        self.assertTrue(data["気を付ける"][0]["ai"])
+        self.assertEqual(data["気を付ける"][1]["s"][0]["g"], ["to be careful"])
+        self.assertNotIn("血が騒ぐ", data)  # unglossed and absent: still a gap
+        # …which the curate worklist now reports, with the fix
+        rows = [r for r in jmdict.missing(self.cfg, EP) if r.get("kind") == "phrase"]
+        self.assertEqual([r["lemma"] for r in rows], ["血が騒ぐ"])
+        self.assertIn("gloss", rows[0]["fix"])
+
     def test_definitions_merge_curate_authored_defs(self):
         # words JMdict lacks get their gloss from the curate pass (`defs` in
         # curate.json) as the sole entry; words JMdict HAS get the episode-

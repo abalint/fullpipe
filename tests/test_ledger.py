@@ -1196,6 +1196,29 @@ class PhraseGrammarTest(unittest.TestCase):
         self.assertEqual(self.conn.execute(
             "SELECT COUNT(*) FROM lemmas WHERE kind='phrase'").fetchone()[0], 0)
 
+    def test_glossed_non_jmdict_phrase_is_tracked(self):
+        # an idiom JMdict lacks is tracked once the curate pass glosses it —
+        # the gloss is the deliberate act that mints the key (the same gap-
+        # filling `defs` does for words); the row keeps the curate reading
+        self._stage1("p0")
+        r = lc.record_curate_items(self.conn, "p0", {"phrases": [
+            {"sentence_idx": 0, "surface": "背中を追いかけて",
+             "canonical": "背中を追いかける", "classification": "comprehensible",
+             "gloss": "follow in someone's footsteps", "reading": "せなかをおいかける"},
+            {"sentence_idx": 0, "surface": "犬", "canonical": "犬",
+             "gloss": "still a single token"},
+        ]}, jmdict_conn=self.jconn)
+        self.assertEqual(r["phrases"]["recorded"], 1)
+        self.assertEqual([x["reason"] for x in r["phrases"]["rejected"]],
+                         ["single_token"])
+        row = self.conn.execute(
+            "SELECT kind, reading, pos FROM lemmas WHERE lemma='背中を追いかける'").fetchone()
+        self.assertEqual((row["kind"], row["reading"], row["pos"]),
+                         ("phrase", "せなかをおいかける", "expression"))
+        # the glossless reject says how to fix it
+        r = self._curate_phrase("p0", canonical="変な組み合わせ")
+        self.assertIn("gloss", r["phrases"]["rejected"][0]["hint"])
+
     def test_phrase_recorded_with_jmdict_reading(self):
         r = self._curate_phrase("p1")
         self.assertEqual(r["phrases"]["recorded"], 1)

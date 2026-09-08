@@ -112,8 +112,13 @@ grammar). No polymorphic id column.
 `/immerse` curate already reads the full transcript and writes `curate.json`.
 It gains two emissions per episode **[as built — exact shapes]**:
 
-- `phrases`: `[{sentence_idx, surface, canonical, classification}]` —
-  confirmed phrase units, canonical = JMdict dictionary form.
+- `phrases`: `[{sentence_idx, surface, canonical, classification, gloss?,
+  reading?}]` — confirmed phrase units, canonical = JMdict dictionary form,
+  or (2026-09-08) any multi-token idiom JMdict lacks **when it carries a
+  `gloss`** — the curate pass fills the dictionary's gaps for phrases the
+  way `defs` does for words; `/definitions` serves the gloss keyed by the
+  canonical (the popup's phrase-layer key), prepended as the episode sense
+  when JMdict also has the headword.
 - `grammar`: `[{sentence_idx, pattern | proposed_pattern, classification,
   form_note, example?, gloss?}]`.
 
@@ -197,10 +202,13 @@ deterministic, not the detection):
   coverage classification (the qualifying signal — see §3).
 - The recorder (`ledgerctl.record_curate_items`, run by `record-curation`)
   validates: `canonical` **is** a JMdict headword (`jmdict.is_headword`)
-  **and** `len(tokenize(canonical)) >= 2`. Fail → returned in
-  `phrases.rejected` with a reason, never key-minted; a reviewed non-JMdict
-  idiom can be deliberately tracked with `ledgerctl phrase-add` (which still
-  enforces the ≥2-token guard).
+  **or carries a curate `gloss`** (2026-09-08: the AI-authored gloss is the
+  deliberate review that mints a non-JMdict key — before this, 54 curated
+  idioms across 37 episodes were rejected here yet still shipped to the
+  popup with "no dictionary entry"), **and** `len(tokenize(canonical)) >= 2`.
+  Fail → returned in `phrases.rejected` with a reason (+ a `hint` naming
+  the fix), never key-minted; `ledgerctl phrase-add` remains the manual
+  path (still enforcing the ≥2-token guard).
 - Inflection is why raw longest-match is unreliable (sentence says 気を付けて,
   headword is 気を付ける). Letting the LLM return the canonical form and only
   validating that it's a real key sidesteps deinflection entirely.
