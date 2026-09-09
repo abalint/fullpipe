@@ -22,8 +22,9 @@ from fastapi import Depends, FastAPI, HTTPException, Request  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import FileResponse  # noqa: E402
 
+from engine import grammar as G  # noqa: E402
 from engine.lemma import (  # noqa: E402
-    build_phrase_index, is_multi_token, match_phrase_units, phrase_span)
+    build_phrase_index, is_multi_token, match_phrase_units, phrase_span, tokenize)
 from engine.paths import ffprobe_path  # noqa: E402
 from ledger import ledgerctl as lc  # noqa: E402
 from lib_config import load_config  # noqa: E402
@@ -55,6 +56,49 @@ def tracked_phrase_index(conn):
             "SELECT lemma FROM lemmas WHERE kind = 'phrase'")]
         _phrase_index_cache.update(sig=sig, index=build_phrase_index(hws))
     return _phrase_index_cache["index"]
+
+
+_grammar_index_cache: dict = {}
+_grammar_live_cache: dict = {}
+
+
+def grammar_index(conn):
+    """The taxonomy's token matchers as an engine.grammar index, rebuilt
+    only when the detectable set changes (a grammar-seed / approve)."""
+    sig = tuple(conn.execute(
+        "SELECT COUNT(*), MAX(updated_at) FROM grammar_points "
+        "WHERE match IS NOT NULL AND match != '' AND match != '[]'").fetchone())
+    if _grammar_index_cache.get("sig") != sig:
+        _grammar_index_cache.update(
+            sig=sig, index=G.build_grammar_index(lc.grammar_match_rows(conn)))
+    return _grammar_index_cache["index"]
+
+
+def episode_grammar(conn, episode_id, coverage):
+    """{sentence_idx: [{pattern, start, end}]} — the grammar units on each
+    line (GRAMMAR.md, token-anchored units). Stage 1 writes them into
+    coverage.json (`grammar` per sentence, `grammar_at` on the doc); a
+    sidecar from before the matcher existed gets a live pass here (the
+    sentence text re-tokenized, cached per coverage run) so an old episode
+    paints the same as a new one. `tools.grammar backfill` makes it
+    permanent."""
+    if coverage.get("grammar_at"):
+        return {s["idx"]: s["grammar"] for s in coverage["sentences"] if s.get("grammar")}
+    index = grammar_index(conn)
+    key = (episode_id, coverage.get("analyzed_at"), _grammar_index_cache.get("sig"))
+    if _grammar_live_cache.get("key") == key:
+        return _grammar_live_cache["units"]
+    out = {}
+    for s in coverage["sentences"]:
+        toks = [{"s": t.surface, "l": t.lemma, "p": t.pos, "p2": t.pos2}
+                for t in tokenize(s.get("text") or "")]
+        if len(toks) != len(s["tokens"]):
+            toks = [{"s": t.get("s"), "l": t.get("l")} for t in s["tokens"]]
+        units = G.units_as_dicts(G.match_grammar_units(toks, index))
+        if units:
+            out[s["idx"]] = units
+    _grammar_live_cache.update(key=key, units=out)
+    return out
 
 
 def live_phrases(conn, coverage):
@@ -378,19 +422,26 @@ def create_app(cfg, start_worker=True):
         known) — and `confirm` — the "we think you know this" queue awaiting
         a yes/no (GET /confirm).
 
-        Curated sentences additionally carry the curate pass's `grammar`
-        (pattern + form note, GRAMMAR.md — proposals flagged) and `phrases`
-        (canonical + surface + token span + ledger status — the curate
-        pass's emissions merged with the tracked phrases Stage 1 detected),
-        so the player paints each phrase as one unit and the popup gives it
-        its own mark; absent before curation and on untagged lines."""
+        Each sentence carries its `grammar` units — the taxonomy patterns
+        the token matcher found on the line (GRAMMAR.md, token-anchored
+        units: `{pattern, start, end, status}`, span over the attachment's
+        tokens, ledger status snapshot) merged with the curate pass's line
+        notes (`note` = form_note; a curate-tagged pattern the matcher did
+        not place rides along without a span, proposals flagged) — so the
+        player paints each unit and the popup opens a grammar layer with
+        its own mark from any token inside it; top-level `grammar_points`
+        carries gloss + level for every pattern present. Curated sentences
+        additionally carry `phrases` (canonical + surface + token span +
+        ledger status — the curate pass's emissions merged with the tracked
+        phrases Stage 1 detected), so the player paints each phrase as one
+        unit and the popup gives it its own mark."""
         try:
             coverage = load_coverage(cfg, episode_id)
         except FileNotFoundError as e:
             raise HTTPException(404, str(e))
         curate_path = episode_dir(cfg, episode_id) / "curate.json"
         curate = read_json(curate_path) if curate_path.exists() else {}
-        grammar_at: dict[int, list] = {}
+        notes_at: dict[int, list] = {}
         for g in curate.get("grammar", []):
             idx, pattern = g.get("sentence_idx"), g.get("pattern")
             if idx is None or not (pattern or g.get("proposed_pattern")):
@@ -399,7 +450,26 @@ def create_app(cfg, start_worker=True):
                     "note": g.get("form_note") or g.get("gloss") or ""}
             if not pattern:
                 note["proposed"] = True
-            grammar_at.setdefault(idx, []).append(note)
+            notes_at.setdefault(idx, []).append(note)
+        units_at = episode_grammar(ledger_conn(), episode_id, coverage)
+        grammar_at: dict[int, list] = {}
+        for idx in set(units_at) | set(notes_at):
+            entries = [dict(u) for u in units_at.get(idx, [])]
+            by_pattern = {e["pattern"]: e for e in entries}
+            for n in notes_at.get(idx, []):
+                hit = by_pattern.get(n["pattern"])
+                if hit is not None:
+                    if n["note"]:
+                        hit["note"] = n["note"]
+                else:
+                    entries.append(n)  # curate-only: no span, still a line note
+            grammar_at[idx] = entries
+        patterns_here = {e["pattern"] for es in grammar_at.values() for e in es}
+        gstatus = lc.grammar_statuses(ledger_conn(), patterns_here)
+        for es in grammar_at.values():
+            for e in es:
+                if "start" in e:
+                    e["status"] = gstatus.get(e["pattern"], "unknown")
         phrases_at = episode_phrases(
             coverage, curate, live_phrases(ledger_conn(), coverage))
         statuses = lc.phrase_statuses(
@@ -445,6 +515,9 @@ def create_app(cfg, start_worker=True):
                 # curate-authored defs in /definitions) are as good as they
                 # get — the app uses this to stop refreshing its sidecars
                 "curated": bool(curate),
+                # gloss + JLPT tier for every grammar pattern on any line —
+                # the popup's grammar layer reads these (GRAMMAR.md)
+                "grammar_points": lc.grammar_glosses(ledger_conn(), patterns_here),
                 "candidates": [c["lemma"] for c in coverage.get("candidates", [])],
                 "interest": sorted(interest & here),
                 "confirm": sorted(confirm & here),
@@ -460,10 +533,11 @@ def create_app(cfg, start_worker=True):
         pulled the transcript (`confirm`/`interest`). Narrowed to this
         episode's lemmas / curated grammar patterns, so it's tiny.
         `known` is additive (words that have become known); `confirm` /
-        `interest` replace the sidecar's lists; `grammar_confirm` is the
-        grammar side of the confirm queue, matched against the curate
-        pass's per-line patterns (a grammar point is not a token — it's
-        only ever "seen" through the line the curate pass tagged with it)."""
+        `interest` replace the sidecar's lists. The grammar axis
+        (`grammar_known` / `grammar_confirm` / `grammar_interest` /
+        `grammar_unknown`) is narrowed to the patterns the matcher found in
+        this episode plus the curate pass's tags, so each painted unit
+        tracks the ledger the way a word does (GRAMMAR.md)."""
         try:
             coverage = load_coverage(cfg, episode_id)
         except FileNotFoundError as e:
@@ -474,6 +548,9 @@ def create_app(cfg, start_worker=True):
         patterns = {g.get("pattern") or g.get("proposed_pattern")
                     for g in curate.get("grammar", [])} - {None}
         conn = ledger_conn()
+        patterns |= {u["pattern"] for us in episode_grammar(conn, episode_id, coverage).values()
+                     for u in us}
+        glists = lc.grammar_lists(conn)
         phrases = {p["canonical"] for ps in episode_phrases(
             coverage, curate, live_phrases(conn, coverage)).values() for p in ps}
         interest = lc.active_interest(conn)
@@ -487,7 +564,10 @@ def create_app(cfg, start_worker=True):
                 "interest": sorted(interest & here),
                 "should_know": [l for l in lc.should_know(
                     conn, cfg.get("should_know_window", 100)) if l in here],
-                "grammar_confirm": sorted(lc.confirm_grammar(conn) & patterns),
+                "grammar_confirm": sorted(glists["confirm"] & patterns),
+                "grammar_known": sorted(glists["known"] & patterns),
+                "grammar_interest": sorted(glists["interest"] & patterns),
+                "grammar_unknown": sorted(glists["unknown"] & patterns),
                 # the phrase axis (GRAMMAR.md): a phrase is its own item, so
                 # its paint is independent of its component words' —
                 # known/blue/purple over the sidecar's status snapshot

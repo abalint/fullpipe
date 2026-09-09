@@ -66,6 +66,9 @@ CREATE TABLE IF NOT EXISTS grammar_points (
     pattern TEXT PRIMARY KEY,          -- 〜てしまう (the join key)
     level INTEGER,                     -- JLPT tier 5=N5 … 1=N1; NULL = unplaced (strictest θ)
     gloss TEXT,
+    match TEXT,                        -- token matcher spec, JSON (engine/grammar.py); NULL/[] = curate-only
+    seq INTEGER,                       -- taxonomy order (matcher tie-break)
+    corpus_per_10k REAL,               -- lines per 10k staged sentences the matcher fires on (tools.grammar backfill) — the θ prior
     status TEXT NOT NULL DEFAULT 'unknown',   -- unknown|learning|known
     confidence REAL NOT NULL DEFAULT 0,
     exposure_count INTEGER NOT NULL DEFAULT 0,
@@ -82,6 +85,7 @@ CREATE TABLE IF NOT EXISTS grammar_proposed (
     pattern TEXT PRIMARY KEY,
     example TEXT,                      -- one sentence it was seen in
     gloss TEXT,                        -- the proposer's one-line description
+    match TEXT,                        -- the proposer's matcher spec (JSON), copied on approve
     seen INTEGER NOT NULL DEFAULT 1,   -- distinct sightings (bumped on re-propose)
     first_seen TEXT
 );

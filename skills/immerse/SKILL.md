@@ -392,23 +392,29 @@ Then produce, in `<episode_dir>/curate.json`:
   tagged `"kind": "phrase"`), so the defs completeness check covers them.
   A gloss on a phrase JMdict *has* is optional and prepends the episode
   sense, same as `defs` for words.
-- **grammar — pattern usages, matched into the fixed taxonomy** (GRAMMAR.md).
-  Tag notable grammar usages with the canonical `pattern` key from
-  `grammar_points` (`ledgerctl query summary` shows the taxonomy exists; when
-  unsure of a key, check with
-  `sqlite3 <ledger> "SELECT pattern FROM grammar_points WHERE pattern LIKE '%しまう%'"`).
-  Never invent a variant spelling of an existing key. A genuinely novel
+- **grammar — notes on the usages worth explaining, plus proposals**
+  (GRAMMAR.md — *Grammar as token-anchored units*). Since 2026-09-08 Stage
+  1 detects every taxonomy pattern deterministically (`coverage.json`
+  sentences carry `grammar: [{pattern, start, end}]`), paints it on the
+  phone and records its exposure — **you are not tagging for exposure any
+  more**, so don't enumerate patterns. Emit a `grammar` entry only where a
+  `form_note` earns its place: a usage a learner would notice and not
+  parse on their own (a contraction, a keigo shift, a stacked form, a
+  sense the gloss doesn't cover). Use the canonical `pattern` key from
+  `grammar_points` (when unsure:
+  `sqlite3 <ledger> "SELECT pattern FROM grammar_points WHERE pattern LIKE '%しまう%'"`),
+  never a variant spelling; the note lands in the popup's grammar layer
+  for that line. `form_note` is **plain English** — say what the speaker
+  is doing with the form, never a bare linguistics term. Good:
+  "食べさせられた = 食べる: someone made them eat it, told from the
+  eater's side". Bad: "causative-passive of 食べる". A genuinely novel
   pattern (colloquial/dialectal) goes in as
-  `{"proposed_pattern": "...", "gloss": "...", "example": "..."}` — it lands
-  in the review queue (`ledgerctl query grammar-proposed` →
-  `grammar-approve`), never straight into the taxonomy. `form_note` carries
-  the word-form structure worth showing, in **plain English** — say what the
-  speaker is doing with the form, never a bare linguistics term (the player
-  popup shows this note verbatim; "causative-passive" tells the user
-  nothing). Good: "食べさせられた = 食べる: someone made them eat it, told
-  from the eater's side". Bad: "causative-passive of 食べる". Tag what a
-  learner would *notice*: the N+1-ish patterns, keigo shifts, contractions —
-  not every 〜ます in the episode.
+  `{"proposed_pattern": "...", "gloss": "...", "example": "...", "match": [...]}`
+  — `match` is a token matcher spec (the docstring of `engine/grammar.py`;
+  test it with `$PY -m tools.grammar try "<the line>"`), so that
+  `grammar-approve` makes the pattern detectable. It lands in the review
+  queue (`ledgerctl query grammar-proposed` → `grammar-approve` →
+  `$PY -m tools.grammar backfill`), never straight into the taxonomy.
 - **defs — dictionary entries for the words JMdict doesn't have.** The
   player's tap-a-word popup is JMdict-backed; whatever JMdict misses shows
   "no dictionary entry" — a dead tap. Get the worklist:

@@ -1,6 +1,9 @@
 # Grammar & phrase tracking — design
 
 > **Status: BUILT 2026-07-08** (both phases, same session as the design).
+> **2026-09-08: grammar became token-anchored units** — see *Grammar as
+> token-anchored units* at the end; it supersedes the "grammar is only ever
+> seen through a curate-tagged line" parts below.
 > The taxonomy shipped with 474 patterns (quality bar over the ~600 target —
 > variants folded into canonical keys, surface collisions disambiguated with
 > parenthetical tags: 〜られる（受身）/（可能）/（尊敬）). Deviations from the
@@ -407,3 +410,111 @@ Remaining definition-of-done (needs a real episode, not a test): `/immerse`
 emits the new `curate.json` blocks on the next curation pass, and the confirm
 queue shows typed items on the phone once something crosses θ. The live ledger
 is migrated and seeded (474 patterns, word counts untouched).
+
+---
+
+# Grammar as token-anchored units (2026-09-08)
+
+## Why
+
+The 2026-07 build made grammar a tracked axis but not an *emergent* one.
+A grammar point only existed where the curate LLM chose to tag a line
+(`curate.json` `grammar`, sentence-level, no span), so on the phone it was
+a foot-note in the popup and a "?" line badge: nothing to paint, nothing
+to tap, no way to mark it while watching. Exposure evidence was whatever
+the LLM felt like annotating (104 〜てしまう tags across 117 episodes for a
+pattern that occurs on thousands of lines), and it could not join the
+confirm/known flow the way a word does. Meanwhile most grammar points are,
+to the learner, *words that get attached*: しまう after て, ながら after a
+stem, っぽい after a noun — and Sudachi already splits those attachments
+into their own tokens.
+
+## What changed
+
+**A grammar point is now a deterministic pattern over the token stream,
+detected on every line by Stage 1, painted as a span, marked from the
+popup** — exactly the machinery tracked phrases already ride.
+
+- **Taxonomy rows carry a `match` spec** (`ledger/grammar_taxonomy.json`,
+  mirrored into `grammar_points.match` + `seq` by `grammar-seed`). The spec
+  language and selection rules are the docstring of `engine/grammar.py`:
+  a list of alternatives, each a consecutive sequence of token
+  constraints (lemma / surface / POS / POS-subtype / dictionary-form /
+  context-only). Longest match wins, then specificity, then taxonomy
+  order; units never overlap. `"match": []` = not deterministically
+  detectable (stays a curate-only annotation). The specs were authored
+  once against the 66k-sentence staged corpus with `tools.grammar check`
+  (recall against the curate pass's ~1.6k tags, precision by sample
+  surfaces) and live in the JSON like the glosses do.
+- **The inventory is the language's, not the JLPT list's** (user rule,
+  2026-09-08: the JLPT tiers are at most a guide to difficulty; what
+  grammar *is* comes from knowing the language). The 471 JLPT rows were
+  kept and given matchers, and the corpus was mined for every grammatical
+  morpheme the list ignores — sentence-final particles (な・さ・わ・ぞ・ぜ・
+  もん・っけ・かしら・じゃん), Kansai/dialect forms (や・やん・ねん・へん・とる・
+  じゃ・べ), contractions (っす・っつう・っしょ・ちまう), rough negation
+  (ねえ), aux attachments (てやる・やがる・てみせる・てまいる・ておる・
+  ていらっしゃる), abuse/plural/honorific suffixes (め・ども・たち／ら・
+  さん／ちゃん／くん／様), derivational suffixes (的・化・性・系・用・同士・ごと),
+  counters, polite/intensifying prefixes (お／ご・超・第・約・不／非／無・
+  ど／クソ) and the constructions past curate passes had proposed — 95
+  rows with `level: null`. The taxonomy now has 566 rows, 560 detectable.
+- **Difficulty prior = corpus frequency, tier only as fallback.**
+  `grammar_points.corpus_per_10k` (lines per 10k staged sentences the
+  matcher fires on, measured by `tools.grammar backfill`) drives θ
+  (`grammar_theta_for`: ≥20/10k → 2 exposures in 2 episodes … <1/10k →
+  5 in 4); the JLPT tier is used only when a pattern has no count yet.
+- **Folds.** Keys the tokenizer cannot tell apart were merged
+  (`ledger/grammar_folds.json`, applied by `grammar-seed`, evidence re-keyed):
+  〜られる（受身/可能/尊敬） → 〜られる, 〜ように（目的） → 〜ように,
+  〜のに（目的） → 〜のに. The per-line curate `form_note` says which sense a
+  line uses; the key is the form, as with a polysemous word.
+- **Stage 1** (`tools/coverage.py` `grammar_pass`) runs the matcher on
+  every sentence: `coverage.json` sentences gain
+  `grammar: [{pattern, start, end}]` (span over the attachment's tokens,
+  not the head word), the doc gains `grammar_at`, and one kind='grammar'
+  exposure per pattern per episode lands via `record_exposure` (best
+  context = the least-unknown sentence, with `occ` tallies) — dense,
+  honest evidence, no LLM in the loop. Grammar keys project onto
+  `grammar_points`, never `lemmas`; only taxonomy patterns are ever
+  written. `tools.grammar backfill` re-runs this over every staged episode
+  (done 2026-09-08 for the existing 121); the server also runs a live pass
+  on any sidecar that predates the matcher.
+- **Server.** `GET /transcript` ships each line's units with the ledger
+  status snapshot, merged with the curate notes (`note` = form_note; a
+  curate-tagged pattern the matcher did not place rides along without a
+  span), plus top-level `grammar_points` {pattern: {gloss, level}}.
+  `GET /episodes/{id}/paint` carries `grammar_known` / `grammar_confirm` /
+  `grammar_interest` / `grammar_unknown` narrowed to the episode. `POST
+  /taps` accepts kind `grammar` (taxonomy keys only — never minted); the
+  popup's lookups are counted for grammar too.
+- **Phone.** The unit's span paints in the word hues from the *pattern's*
+  state (`paint.ts` `grammarClass`: local mark › live lists › snapshot),
+  with a dotted underline so an attachment reads apart from a word in the
+  same colour; known paints nothing. Tapping inside the span opens a
+  grammar layer above the word layer (pattern, N-tier, how it surfaces on
+  this line, the curate note, the taxonomy gloss, its own mark — `"g:"` +
+  pattern in the tap store, kind `grammar` on the wire). The line's other
+  grammar units are foot notes with their own marks; the "?" badge is now
+  only for curate-only tags with no span.
+- **Curate pass.** `/immerse` no longer tags patterns for exposure — Stage
+  1 has that. It still emits `grammar` entries, but as *notes*: a plain-
+  English `form_note` on the usages worth explaining (shown in the layer),
+  and proposals for patterns the taxonomy lacks, now with a `match` spec so
+  `grammar-approve` makes them detectable (then `tools.grammar backfill`).
+
+## Precedence between axes
+
+A token inside a curated/tracked *phrase* span paints as the phrase; else
+inside a *grammar* unit it paints as the pattern; else as the word. The
+popup stacks the layers (phrase › grammar › word) so every item on the
+tap is markable independently.
+
+## Consequences to expect
+
+Dense exposure means the N5/N4 inventory crosses θ almost at once
+(N5/N4: 2 exposures in 2 watched episodes). The one-time cost is a large
+think-you-know queue for grammar right after the backfill — the same
+one-time burst the word ledger had when it was seeded — and blue paint
+on those attachments until each gets its yes/no (or a ✓ in the popup).
+Nothing is auto-known; a ✓ or a "yes" is still the only way in.

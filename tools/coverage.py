@@ -23,6 +23,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from engine import grammar as G  # noqa: E402
 from engine import lemma as L  # noqa: E402
 from engine import word_align as WA  # noqa: E402
 from lib_config import load_config  # noqa: E402
@@ -39,8 +40,45 @@ def lemma_reading(lemma):
     return "".join(L.kata_to_hira(t.reading) or t.surface for t in L.tokenize(lemma))
 
 
+def grammar_pass(sentence, toks, index, exposures):
+    """Detect the grammar units on one analyzed sentence (GRAMMAR.md —
+    token-anchored units) and fold them into the exposure payload the way
+    tracked phrases are: one exposure per pattern per episode, keyed by the
+    sentence where the pattern sat in the least unknown context, with
+    occurrence tallies. `sentence` is a coverage.json sentence dict
+    (unknown / known_ratio / classification), `toks` its token dicts (with
+    POS when freshly tokenized). Returns the units as dicts for the
+    sentence's `grammar` field ([] when none)."""
+    if not index:
+        return []
+    units = G.units_as_dicts(G.match_grammar_units(toks, index))
+    if not units:
+        return []
+    other_unknown = len(sentence.get("unknown") or [])
+    for u in units:
+        ctx = {
+            "sentence_idx": sentence["idx"],
+            "known_ratio": sentence.get("known_ratio"),
+            "other_unknown_count": other_unknown,
+            "classification": sentence.get("classification"),
+            "kind": "grammar",
+        }
+        best = exposures.get(u["pattern"])
+        if best is None or other_unknown < best["other_unknown_count"]:
+            if best is not None:
+                ctx.update({k: best[k] for k in ("occ", "occ_clean", "occ_near") if k in best})
+            exposures[u["pattern"]] = ctx
+        ctx = exposures[u["pattern"]]
+        ctx["occ"] = ctx.get("occ", 0) + 1
+        if other_unknown == 0:
+            ctx["occ_clean"] = ctx.get("occ_clean", 0) + 1
+        elif other_unknown == 1:
+            ctx["occ_near"] = ctx.get("occ_near", 0) + 1
+    return units
+
+
 def analyze(transcript, known_bundle, freq=None, already_carded=frozenset(),
-            words=None, non_vocab=frozenset()):
+            words=None, non_vocab=frozenset(), grammar=None):
     """Pure coverage analysis. Returns the coverage.json payload (unrecorded).
 
     known_bundle: dict from ledgerctl.materialize_known (known / learning /
@@ -49,8 +87,13 @@ def analyze(transcript, known_bundle, freq=None, already_carded=frozenset(),
     that paces the player's subtitle roll-up; None/misaligned → no "t".
     non_vocab: the repair pass's adjudicated non-vocabulary keys (repair.json)
     — names Sudachi's dictionary misses, ASR non-words.
+    grammar: the detectable taxonomy rows ([{pattern, match}],
+    ledgerctl.grammar_match_rows) — every unit found lands on its sentence
+    (`grammar: [{pattern, start, end}]`) and accrues a kind='grammar'
+    exposure like a tracked phrase does (GRAMMAR.md).
     """
     freq = freq or {}
+    grammar_index = G.build_grammar_index(grammar or [])
     ks = L.KnownSet(known_bundle["known"], known_bundle.get("norm_known", ()),
                     known_bundle.get("known_stems", ()),
                     phrases=known_bundle.get("phrases"))
@@ -97,6 +140,9 @@ def analyze(transcript, known_bundle, freq=None, already_carded=frozenset(),
         if d["phrases"]:
             sent["phrases"] = [{"phrase": u["phrase"], "status": u["status"]}
                                for u in d["phrases"]]
+        units = grammar_pass(sent, all_toks, grammar_index, result["exposures"])
+        if units:
+            sent["grammar"] = units
         out_sentences.append(sent)
         for t in d["unknown"]:
             recurrence[t.lemma] = recurrence.get(t.lemma, 0) + 1
@@ -174,6 +220,7 @@ def analyze(transcript, known_bundle, freq=None, already_carded=frozenset(),
             "candidates_dropped_by_cap": dropped,
         },
         "sentences": out_sentences,
+        "grammar_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "candidates": candidates[:CANDIDATE_CAP],
         "reinforcement": [d["idx"] for d in out_sentences
                           if d["classification"] == "reinforcement"],
@@ -201,7 +248,7 @@ def run_coverage(cfg, episode_id, record=True, conn=None):
     non_vocab = load_non_vocab(cfg, episode_id) | lc.get_non_vocab(conn)
 
     cov = analyze(transcript, known_bundle, freq, carded, words=words,
-                  non_vocab=non_vocab)
+                  non_vocab=non_vocab, grammar=lc.grammar_match_rows(conn))
     cov["known_sources"] = known_bundle["sources"]
 
     if record:

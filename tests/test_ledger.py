@@ -1297,7 +1297,10 @@ class PhraseGrammarTest(unittest.TestCase):
         rows = json.loads(path.read_text(encoding="utf-8"))
         self.assertGreaterEqual(len(rows), 400)
         self.assertEqual(len({r["pattern"] for r in rows}), len(rows))
-        self.assertTrue(all(r["level"] in (1, 2, 3, 4, 5) for r in rows))
+        # JLPT tiers are a guide only: non-JLPT rows (colloquial, dialect,
+        # counters, honorific suffixes) carry level None
+        self.assertTrue(all(r["level"] in (1, 2, 3, 4, 5, None) for r in rows))
+        self.assertTrue(sum(1 for r in rows if r["level"] is None) >= 50)
         r = lc.seed_grammar_points(self.conn, rows)
         self.assertEqual(r["grammar_points"], len(rows))
         # every seeded row starts at the unknown baseline

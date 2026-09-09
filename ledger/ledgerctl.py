@@ -118,14 +118,23 @@ def theta_for(freq_rank):
     return THETA_TABLE[-1][1], THETA_TABLE[-1][2]
 
 
-# Grammar difficulty prior (GRAMMAR.md): θ exposures + episode spread from the
-# JLPT tier — the difficulty analogue of THETA_TABLE, since grammar points have
-# no corpus freq rank. Keys are levels 5=N5 (easiest) … 1=N1; a pattern with no
-# tier (an approved proposal that was never placed) gets the strictest bar.
+# Grammar difficulty prior (GRAMMAR.md — token-anchored units, 2026-09-08):
+# how often the pattern actually occurs in the staged corpus, in lines per
+# 10k sentences (grammar_points.corpus_per_10k, written by tools.grammar
+# backfill) — the grammar analogue of a word's freq rank. A pattern met on
+# every other line needs few episodes to be believed known; a rare literary
+# form needs more. The JLPT tier is only the fallback for a pattern with no
+# corpus count yet (5=N5 easiest … 1=N1; None = strictest) — a guide, not
+# the definition of what grammar is.
+GRAMMAR_FREQ_THETA = ((20.0, (2, 2)), (5.0, (3, 3)), (1.0, (4, 3)), (0.0, (5, 4)))
 GRAMMAR_THETA = {5: (2, 2), 4: (2, 2), 3: (3, 3), 2: (4, 3), 1: (5, 4)}
 
 
-def grammar_theta_for(level):
+def grammar_theta_for(level, per_10k=None):
+    if per_10k is not None:
+        for floor, theta in GRAMMAR_FREQ_THETA:
+            if per_10k >= floor:
+                return theta
     return GRAMMAR_THETA.get(level, GRAMMAR_THETA[1])
 
 
@@ -234,6 +243,16 @@ def _migrate(conn):
         conn.execute("ALTER TABLE view_sessions ADD COLUMN source TEXT NOT NULL DEFAULT 'app'")
     if vs_cols and "modes" not in vs_cols:
         conn.execute("ALTER TABLE view_sessions ADD COLUMN modes TEXT")
+    gp_cols = {r["name"] for r in conn.execute("PRAGMA table_info(grammar_points)")}
+    if gp_cols and "match" not in gp_cols:
+        conn.execute("ALTER TABLE grammar_points ADD COLUMN match TEXT")
+    if gp_cols and "seq" not in gp_cols:
+        conn.execute("ALTER TABLE grammar_points ADD COLUMN seq INTEGER")
+    if gp_cols and "corpus_per_10k" not in gp_cols:
+        conn.execute("ALTER TABLE grammar_points ADD COLUMN corpus_per_10k REAL")
+    gpr_cols = {r["name"] for r in conn.execute("PRAGMA table_info(grammar_proposed)")}
+    if gpr_cols and "match" not in gpr_cols:
+        conn.execute("ALTER TABLE grammar_proposed ADD COLUMN match TEXT")
     ev_cols = {r["name"] for r in conn.execute("PRAGMA table_info(evidence)")}
     if "kind" not in ev_cols:
         conn.execute("ALTER TABLE evidence ADD COLUMN kind TEXT NOT NULL DEFAULT 'word'")
@@ -309,7 +328,7 @@ _ACQUIRE_META_COLUMNS = ("channel", "channel_id", "duration", "upload_date",
 _ACQUIRE_META_JSON = ("view_count", "description", "tags")
 
 
-def record_exposure(conn, episode, exposures):
+def record_exposure(conn, episode, exposures, meta=True):
     """Write inert exposure evidence for one analyzed episode.
 
     episode:   {"id", "title", "source", "kind"}
@@ -319,24 +338,44 @@ def record_exposure(conn, episode, exposures):
     Exposures are written unconditionally with their sentence context; the
     comprehension bar is applied at `promote`, not here (resolved Q1). The
     partial unique index makes re-runs no-ops (P4).
+
+    kind rides in each context dict: 'word' (default), 'phrase' (a tracked
+    phrase unit coverage detected) or 'grammar' (a taxonomy pattern the
+    grammar matcher found — GRAMMAR.md, token-anchored units). Grammar keys
+    project onto grammar_points, never lemmas, and only taxonomy patterns
+    are ever written (the matcher can only emit those).
+
+    meta=False (a backfill over an already-registered episode) leaves the
+    episodes row alone instead of re-asserting title/source/kind.
     """
     ts = now_iso()
-    conn.execute(
-        """INSERT INTO episodes (id, title, source, kind, processed_at)
-           VALUES (?, ?, ?, ?, ?)
-           ON CONFLICT(id) DO UPDATE SET
-               title = excluded.title, source = excluded.source,
-               kind = excluded.kind, processed_at = excluded.processed_at""",
-        (episode["id"], episode.get("title"), episode.get("source"),
-         episode.get("kind"), ts),
-    )
+    if meta:
+        conn.execute(
+            """INSERT INTO episodes (id, title, source, kind, processed_at)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+                   title = excluded.title, source = excluded.source,
+                   kind = excluded.kind, processed_at = excluded.processed_at""",
+            (episode["id"], episode.get("title"), episode.get("source"),
+             episode.get("kind"), ts),
+        )
+    else:
+        conn.execute("INSERT INTO episodes (id, processed_at) VALUES (?, ?) "
+                     "ON CONFLICT(id) DO NOTHING", (episode["id"], ts))
     written = 0
+    patterns = None
     for lemma, ctx in exposures.items():
         # kind rides in the context dict ('phrase' for tracked-phrase units
         # coverage detected; default 'word'). Only pre-existing phrase keys
         # ever arrive here — new phrase keys are created by record_curate_items.
         kind = ctx.get("kind", "word")
-        _touch_lemma(conn, lemma, ctx.get("reading"), ctx.get("pos"), ts, kind=kind)
+        if kind == "grammar":
+            if patterns is None:
+                patterns = {r[0] for r in conn.execute("SELECT pattern FROM grammar_points")}
+            if lemma not in patterns:
+                continue
+        else:
+            _touch_lemma(conn, lemma, ctx.get("reading"), ctx.get("pos"), ts, kind=kind)
         context = {k: ctx[k] for k in ("sentence_idx", "known_ratio",
                                        "other_unknown_count", "classification",
                                        "occ", "occ_clean", "occ_near")
@@ -352,9 +391,9 @@ def record_exposure(conn, episode, exposures):
     # Persist the yt-dlp provenance acquire stashed in the episode block
     # (DESIGN.md — Taste metadata). Absent on local files / minimal payloads.
     cols = {k: episode.get(k) for k in _ACQUIRE_META_COLUMNS}
-    meta = {k: episode.get(k) for k in _ACQUIRE_META_JSON}
-    if any(v is not None for v in (*cols.values(), *meta.values())):
-        update_episode_meta(conn, episode["id"], columns=cols, metadata=meta)
+    meta_json = {k: episode.get(k) for k in _ACQUIRE_META_JSON}
+    if meta and any(v is not None for v in (*cols.values(), *meta_json.values())):
+        update_episode_meta(conn, episode["id"], columns=cols, metadata=meta_json)
     conn.commit()
     return {"episode_id": episode["id"], "lemmas": len(exposures), "new_rows": written}
 
@@ -864,14 +903,17 @@ def record_curate_items(conn, episode_id, curation, jmdict_conn=None):
         if not pattern:
             continue
         if pattern not in known_patterns or "proposed_pattern" in g:
+            spec = g.get("match") or None
             conn.execute(
-                """INSERT INTO grammar_proposed (pattern, example, gloss, seen, first_seen)
-                   VALUES (?, ?, ?, 1, ?)
+                """INSERT INTO grammar_proposed (pattern, example, gloss, match, seen, first_seen)
+                   VALUES (?, ?, ?, ?, 1, ?)
                    ON CONFLICT(pattern) DO UPDATE SET
                        seen = grammar_proposed.seen + 1,
                        example = COALESCE(grammar_proposed.example, excluded.example),
-                       gloss = COALESCE(grammar_proposed.gloss, excluded.gloss)""",
-                (pattern, g.get("example"), g.get("gloss"), ts))
+                       gloss = COALESCE(grammar_proposed.gloss, excluded.gloss),
+                       match = COALESCE(grammar_proposed.match, excluded.match)""",
+                (pattern, g.get("example"), g.get("gloss"),
+                 json.dumps(spec, ensure_ascii=False) if spec else None, ts))
             proposed.append(pattern)
             continue
         context = {k: g[k] for k in ("sentence_idx", "classification", "form_note")
@@ -891,43 +933,99 @@ def record_curate_items(conn, episode_id, curation, jmdict_conn=None):
                         "proposed": sorted(set(proposed))}}
 
 
-def seed_grammar_points(conn, rows):
+def fold_grammar_keys(conn, folds):
+    """Merge taxonomy keys the token matcher cannot tell apart (GRAMMAR.md,
+    2026-09-08: 〜られる（受身）/（可能）/（尊敬） → 〜られる). folds: {old: new}.
+    Evidence rows are re-keyed (a row that would collide with one the new
+    key already has for the same episode/source is dropped — same episode,
+    same exposure), the old projection rows are deleted, and the caller's
+    promote rebuilds the new key's verdict. Idempotent."""
+    moved = 0
+    for old, new in (folds or {}).items():
+        cur = conn.execute(
+            "UPDATE OR IGNORE evidence SET lemma = ? WHERE kind = 'grammar' AND lemma = ?",
+            (new, old))
+        moved += cur.rowcount
+        conn.execute("DELETE FROM evidence WHERE kind = 'grammar' AND lemma = ?", (old,))
+        conn.execute("DELETE FROM grammar_points WHERE pattern = ?", (old,))
+        conn.execute("DELETE FROM grammar_proposed WHERE pattern = ?", (old,))
+    conn.commit()
+    return moved
+
+
+def grammar_match_rows(conn):
+    """The detectable taxonomy: [{pattern, match}] in taxonomy order — what
+    engine.grammar.build_grammar_index consumes (Stage 1 coverage, the
+    transcript backfill, the server's live pass)."""
+    return [{"pattern": r[0], "match": r[1]} for r in conn.execute(
+        """SELECT pattern, match FROM grammar_points
+           WHERE match IS NOT NULL AND match != '' AND match != '[]'
+           ORDER BY seq IS NULL, seq, pattern""")]
+
+
+def seed_grammar_points(conn, rows, folds=None):
     """Load the once-authored taxonomy (ledger/grammar_taxonomy.json) into
-    grammar_points. Upserts level/gloss; never touches promote's verdict
+    grammar_points — pattern, level, gloss and the token matcher spec
+    (`match`, engine/grammar.py; validated here so a malformed spec never
+    reaches Stage 1) plus `seq`, the taxonomy order the matcher uses as its
+    tie-break. `folds` ({old: new}, ledger/grammar_folds.json) are applied
+    first. Upserts level/gloss/match/seq; never touches promote's verdict
     columns, so re-seeding a revised taxonomy is safe."""
+    from engine.grammar import compile_match
+    folded = fold_grammar_keys(conn, folds) if folds else 0
     ts = now_iso()
-    for r in rows:
+    detectable = 0
+    for seq, r in enumerate(rows):
+        spec = r.get("match") or None
+        if spec:
+            compile_match(spec)  # raises on a malformed spec
+            detectable += 1
         conn.execute(
-            """INSERT INTO grammar_points (pattern, level, gloss, updated_at)
-               VALUES (?, ?, ?, ?)
+            """INSERT INTO grammar_points (pattern, level, gloss, match, seq, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?)
                ON CONFLICT(pattern) DO UPDATE SET
                    level = excluded.level, gloss = excluded.gloss,
+                   match = excluded.match, seq = excluded.seq,
                    updated_at = excluded.updated_at""",
-            (r["pattern"].strip(), r.get("level"), r.get("gloss"), ts))
+            (r["pattern"].strip(), r.get("level"), r.get("gloss"),
+             json.dumps(spec, ensure_ascii=False) if spec else None, seq, ts))
     conn.commit()
     n = conn.execute("SELECT COUNT(*) FROM grammar_points").fetchone()[0]
-    return {"seeded": len(rows), "grammar_points": n}
+    return {"seeded": len(rows), "detectable": detectable, "folded_rows": folded,
+            "grammar_points": n}
 
 
-def approve_grammar_proposal(conn, pattern, level=None, gloss=None):
+def approve_grammar_proposal(conn, pattern, level=None, gloss=None, match=None):
     """Deliberately grow the taxonomy: move a grammar_proposed row into
     grammar_points (GRAMMAR.md — nothing becomes a tracked key silently).
-    level/gloss override the proposal's stored ones."""
+    level/gloss override the proposal's stored ones; `match` (a token
+    matcher spec, engine/grammar.py) overrides the proposer's. Without a
+    spec the pattern is tracked but only ever seen through curate tags —
+    after approving a detectable pattern run `tools.grammar backfill` so
+    the staged episodes pick it up."""
+    from engine.grammar import compile_match
     row = conn.execute("SELECT * FROM grammar_proposed WHERE pattern = ?",
                        (pattern,)).fetchone()
     if row is None:
         raise KeyError(f"no proposed grammar pattern: {pattern}")
+    spec = match if match is not None else (
+        json.loads(row["match"]) if row["match"] else None)
+    if spec:
+        compile_match(spec)
+    seq = conn.execute("SELECT COALESCE(MAX(seq), 0) + 1 FROM grammar_points").fetchone()[0]
     conn.execute(
-        """INSERT INTO grammar_points (pattern, level, gloss, updated_at)
-           VALUES (?, ?, ?, ?)
+        """INSERT INTO grammar_points (pattern, level, gloss, match, seq, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?)
            ON CONFLICT(pattern) DO UPDATE SET
                level = COALESCE(excluded.level, grammar_points.level),
-               gloss = COALESCE(excluded.gloss, grammar_points.gloss)""",
-        (pattern, level, gloss or row["gloss"], now_iso()))
+               gloss = COALESCE(excluded.gloss, grammar_points.gloss),
+               match = COALESCE(excluded.match, grammar_points.match)""",
+        (pattern, level, gloss or row["gloss"],
+         json.dumps(spec, ensure_ascii=False) if spec else None, seq, now_iso()))
     conn.execute("DELETE FROM grammar_proposed WHERE pattern = ?", (pattern,))
     conn.commit()
     return {"pattern": pattern, "approved": True, "level": level,
-            "gloss": gloss or row["gloss"]}
+            "gloss": gloss or row["gloss"], "detectable": bool(spec)}
 
 
 def add_phrase(conn, canonical, reading=None):
@@ -1069,11 +1167,14 @@ def apply_taps(conn, payload, anki_call=None, watched=True):
     `applied`). "h" → tap_interest, a durable "I want to learn this" want that
     is NOT knowledge (counted in `interest`): it persists across episodes and
     steers future card selection (tools.select) until the lemma becomes known.
-    kind (optional third element) is 'word' (default) or 'phrase' — the
-    player's phrase layer marks a multi-word expression (血が騒ぐ) as its
-    own item, independent of its component words (GRAMMAR.md): the evidence
-    row carries the kind, and the lemmas row is created as a phrase if the
-    key is new (a deliberate mark is as good as `phrase-add`).
+    kind (optional third element) is 'word' (default), 'phrase' or
+    'grammar' — the player's phrase layer marks a multi-word expression
+    (血が騒ぐ) as its own item, independent of its component words
+    (GRAMMAR.md): the evidence row carries the kind, and the lemmas row is
+    created as a phrase if the key is new (a deliberate mark is as good as
+    `phrase-add`). A grammar mark (the popup's grammar layer on a detected
+    unit — 〜てしまう under a painted てしまっ) lands the same way but only
+    for a taxonomy pattern: an unknown key is dropped, never minted.
 
     watched=True (the classic post-watch corrections blob) implies
     mark-watched (P5). The app's pre-watch feedback flow passes
@@ -1105,10 +1206,15 @@ def apply_taps(conn, payload, anki_call=None, watched=True):
         painted = entry[3] if len(entry) > 3 and entry[3] in LOOKUP_LISTS else None
         met = entry[4] if len(entry) > 4 and entry[4] in ENCOUNTER_MODES else None
         source = sources.get(verdict)
-        if source is None or kind not in ("word", "phrase"):
+        if source is None or kind not in ("word", "phrase", "grammar"):
             continue
-        _touch_lemma(conn, lemma, ts=ts, kind=kind,
-                     pos="expression" if kind == "phrase" else None)
+        if kind == "grammar":
+            if not conn.execute("SELECT 1 FROM grammar_points WHERE pattern = ?",
+                                (lemma,)).fetchone():
+                continue
+        else:
+            _touch_lemma(conn, lemma, ts=ts, kind=kind,
+                         pos="expression" if kind == "phrase" else None)
         # The phone syncs marks live and each batch is the episode's *whole*
         # mark set (so card selection sees every k/h), so the same tap arrives
         # again with every later change. One tap on one word in one episode is
@@ -1120,9 +1226,11 @@ def apply_taps(conn, payload, anki_call=None, watched=True):
         ).fetchone():
             continue
         context = None
-        if source in CLAIM_SOURCES:
+        if source in CLAIM_SOURCES and kind != "grammar":
             context = json.dumps({"snap": claim_snapshot(conn, lemma, kind, ts),
                                   "list": painted, "mode": met}, ensure_ascii=False)
+        elif source in CLAIM_SOURCES:
+            context = json.dumps({"list": painted, "mode": met}, ensure_ascii=False)
         conn.execute(
             """INSERT INTO evidence (lemma, kind, source, polarity, weight, episode_id, context, ts)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -1174,7 +1282,7 @@ def _apply_lookups(conn, episode_id, entries, ts):
         lemma, n = entry[0], entry[1]
         lists = entry[2] if len(entry) > 2 and isinstance(entry[2], dict) else {}
         kind = entry[3] if len(entry) > 3 and entry[3] else "word"
-        if not isinstance(lemma, str) or not lemma or kind not in ("word", "phrase"):
+        if not isinstance(lemma, str) or not lemma or kind not in ("word", "phrase", "grammar"):
             continue
         if isinstance(n, bool) or not isinstance(n, (int, float)) or n <= 0:
             continue
@@ -1187,8 +1295,13 @@ def _apply_lookups(conn, episode_id, entries, ts):
         if modes:
             payload["modes"] = modes
         context = json.dumps(payload, ensure_ascii=False)
-        _touch_lemma(conn, lemma, ts=ts, kind=kind,
-                     pos="expression" if kind == "phrase" else None)
+        if kind == "grammar":
+            if not conn.execute("SELECT 1 FROM grammar_points WHERE pattern = ?",
+                                (lemma,)).fetchone():
+                continue
+        else:
+            _touch_lemma(conn, lemma, ts=ts, kind=kind,
+                         pos="expression" if kind == "phrase" else None)
         row = conn.execute(
             """SELECT id, context FROM evidence
                WHERE lemma = ? AND kind = ? AND source = 'lookup' AND episode_id IS ?""",
@@ -1605,8 +1718,8 @@ def promote(conn, anki_known=None):
 
     freq = dict(conn.execute("SELECT lemma, rank FROM freq").fetchall())
     pos_by_lemma = dict(conn.execute("SELECT lemma, pos FROM lemmas").fetchall())
-    grammar_levels = dict(conn.execute(
-        "SELECT pattern, level FROM grammar_points").fetchall())
+    grammar_prior = {r[0]: (r[1], r[2]) for r in conn.execute(
+        "SELECT pattern, level, corpus_per_10k FROM grammar_points")}
 
     # kind is part of the group key so a word and a grammar pattern that
     # happen to share a string can't merge their evidence.
@@ -1618,7 +1731,7 @@ def promote(conn, anki_known=None):
     grammar_seen = 0
     for (kind, lemma), evs in by_key.items():
         if kind == "grammar":
-            theta, spread_needed = grammar_theta_for(grammar_levels.get(lemma))
+            theta, spread_needed = grammar_theta_for(*grammar_prior.get(lemma, (None, None)))
             v = _judge(evs, theta, spread_needed)
             conn.execute(
                 """INSERT INTO grammar_points (pattern, status, confidence,
@@ -1910,7 +2023,8 @@ def active_interest(conn, known=()):
     and leaves this one. A "not yet" answer clears the candidate flag, and
     the word is back here."""
     interested = {r[0] for r in conn.execute(
-        "SELECT DISTINCT lemma FROM evidence WHERE source = 'tap_interest'")}
+        "SELECT DISTINCT lemma FROM evidence "
+        "WHERE source = 'tap_interest' AND kind != 'grammar'")}
     graduated = {r[0] for r in conn.execute(
         "SELECT lemma FROM lemmas WHERE status = 'known' OR confirm_candidate = 1")}
     return interested - graduated - set(known)
@@ -2010,9 +2124,65 @@ def known_words(conn):
 
 def confirm_grammar(conn):
     """The grammar-kind confirmation queue as a bare pattern set — the
-    grammar_points analogue of confirm_words, for the player's line badge."""
+    grammar_points analogue of confirm_words, for the player's paint."""
     return {r[0] for r in conn.execute(
         "SELECT pattern FROM grammar_points WHERE confirm_candidate = 1")}
+
+
+def grammar_lists(conn):
+    """The grammar axis's paint lists (GET /episodes/{id}/paint), the
+    grammar_points analogue of known_words / confirm_words / active_interest
+    / marked_unknown: `known` (status = known), `confirm` (awaiting a
+    yes/no), `interest` (★'d, not yet known or in the queue) and `unknown`
+    (✗'d and not since re-claimed). Callers narrow to one episode."""
+    known = {r[0] for r in conn.execute(
+        "SELECT pattern FROM grammar_points WHERE status = 'known'")}
+    confirm = confirm_grammar(conn)
+    interest = {r[0] for r in conn.execute(
+        "SELECT DISTINCT lemma FROM evidence WHERE kind = 'grammar' "
+        "AND source = 'tap_interest'")} - known - confirm
+    unknown = {r[0] for r in conn.execute(
+        """SELECT DISTINCT e.lemma FROM evidence e
+           JOIN grammar_points g ON g.pattern = e.lemma
+           WHERE e.kind = 'grammar' AND e.source = 'tap_unknown'
+             AND g.status != 'known'""")}
+    return {"known": known, "confirm": confirm, "interest": interest, "unknown": unknown}
+
+
+def grammar_statuses(conn, keys):
+    """{pattern: status} for the given patterns — the transcript sidecar's
+    per-line status snapshot, the grammar analogue of phrase_statuses."""
+    keys = list(keys)
+    if not keys:
+        return {}
+    rows = conn.execute(
+        "SELECT pattern, status FROM grammar_points WHERE pattern IN (%s)"
+        % ",".join("?" * len(keys)), keys).fetchall()
+    out = {k: "unknown" for k in keys}
+    out.update({r[0]: r[1] for r in rows})
+    return out
+
+
+def set_grammar_corpus_freq(conn, per_10k):
+    """Store the corpus frequency prior: {pattern: lines per 10k sentences}
+    (tools.grammar backfill measures it over every staged episode). Patterns
+    not in the dict keep their previous value. Caller should `promote`."""
+    ts = now_iso()
+    for pattern, v in per_10k.items():
+        conn.execute("UPDATE grammar_points SET corpus_per_10k = ?, updated_at = ? "
+                     "WHERE pattern = ?", (round(v, 3), ts, pattern))
+    conn.commit()
+
+
+def grammar_glosses(conn, keys):
+    """{pattern: {gloss, level}} for the given patterns — what the popup's
+    grammar layer shows under a detected unit."""
+    keys = list(keys)
+    if not keys:
+        return {}
+    return {r[0]: {"gloss": r[1], "level": r[2]} for r in conn.execute(
+        "SELECT pattern, gloss, level FROM grammar_points WHERE pattern IN (%s)"
+        % ",".join("?" * len(keys)), keys)}
 
 
 def query_summary(conn):
@@ -2484,6 +2654,7 @@ def main(argv=None):
     p.add_argument("--level", type=int, choices=[1, 2, 3, 4, 5],
                    help="JLPT tier 5=N5 … 1=N1 (omitted = strictest θ)")
     p.add_argument("--gloss")
+    p.add_argument("--match", help="token matcher spec, JSON (engine/grammar.py)")
     p = sub.add_parser("non-vocab-remove",
                        help="un-register an over-flagged non-vocab key")
     p.add_argument("key")
@@ -2616,11 +2787,18 @@ def main(argv=None):
         path = Path(args.json_path) if args.json_path else \
             Path(__file__).resolve().parent / "grammar_taxonomy.json"
         rows = json.loads(path.read_text(encoding="utf-8"))
-        _json_out(seed_grammar_points(conn, rows))
-    elif args.verb == "grammar-approve":
-        result = approve_grammar_proposal(conn, args.pattern,
-                                          level=args.level, gloss=args.gloss)
+        folds_path = path.with_name("grammar_folds.json")
+        folds = json.loads(folds_path.read_text(encoding="utf-8")) \
+            if folds_path.exists() else None
+        result = seed_grammar_points(conn, rows, folds=folds)
         result["promote"] = promote(conn)
+        _json_out(result)
+    elif args.verb == "grammar-approve":
+        result = approve_grammar_proposal(
+            conn, args.pattern, level=args.level, gloss=args.gloss,
+            match=json.loads(args.match) if args.match else None)
+        result["promote"] = promote(conn)
+        result["hint"] = "run `python -m tools.grammar backfill` so staged episodes detect it"
         _json_out(result)
     elif args.verb == "phrase-add":
         _json_out(add_phrase(conn, args.canonical, reading=args.reading))
