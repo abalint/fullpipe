@@ -127,7 +127,8 @@ recomputed by `promote`. This buys re-tunable thresholds (rerun `promote` over s
 already have), auditability ("why does it think I know 諦める?"), and conflict handling by
 rule rather than imperative spaghetti.
 
-**Anki retired (2026-09-05, LIVE_REVIEW.md §7).** The known set is the ledger's alone.
+**Anki idle, not retired (2026-09-05, LIVE_REVIEW.md §7; clarified 2026-09-10).** The known
+set is the ledger's alone; the deck push survives as the phone's opt-in **mint cards** button.
 The Anki collection was folded in once: `ledgerctl import-anki` scanned the configured
 fields via AnkiConnect a final time and wrote every lemma whose highest card interval ≥
 21d as `import` evidence (origin `anki_final`). Nothing in the prepare/curate pipeline
@@ -245,9 +246,18 @@ CREATE TABLE tap_batches (
 
 ### Two design moves
 
-**Watched-gate.** `/immerse` writes `exposure` rows tagged with `episode_id`, but they are
-**inert** until `episodes.watched = 1`. Watching is the activation switch — analyzing 10
-episodes you never watched doesn't inflate your known count.
+**Exposure = the line played (2026-09-10; was the watched-gate).** `/immerse` writes
+`exposure` rows tagged with `episode_id` at analysis time, each carrying *when* its
+occurrences happen (`context.at`, sentence start times; `t` for the recorded sentence).
+They stay inert until the player's sittings (`view_sessions.played`, the media ranges
+that actually ran) cover those moments: an occurrence is seen once per range that covers
+it, and a row qualifies toward θ only if its recorded sentence played. No threshold —
+2 % watched credits the words in that 2 %, a rewound minute credits its words twice, and
+analyzing 10 episodes you never watched still inflates nothing. `episodes.watched` survives
+only as a coarse *finished* marker (80 % of play time; the queue row, the purge rule) and
+as the legacy credit path for episodes with no recorded sittings (pre-2026-09-02 watches:
+watched = one play of everything). Sittings from before ranges were recorded count the
+span their `reached`/`secs` imply. See `ledgerctl.load_coverage` / `_exposure_credit`.
 
 **Frequency prior kills the old slider.** Replace audioPrime's blunt global "assume 30% of
 common unknowns are known" with a **per-lemma exposure threshold** scaled by `freq_rank`:

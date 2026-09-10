@@ -318,17 +318,104 @@ class LedgerTest(unittest.TestCase):
         self.assertEqual((row["exposure_count"], row["seen_active"], row["seen_passive"]),
                          (1, 3, 3))
 
+    def test_exposure_credit_follows_played_ranges(self):
+        # "I got exposed to the word when I got exposed to it": credit comes
+        # from the sittings' played ranges against each occurrence's time —
+        # no watched flag, no 80 % bar. 猫 occurs at 10 s, 50 s and 90 s of a
+        # 100 s episode; 犬 only at 90 s.
+        ep, exp = _exposure_payload("e1", ["猫", "犬"])
+        exp["猫"].update({"occ": 3, "at": [10.0, 50.0, 90.0], "t": 10.0})
+        exp["犬"].update({"occ": 1, "at": [90.0], "t": 90.0})
+        lc.record_exposure(self.conn, ep, exp)
+        # a 2 % sitting: only the first two seconds played → nothing credited
+        lc.record_view_session(self.conn, {
+            "id": "s0", "episode_id": "e1", "kind": "watch", "day": "2026-09-10",
+            "start": "2026-09-10T09:00:00Z", "secs": 2.0, "duration": 100.0,
+            "played": [[0.0, 2.0]]})
+        lc.promote(self.conn)
+        rows = {r[0]: r for r in self.conn.execute(
+            "SELECT lemma, status, exposure_count, seen_active FROM lemmas")}
+        self.assertEqual((rows["猫"]["exposure_count"], rows["猫"]["seen_active"]), (0, 0))
+        self.assertEqual(self.conn.execute(
+            "SELECT watched FROM episodes WHERE id='e1'").fetchone()[0], 0)
+        # watched the first half, rewound and watched 40–60 again
+        lc.record_view_session(self.conn, {
+            "id": "s1", "episode_id": "e1", "kind": "watch", "day": "2026-09-10",
+            "start": "2026-09-10T10:00:00Z", "secs": 70.0, "duration": 100.0,
+            "played": [[0.0, 55.0], [40.0, 60.0]], "modes": {"on": 70.0}})
+        lc.promote(self.conn)
+        rows = {r[0]: r for r in self.conn.execute(
+            "SELECT lemma, status, exposure_count, seen_active, seen_by_mode FROM lemmas")}
+        # 猫: 10 s once, 50 s twice (the rewind), 90 s never → 3 times seen
+        self.assertEqual((rows["猫"]["exposure_count"], rows["猫"]["seen_active"]), (1, 3))
+        self.assertEqual(json.loads(rows["猫"]["seen_by_mode"]), {"on": 3})
+        # 犬 sits in the part never played: still inert
+        self.assertEqual((rows["犬"]["exposure_count"], rows["犬"]["seen_active"]), (0, 0))
+        # a 55 % play is not "watched" by the finished-marker either — and
+        # that flag no longer matters for credit
+        self.assertEqual(self.conn.execute(
+            "SELECT watched FROM episodes WHERE id='e1'").fetchone()[0], 0)
+        # deleting now keeps the played words and drops the never-played one
+        res = lc.purge_episode(self.conn, "e1")
+        self.assertEqual((res["purged"], res["evidence"], res["retained"]), ("played", 1, 1))
+        left = {r[0] for r in self.conn.execute(
+            "SELECT lemma FROM evidence WHERE source='exposure'")}
+        self.assertEqual(left, {"猫"})
+
+    def test_exposure_credit_qualifies_only_when_the_recorded_sentence_played(self):
+        # 6 clean exposures across 6 episodes would clear θ — but the sitting
+        # that played each episode stopped short of the recorded sentence in
+        # 4 of them, so only 2 qualify and the word stays unknown.
+        for i in range(6):
+            ep, exp = _exposure_payload(f"e{i}", ["蝶"])
+            exp["蝶"].update({"occ": 1, "at": [80.0], "t": 80.0})
+            lc.record_exposure(self.conn, ep, exp)
+            reached = 90.0 if i < 2 else 30.0
+            lc.record_view_session(self.conn, {
+                "id": f"s{i}", "episode_id": f"e{i}", "kind": "watch", "day": "2026-09-10",
+                "start": "2026-09-10T10:00:00Z", "secs": reached, "duration": 100.0,
+                "played": [[0.0, reached]]})
+        lc.promote(self.conn)
+        row = self.conn.execute(
+            "SELECT status, exposure_count, confirm_candidate FROM lemmas WHERE lemma='蝶'").fetchone()
+        self.assertEqual((row["status"], row["exposure_count"], row["confirm_candidate"]),
+                         ("unknown", 2, 0))
+        # …and the claim snapshot agrees with promote (train = serve)
+        snap = lc.claim_snapshot(self.conn, "蝶")
+        self.assertEqual((snap["eps"], snap["q"], snap["occ"]), (2, 2, 2))
+
+    def test_legacy_sittings_and_flag_still_credit(self):
+        # A sitting from before ranges were recorded implies the span its
+        # reached/secs describe; an episode with no sittings at all keeps
+        # the old rule (watched = one play of everything).
+        ep, exp = _exposure_payload("old", ["鳥"])
+        exp["鳥"].update({"occ": 2, "at": [20.0, 80.0], "t": 20.0})
+        lc.record_exposure(self.conn, ep, exp)
+        lc.record_view_session(self.conn, {
+            "id": "r1", "episode_id": "old", "kind": "watch", "day": "2026-09-01",
+            "start": "2026-09-01T10:00:00Z", "secs": 30.0, "reached": 40.0, "duration": 100.0})
+        ep2, exp2 = _exposure_payload("flag", ["鳥"])
+        exp2["鳥"].update({"occ": 2, "at": [20.0, 80.0], "t": 20.0})
+        lc.record_exposure(self.conn, ep2, exp2)
+        lc.mark_watched(self.conn, "flag")
+        lc.promote(self.conn)
+        row = self.conn.execute(
+            "SELECT exposure_count, seen_active FROM lemmas WHERE lemma='鳥'").fetchone()
+        # old: the 10–40 s span covers the 20 s occurrence only → 1; flag: 2
+        self.assertEqual((row["exposure_count"], row["seen_active"]), (2, 3))
+
     def test_backfill_occurrences_from_coverage(self):
         import tempfile
         ep, exp = _exposure_payload("e9", ["犬", "走る"])
         lc.record_exposure(self.conn, ep, exp)
         lc.record_exposure(self.conn, *_exposure_payload("gone", ["犬"]))
         cov = {"episode_id": "e9", "sentences": [
-            {"unknown": [], "tokens": [{"l": "犬", "c": True}, {"l": "が", "c": False},
-                                       {"l": "走る", "c": True}]},
-            {"unknown": ["守る"], "tokens": [{"l": "犬", "c": True}, {"l": "守る", "c": True}]},
-            {"unknown": ["A", "B"], "tokens": [{"l": "犬", "c": True}, {"l": "A", "c": True},
-                                              {"l": "B", "c": True}]},
+            {"idx": 0, "start": 1.25, "unknown": [],
+             "tokens": [{"l": "犬", "c": True}, {"l": "が", "c": False}, {"l": "走る", "c": True}]},
+            {"idx": 1, "start": 7.0, "unknown": ["守る"],
+             "tokens": [{"l": "犬", "c": True}, {"l": "守る", "c": True}]},
+            {"idx": 2, "start": 12.5, "unknown": ["A", "B"],
+             "tokens": [{"l": "犬", "c": True}, {"l": "A", "c": True}, {"l": "B", "c": True}]},
         ]}
         with tempfile.TemporaryDirectory() as root:
             d = Path(root) / "e9"
@@ -342,6 +429,9 @@ class LedgerTest(unittest.TestCase):
             "SELECT episode_id, context FROM evidence WHERE lemma='犬'")}
         self.assertEqual((ctx["e9"]["occ"], ctx["e9"]["occ_clean"], ctx["e9"]["occ_near"]),
                          (3, 1, 1))
+        # …and WHEN: every occurrence's sentence start, plus the recorded
+        # sentence's own (sentence_idx 0) — what exposure credit reads
+        self.assertEqual((ctx["e9"]["at"], ctx["e9"]["t"]), ([1.2, 7.0, 12.5], 1.2))
         self.assertEqual(ctx["e9"]["other_unknown_count"], 0)  # untouched
         self.assertNotIn("occ", ctx["gone"])  # no coverage.json on disk
 

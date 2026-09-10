@@ -95,10 +95,10 @@ download/ASR/tokenize it used to do up front is exactly the batch that already r
 | `downloading` · `transcribing` · `tokenizing` | 1 | worker | — |
 | `prepared` | 1 done | worker | **pull video** (big, slow — do it overnight) |
 | `curating` | 2 | curate step | — |
-| `staged` | 2 done | curate step | **pull prep-doc** (tiny, fast); review + tap |
-| `reconciled` | — | `POST /taps` (pre-watch feedback) | ready to watch; cards selected. Set **only from a pre-watch state** — feedback that arrives after mark-watched (either tap order, or an outbox flush) still records its evidence but leaves a `pushing`/`watched` row alone |
-| `pushing` | — | `POST /watched` | close-out running in the background (clips + Anki push + lapse poll); `progress_msg` narrates it ("pushing card 3/12"); delete is refused |
-| `watched` | — | close-out thread | terminal: cards pushed to Anki (skipped for the disliked-it branch, body `{cards:false}`); a failed push lands on the row's `error` — re-POST `/watched` retries; **local files are kept** (rewatch / passive listening; deletion is manual only) |
+| `staged` | 2 done | curate step | **pull prep-doc** (tiny, fast — the synopsis + keyword glosses the player shows); watch |
+| `reconciled` | — | `POST /taps` (pre-watch feedback) | ready to watch; cards selected. Set **only from a pre-watch state** — feedback that arrives after the close-out (either tap order, or an outbox flush) still records its evidence but leaves a `pushing`/`watched` row alone |
+| `pushing` | — | `POST /watched` (the player's **mint cards** / **passive** buttons) | close-out running in the background (clips + Anki push + lapse poll); `progress_msg` narrates it ("pushing card 3/12"); delete is refused |
+| `watched` | — | close-out thread, **or `POST /viewtime`** | terminal — a *finished* marker for the lists, nothing more. **Exposure credit is per line played (2026-09-10):** every sitting reports the media ranges it played, and a word counts as seen each time a range covers one of its lines — 2 % watched is the words in that 2 %. Separately, once the sittings carry a `staged`/`reconciled` episode past `PLAY_ACTIVATION_FRACTION` (80 %) the row moves here — no button. After a close-out: cards pushed to Anki (mint cards) or skipped (passive, body `{cards:false}`); a failed push lands on the row's `error` — re-POST `/watched` retries; **local files are kept** (rewatch / passive listening; deletion is manual only) |
 | `failed` | any | worker | surface error + retry action |
 
 Orthogonal to state: a `passive` flag (`POST /jobs/{id}/passive`) shelves a
@@ -125,9 +125,10 @@ The downloaded mp4 survives for the Listen loop for free: **the phone never
 auto-deletes videos** (revised 2026-07-09 — the eager delete-at-mark-watched was
 removed; it broke passive listening and blocked rewatch). Videos stay on the
 device until you delete them explicitly (swipe-delete on a queue or Listen row).
-So both passive entry points keep the file with no re-download: the prep view's
-**"🎧 + listen"** button (marks watched + shelves passive in one tap) and
-shelving *after* the fact from the queue's watched **"🎧 passive"** button. The
+So both passive entry points keep the file with no re-download: the player's
+**"🎧 passive"** button (closes out without cards if play time hasn't already
+flipped it, then shelves — one tap) and shelving *after* the fact from the
+queue's watched **"🎧 passive"** button. The
 `⬇` fallback on the Listen tab only appears if the episode was never downloaded
 (or was manually deleted).
 
@@ -212,9 +213,9 @@ Thin HTTP over `ledgerctl` verbs + the queue. (Verbs: `materialize-known`,
 | `POST /taps` | `apply-taps` + `tools.select` | `{episode_id, batch_id, taps:[[lemma,"k"\|"h"],…]}` — a phrase mark from the popup's phrase layer rides as `[headword,"k"\|"h","phrase"]` and lands on the phrase item, never its words (GRAMMAR.md); pre-watch feedback: "k"→ledger, "h"→card priority; runs final card selection; does NOT imply watched. **Page jobs:** taps are pure ledger evidence — no card selection, no state change. **Lookups (2026-09-07):** the batch also carries `lookups:[[key, n, {confirm\|interest\|should_know\|known\|none: n}, "phrase"?],…]` — every popup open on an item in this episode (cumulative; a re-sent batch replaces the row) with what the word was painted as at each tap. Zero-weight `lookup` evidence: counted (`lemmas.lookups` / `lookups_listed`, `query calibration` → lookups before ✓), never judged — a word you only read stays on its list. **Where it was met (2026-09-08):** a mark entry may carry a 4th element (what the word was painted as) and a 5th (`on\|kw\|off\|audio\|listen\|page\|prep` — the subtitle state / surface at the tap), a lookup entry a 5th `{mode: n}`; both land in the evidence row's context (`list`, `mode`, `modes`) beside the claim snapshot |
 | `GET /lists/{name}` | ledger lists | **the other two global word lists as review rows** (2026-09-04, LIVE_REVIEW.md §1): `interest` = the standing ★ want-to-learn set (common words first), `should_know` = the `should_know_window` most frequent corpus words not yet known (rank order). `{list, words:[…]}`, each row in the confirm-queue word shape — reading, `reading_segs` furigana, `freq_rank`, `exposure_count` / `episode_spread`, watched-episode titles, JMdict `senses` — so the phone renders all three lists with one card (`#/list/interest`, `#/list/should_know`, reached from banners on Progress next to Confirm's) |
 | `POST /lists/mark` | `apply-taps` | `{lemma, mark:"k"\|"h", batch_id?}` — a mark made from a list review rather than inside an episode: `k` → tap_known → known (leaves every list), `h` → tap_interest → the ★ list (a should-know word pulled onto want-to-learn). No episode, no card selection; `batch_id` makes a re-flush idempotent. Returns `{lemma, mark, status, interest, duplicate}` |
-| `POST /watched/{id}` | `mark-watched` + `tools.deck` | post-watch close-out: activates exposures immediately, then **pushes the selected cards to Anki in a background thread** (responds with `{cards: {queued: N}}`; the job row narrates progress via state `pushing` and flips to `watched`, carrying any push error); re-POST retries a failed push. Body `{cards: false}` = watched-but-disliked: exposures still activate, no cards pushed. **Page jobs never mint cards** regardless of the body — "finished reading" activates exposures only |
+| `POST /watched/{id}` | `mark-watched` + `tools.deck` | close-out — the player's **mint cards** button (`{cards:true}`) or the first half of its **passive** button (`{cards:false}`): activates exposures immediately (if play time hasn't already — see `POST /viewtime`), then **pushes the selected cards to Anki in a background thread** (responds with `{cards: {queued: N}}`; the job row narrates progress via state `pushing` and flips to `watched`, carrying any push error); re-POST retries a failed push. Body `{cards: false}` = watched-but-disliked: exposures still activate, no cards pushed. **Page jobs never mint cards** regardless of the body — "finished reading" activates exposures only |
 | `POST /episodes/{id}/rating` | `record-rating` | post-watch **survey** (SURVEY.md) → append-only `taste_events`. Body `{rating: 1-5\|null, tags:[…], axes:{…}, follow, note, review_id?}`. `axes` are graded 1–5 on `topic_pull·presenter·audio_fidelity·speech_clarity·difficulty` (own sliders; a 5 on `difficulty` = too-hard, not "good"). `follow` ∈ `block·less·neutral·more` is a per-**channel** intent decoupled from the star (kept even when `rating` is null) → upserts `channels.follow_state`. `note` = free text. `tags` (chips) ∈ `already_knew·over_my_head·didnt_grab·format_miss·fascinating·loved_format`. Re-POST appends a new review (on-read verdict takes the latest); a client `review_id` makes it idempotent for outbox replay. Rating+tags+axes+follow ride back on `GET /jobs` (`_taste`) so the app pre-fills a re-review. Ratable pre-watch; a rated-but-unwatched episode keeps its rating through `DELETE /jobs/{id}` (rating-only ledger tombstone) |
-| `POST /viewtime` | `record-view-session` | **immersion time** (2026-09-02): one phone-recorded playback sitting `{id, episode_id, kind: watch\|listen, day, start, secs, reached?, duration?, title?, modes?}` — `modes` (2026-09-08) is the sitting's seconds per subtitle state `{on, kw, off, audio}` (the player's cc toggle; a 🎧-handoff service segment is stamped `audio` on import); the ledger splits each word's times seen the same way (`lemmas.seen_by_mode`, `unknown` = plays from sittings that reported no state) → `view_sessions`. `secs` = wall-clock seconds the media was advancing (rewinds count again, pauses/seeks don't, speed folded out); `reached` vs `duration` = finished or not; `day` is the **device-local** calendar day (a sitting is split at midnight client-side). Active watching (`watch`: the in-app player, including its 🎧 audio-only mode) and passive listening (`listen`: the Listen tab's queue) are kept apart. Idempotent on the client-minted `id`; the episode need **not** exist — time spent outlives a deleted row |
+| `POST /viewtime` | `record-view-session` | **immersion time** (2026-09-02): one phone-recorded playback sitting. **`played`** (2026-09-10) `[[from, to], …]` — the media ranges the sitting actually played (contiguous playback extends a range; a seek or rewind opens a new one, so a rewatched stretch is listed twice). **This is the exposure signal:** the ledger credits a word once per range covering one of its lines (`load_coverage`); the `🎧` handoff's service segments carry it too. After a `watch` sitting lands the server also runs `activate_played_episodes`: past 80 % of play time the episode's *finished* marker flips and a `staged`/`reconciled` queue row moves to `watched` (response carries `job_watched: true`) — a display rule, not a credit rule. Listen sittings never credit the active tally `{id, episode_id, kind: watch\|listen, day, start, secs, reached?, duration?, title?, modes?}` — `modes` (2026-09-08) is the sitting's seconds per subtitle state `{on, kw, off, audio}` (the player's cc toggle; a 🎧-handoff service segment is stamped `audio` on import); the ledger splits each word's times seen the same way (`lemmas.seen_by_mode`, `unknown` = plays from sittings that reported no state) → `view_sessions`. `secs` = wall-clock seconds the media was advancing (rewinds count again, pauses/seeks don't, speed folded out); `reached` vs `duration` = finished or not; `day` is the **device-local** calendar day (a sitting is split at midnight client-side). Active watching (`watch`: the in-app player, including its 🎧 audio-only mode) and passive listening (`listen`: the Listen tab's queue) are kept apart. Idempotent on the client-minted `id`; the episode need **not** exist — time spent outlives a deleted row |
 | `DELETE /viewtime/{id}` | — | drop one sitting (the app's ✕ on a hand-typed entry; idempotent). Sessions carry a `source`: `app` (recorded), `manual` (typed in on the Progress tab — outside-the-app listening), `import` (the pre-app spreadsheet: `python3 -m tools.import_tracker_pdf PDF`, Listening tab → `watch`, passive tab → `listen`, reconciles to the sheet's own totals) |
 | `GET /viewtime` | `query viewtime` | `{sessions:[…]}` — the whole log (`?since=YYYY-MM-DD` narrows), oldest first; the app merges by id into its local log (reinstall backfill) and renders its own Sunday→Saturday weeks on the Progress tab |
 | `GET /coverage` | `query` | coverage %, trends, `needs_review` queue, mining candidates |
@@ -278,7 +279,7 @@ n/N watched · m on phone · `▶ EPnn` / `⬇ EPnn` for the next unwatched epis
 in `ep_no` order with an `EPnn` chip; sort/filter still apply per row. When an
 episode ends the player shows an **up next** card and — if the next episode is
 downloaded and Settings → Playback → Autoplay is on — rolls into it after an
-8 s countdown. Mark-watched remains a deliberate tap (prep screen / row).
+8 s countdown. Watched follows from play time (`POST /viewtime`), no tap.
 
 ## The Android client
 
@@ -288,11 +289,16 @@ iOS-style `file://` fragility that PROPOSALS.md P9 works around. *Native Kotlin*
 if best-in-class furigana/tap typography is worth a separate codebase.
 
 **Responsibilities**
-- Render the prep doc: pre-tokenized sentences (no on-device tokenizer needed), furigana + glosses,
-  every word a tap target, focal points highlighted.
+- ~~Render the prep doc~~ **No prep page (2026-09-10).** The player is the episode's only screen:
+  video, then under it the curated synopsis (あらすじ, ruby-annotated), the rating, and three
+  actions — **delete** (the queue's swipe-delete), **passive** (close out without cards + shelve
+  on Listen), **mint cards** (`POST /watched {cards:true}` — the Anki push, opt-in). Keyword
+  glosses / focal points still ride the prep doc into the player's tap popup; the rest of the
+  old page (stats, key-vocab table, i+1 sentences, reinforcement) is gone. There is no
+  "mark watched" button: watched follows from play time (`POST /viewtime`).
 - Capture "know / don't-know" taps → local **outbox**; flush to `POST /taps` when reachable. Each
   batch carries a client-generated `batch_id` so a re-flush after reconnect is **idempotent**.
-  Marks **sync live** (2026-09-05, mobile `livesync.ts`): a ✓/★/✗ anywhere — prep doc, player
+  Marks **sync live** (2026-09-05, mobile `livesync.ts`): a ✓/★/✗ anywhere — player
   popup, page reader — starts a short debounce, then the episode's whole mark set is frozen into
   one batch and the outbox flushes; no submit button. Because every batch is the full set, the
   server dedupes tap evidence per (word, source, episode) so re-sent snapshots never stack weight.
@@ -323,14 +329,14 @@ if best-in-class furigana/tap typography is worth a separate codebase.
   mark-watched, ratings, enqueues, time sittings — are typed actions in a FIFO outbox, flushed opportunistically
   (live mark-sync / app-foreground / network-return). FIFO preserves the workflow order: an episode's
   feedback flushes before its close-out. Downloaded episodes are therefore fully usable offline:
-  watch, tap, mark watched, rate — the server catches up at the next sync.
+  watch, tap, mint / shelve passive, rate — the server catches up at the next sync.
 - **Idempotent replays.** `batch_id` on every tap POST and a client-minted `review_id` on every
   rating POST; the server dedupes both. `POST /watched` and `POST /jobs` are idempotent by
   construction. So a double-flush after a flaky connection is harmless. A permanently rejected
   action (404/409/410/422 — e.g. the episode was deleted on the PC) is dropped instead of
   poisoning the queue.
 - **Offline queue.** The client caches the last `GET /jobs` snapshot and rebuilds the queue screen
-  from it when unreachable, overlaying pending outbox actions (a queued mark-watched reads as
+  from it when unreachable, overlaying pending outbox actions (a queued close-out reads as
   watched with a `⇪ pending sync` chip). Prep docs auto-cache for staged episodes on every online
   queue load, and the `⬇` download bundle includes the prep doc alongside video / subs /
   transcript / definitions.
@@ -351,7 +357,7 @@ fullPipe/
     ├── worker.py            #   Stage 1 batch drain · video staging · Stage 2 artifact watch
     └── app.fullpipe.server.plist   # launchd service template
 
-anki/mobile/                 # Capacitor Android client (prep viewer · video player · sync)  [BUILT]
+anki/mobile/                 # Capacitor Android client (video player + close-out · sync)  [BUILT]
                              # — its own subproject, not under fullPipe/ (decided 2026-07-05);
                              #   see mobile/README.md for layout + build
 ```

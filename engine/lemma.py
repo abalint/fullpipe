@@ -447,8 +447,11 @@ def analyze_transcript(sentences, known_set, learning=frozenset(),
     context (known_ratio, other_unknown_count) plus how often the item
     occurs in the episode: `occ` (every occurrence), `occ_clean` (in
     sentences where it was the only gap — other_unknown_count 0) and
-    `occ_near` (one other gap). The ledger multiplies `occ` by plays to
-    keep the "times seen" tally per word (DESIGN.md — Times seen).
+    `occ_near` (one other gap), and WHEN: `at` is the start time of every
+    sentence the item occurs in (one entry per occurrence) and `t` the
+    start of the best (recorded) sentence. The ledger credits an exposure
+    from the sittings that actually played those moments (DESIGN.md —
+    Times seen): 2 % watched = the words in that 2 %.
     """
     details = []
     counts = {"comprehensible": 0, "reinforcement": 0, "i_plus_1": 0, "too_hard": 0}
@@ -456,9 +459,10 @@ def analyze_transcript(sentences, known_set, learning=frozenset(),
     known_tokens = 0
     exposures = {}  # lemma -> best (lowest other_unknown_count) context
 
-    def _count(key, other_unknown):
+    def _count(key, other_unknown, start):
         ctx = exposures[key]
         ctx["occ"] = ctx.get("occ", 0) + 1
+        ctx.setdefault("at", []).append(round(start, 1))
         if other_unknown == 0:
             ctx["occ_clean"] = ctx.get("occ_clean", 0) + 1
         elif other_unknown == 1:
@@ -478,6 +482,7 @@ def analyze_transcript(sentences, known_set, learning=frozenset(),
             other_unknown = d["unknown_count"] - (1 if t.lemma in d["unknown_lemmas"] else 0)
             ctx = {
                 "sentence_idx": idx,
+                "t": round(start, 1),
                 "known_ratio": round(d["known_ratio"], 3),
                 "other_unknown_count": other_unknown,
                 "reading": t.reading,
@@ -486,10 +491,10 @@ def analyze_transcript(sentences, known_set, learning=frozenset(),
             best = exposures.get(t.lemma)
             if best is None or ctx["other_unknown_count"] < best["other_unknown_count"]:
                 if best is not None:
-                    ctx.update({k: best[k] for k in ("occ", "occ_clean", "occ_near")
+                    ctx.update({k: best[k] for k in ("occ", "occ_clean", "occ_near", "at")
                                 if k in best})
                 exposures[t.lemma] = ctx
-            _count(t.lemma, other_unknown)
+            _count(t.lemma, other_unknown, start)
 
         # Already-tracked phrases met in this sentence accrue exposure too
         # (kind rides in the context; record_exposure routes it). New phrase
@@ -498,6 +503,7 @@ def analyze_transcript(sentences, known_set, learning=frozenset(),
             other_unknown = d["unknown_count"] - (1 if u["phrase"] in d["unknown_lemmas"] else 0)
             ctx = {
                 "sentence_idx": idx,
+                "t": round(start, 1),
                 "known_ratio": round(d["known_ratio"], 3),
                 "other_unknown_count": other_unknown,
                 "classification": d["classification"],
@@ -506,10 +512,10 @@ def analyze_transcript(sentences, known_set, learning=frozenset(),
             best = exposures.get(u["phrase"])
             if best is None or ctx["other_unknown_count"] < best["other_unknown_count"]:
                 if best is not None:
-                    ctx.update({k: best[k] for k in ("occ", "occ_clean", "occ_near")
+                    ctx.update({k: best[k] for k in ("occ", "occ_clean", "occ_near", "at")
                                 if k in best})
                 exposures[u["phrase"]] = ctx
-            _count(u["phrase"], other_unknown)
+            _count(u["phrase"], other_unknown, start)
 
     return {
         "sentences": details,

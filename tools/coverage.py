@@ -55,6 +55,7 @@ def grammar_pass(sentence, toks, index, exposures):
     if not units:
         return []
     other_unknown = len(sentence.get("unknown") or [])
+    start = sentence.get("start")
     for u in units:
         ctx = {
             "sentence_idx": sentence["idx"],
@@ -63,13 +64,18 @@ def grammar_pass(sentence, toks, index, exposures):
             "classification": sentence.get("classification"),
             "kind": "grammar",
         }
+        if isinstance(start, (int, float)):
+            ctx["t"] = round(float(start), 1)  # when it played — exposure credit
         best = exposures.get(u["pattern"])
         if best is None or other_unknown < best["other_unknown_count"]:
             if best is not None:
-                ctx.update({k: best[k] for k in ("occ", "occ_clean", "occ_near") if k in best})
+                ctx.update({k: best[k] for k in ("occ", "occ_clean", "occ_near", "at")
+                            if k in best})
             exposures[u["pattern"]] = ctx
         ctx = exposures[u["pattern"]]
         ctx["occ"] = ctx.get("occ", 0) + 1
+        if isinstance(start, (int, float)):
+            ctx.setdefault("at", []).append(round(float(start), 1))
         if other_unknown == 0:
             ctx["occ_clean"] = ctx.get("occ_clean", 0) + 1
         elif other_unknown == 1:

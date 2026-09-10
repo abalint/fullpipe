@@ -153,11 +153,19 @@ def grammar_theta_for(level, per_10k=None):
 WORD_QUALIFYING_MAX_OTHER_UNKNOWN = 1
 QUALIFYING_CLASSIFICATIONS = frozenset(("comprehensible", "i_plus_1", "reinforcement"))
 
-# A player (`watch`) sitting that covers this fraction of an episode activates
-# its exposures like a close-out would: watching with the subtitles off and
-# never tapping is still watching. Listen-tab (`listen`) plays never activate
-# — passive exposure is tallied apart (seen_passive), not counted toward θ.
+# Exposure credit comes from the sittings that actually played the sentence
+# (2026-09-10 — "I got exposed to the word when I got exposed to it"): each
+# exposure row carries the start times of its occurrences (`at`), each
+# player sitting the media ranges it played (`played`), and an occurrence is
+# seen once per range that covers it. No gate, no threshold. `episodes.watched`
+# survives as a coarse *finished* marker (queue row, the legacy path for
+# episodes with no recorded sittings): a `watch` sitting past this fraction
+# flips it. Listen-tab (`listen`) plays never credit the active tally —
+# passive exposure is tallied apart (seen_passive), not counted toward θ.
 PLAY_ACTIVATION_FRACTION = 0.8
+# A sentence that started this long before a played range began still counts
+# as played (you resumed a beat into it).
+_RANGE_LEAD_SECS = 1.5
 # A session that reports no media length at all: one play if it ran this long.
 _PLAY_UNKNOWN_DURATION_SECS = 600.0
 
@@ -243,6 +251,8 @@ def _migrate(conn):
         conn.execute("ALTER TABLE view_sessions ADD COLUMN source TEXT NOT NULL DEFAULT 'app'")
     if vs_cols and "modes" not in vs_cols:
         conn.execute("ALTER TABLE view_sessions ADD COLUMN modes TEXT")
+    if vs_cols and "played" not in vs_cols:
+        conn.execute("ALTER TABLE view_sessions ADD COLUMN played TEXT")
     gp_cols = {r["name"] for r in conn.execute("PRAGMA table_info(grammar_points)")}
     if gp_cols and "match" not in gp_cols:
         conn.execute("ALTER TABLE grammar_points ADD COLUMN match TEXT")
@@ -376,9 +386,9 @@ def record_exposure(conn, episode, exposures, meta=True):
                 continue
         else:
             _touch_lemma(conn, lemma, ctx.get("reading"), ctx.get("pos"), ts, kind=kind)
-        context = {k: ctx[k] for k in ("sentence_idx", "known_ratio",
+        context = {k: ctx[k] for k in ("sentence_idx", "t", "known_ratio",
                                        "other_unknown_count", "classification",
-                                       "occ", "occ_clean", "occ_near")
+                                       "occ", "occ_clean", "occ_near", "at")
                    if k in ctx}
         cur = conn.execute(
             """INSERT OR IGNORE INTO evidence
@@ -727,7 +737,9 @@ def record_view_session(conn, session):
 
     `session` is the client's segment: {id, episode_id, kind: watch|listen,
     day: YYYY-MM-DD (device-local), start: ISO, secs, reached?, duration?,
-    title?}. Append-only and idempotent on the client-minted id, so an outbox
+    title?, played?: [[from, to], ...] media seconds actually played (a
+    rewound stretch is a second range)}. `played` is what credits exposures
+    (load_coverage). Append-only and idempotent on the client-minted id, so an outbox
     re-flush is a no-op. The episode need not exist in the ledger: time spent
     is a fact about the learner's day, not about the episode's lifecycle, and
     it must survive the episode being deleted (the title rides along for
@@ -780,13 +792,27 @@ def record_view_session(conn, session):
             if isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0:
                 raise ValueError(f"modes[{k}] must be a non-negative number, got {v!r}")
         modes = {k: float(v) for k, v in modes.items() if v > 0} or None
+    played = session.get("played")
+    if played is not None:
+        if not isinstance(played, list):
+            raise ValueError("played must be a list of [from, to] pairs")
+        clean = []
+        for pair in played:
+            if (not isinstance(pair, (list, tuple)) or len(pair) != 2
+                    or any(isinstance(x, bool) or not isinstance(x, (int, float)) for x in pair)
+                    or pair[0] < 0 or pair[1] < pair[0]):
+                raise ValueError(f"played pairs must be [from, to] with 0 <= from <= to, got {pair!r}")
+            clean.append([round(float(pair[0]), 1), round(float(pair[1]), 1)])
+        played = clean or None
     if conn.execute("SELECT 1 FROM view_sessions WHERE id = ?", (sid,)).fetchone():
         return {"id": sid, "duplicate": True}
     conn.execute(
         "INSERT INTO view_sessions (id, episode_id, title, kind, day, start, secs, "
-        "reached, duration, source, modes, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "reached, duration, source, modes, played, received_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (sid, ep, title, kind, day, start, secs, reached, duration, source,
-         json.dumps(modes) if modes else None, now_iso()))
+         json.dumps(modes) if modes else None, json.dumps(played) if played else None,
+         now_iso()))
     conn.commit()
     return {"id": sid, "duplicate": False}
 
@@ -805,7 +831,7 @@ def query_view_sessions(conn, since=None):
     inclusive), oldest first — the phone merges these by id into its local
     log, so a reinstalled app gets its history back."""
     sql = ("SELECT id, episode_id, title, kind, day, start, secs, reached, duration, source, "
-           "modes FROM view_sessions")
+           "modes, played FROM view_sessions")
     params = ()
     if since:
         sql += " WHERE day >= ?"
@@ -815,8 +841,109 @@ def query_view_sessions(conn, since=None):
     for r in conn.execute(sql, params):
         d = dict(r)
         d["modes"] = json.loads(d["modes"]) if d["modes"] else None
+        d["played"] = json.loads(d["played"]) if d["played"] else None
         out.append(d)
     return out
+
+
+# --- exposure credit: what the sittings actually played -------------------------
+
+def load_coverage(conn):
+    """{episode_id: {"ranges": [(from, to), ...], "plays": float, "modes": {state: secs}}}
+    from the phone's player sittings (view_sessions, source='app', kind='watch').
+
+    ranges: every played media range across every sitting — a rewound
+            stretch appears twice, so an occurrence inside it is seen twice.
+            A sitting from before ranges were recorded contributes the one
+            span its `reached` and `secs` imply (the last `secs` seconds of
+            media up to `reached`).
+    plays:  whole-episode plays for exposure rows that carry no occurrence
+            times (pre-timing rows): covered seconds over the media length,
+            plus the play fraction of sittings that reported no position
+            at all. No floor — a half-watched episode is half a play.
+    modes:  the sittings' seconds per subtitle state, to split times seen
+            ("unknown" = seconds from sittings that reported no state).
+
+    Listen-tab sittings are not here: passive plays never credit the active
+    tally (episode_plays → seen_passive)."""
+    durations = dict(conn.execute(
+        "SELECT id, duration FROM episodes WHERE duration IS NOT NULL").fetchall())
+    out = {}
+    for r in conn.execute(
+            "SELECT episode_id, secs, reached, duration, modes, played FROM view_sessions "
+            "WHERE source = 'app' AND kind = 'watch'"):
+        ep = r["episode_id"]
+        c = out.setdefault(ep, {"ranges": [], "plays": 0.0, "modes": {}, "_uniform": 0.0})
+        dur = r["duration"] or durations.get(ep)
+        played = None
+        if r["played"]:
+            try:
+                played = json.loads(r["played"])
+            except ValueError:
+                played = None
+        if played:
+            c["ranges"].extend((float(a), float(b)) for a, b in played)
+        elif r["reached"] is not None and r["reached"] > 0:
+            c["ranges"].append((max(0.0, float(r["reached"]) - float(r["secs"])),
+                                float(r["reached"])))
+        elif dur and dur > 0:
+            c["_uniform"] += r["secs"] / dur
+        elif r["secs"] >= _PLAY_UNKNOWN_DURATION_SECS:
+            c["_uniform"] += 1.0
+        modes = None
+        if r["modes"]:
+            try:
+                modes = json.loads(r["modes"])
+            except ValueError:
+                modes = None
+        if modes:
+            for m, secs in modes.items():
+                if m in SUB_MODES and isinstance(secs, (int, float)):
+                    c["modes"][m] = c["modes"].get(m, 0.0) + secs
+        else:
+            # an old app's sitting: its seconds split as "unknown" state
+            c["modes"]["unknown"] = c["modes"].get("unknown", 0.0) + float(r["secs"])
+    for ep, c in out.items():
+        dur = durations.get(ep)
+        covered = sum(b - a for a, b in c["ranges"])
+        if not dur:
+            # the sittings themselves may know the length
+            dur = max((r[0] for r in conn.execute(
+                "SELECT duration FROM view_sessions WHERE episode_id = ? AND duration > 0",
+                (ep,))), default=None)
+        frac = covered / dur if dur else (1.0 if c["ranges"] else 0.0)
+        c["plays"] = frac + c.pop("_uniform")
+    return out
+
+
+def _plays_at(ranges, t):
+    """How many played ranges cover media time t (a sentence start)."""
+    return sum(1 for a, b in ranges if a - _RANGE_LEAD_SECS <= t <= b)
+
+
+def _exposure_credit(e, ctx, coverage):
+    """(times seen, best sentence played) for one exposure row.
+
+    coverage is load_coverage's map, or None to fall back to the flag alone.
+    An episode with recorded sittings is credited from them and only them:
+    every occurrence time in `at` counts once per range that covers it, and
+    the recorded (best) sentence `t` must itself have played for the row to
+    qualify toward θ. Rows without occurrence times (pre-timing) take the
+    episode's whole-episode plays. An episode with no sittings at all falls
+    back to the legacy gate: watched = one play of everything."""
+    c = coverage.get(e["episode_id"]) if coverage else None
+    occ = ctx.get("occ", 1)
+    if c is None:
+        watched = bool(e["watched"]) if "watched" in e.keys() else False
+        return (float(occ), True) if watched else (0.0, False)
+    at = ctx.get("at")
+    if not at:
+        n = occ * c["plays"]
+        return n, n > 0
+    credit = sum(_plays_at(c["ranges"], t) for t in at)
+    t = ctx.get("t")
+    played = _plays_at(c["ranges"], t) > 0 if t is not None else credit > 0
+    return float(credit), played
 
 
 def query_view_totals(conn):
@@ -1079,10 +1206,13 @@ def purge_episode(conn, episode_id):
     pre-watch taps), minted-card records, tap batches, the episodes row —
     then recompute the projection so nothing stale survives.
 
-    A WATCHED episode is never purged: its exposures were activated and its
-    cards pushed — that knowledge is earned history that outlives the
-    artifacts (deleting a fully-pipelined episode keeps only the lemma
-    updates and the Anki collection).
+    An episode the player has PLAYED (any recorded sitting) keeps what was
+    played: exposure rows whose occurrences fall inside the played ranges
+    stay, the never-played ones go, and everything the learner did (taps,
+    lookups, claims, minted cards) stays — 2 % watched keeps the words in
+    that 2 %. A WATCHED episode with no sittings on record (the pre-sittings
+    era) is never purged at all: its exposures were activated by the
+    close-out and that history outlives the artifacts.
 
     A RATED-but-unwatched episode keeps its episodes row: the rating is
     taste data the user chose to record (typically a dislike, followed by a
@@ -1091,6 +1221,23 @@ def purge_episode(conn, episode_id):
     row = conn.execute(
         "SELECT watched, rating FROM episodes WHERE id = ?",
         (episode_id,)).fetchone()
+    cov = load_coverage(conn).get(episode_id)
+    if cov is not None and row:
+        rows = conn.execute(
+            "SELECT id, context, episode_id, 1 AS watched FROM evidence "
+            "WHERE source = 'exposure' AND episode_id = ?", (episode_id,)).fetchall()
+        dead = [r["id"] for r in rows
+                if _exposure_credit(r, _ctx(r), {episode_id: cov})[0] <= 0]
+        for i in range(0, len(dead), 500):
+            chunk = dead[i:i + 500]
+            conn.execute(f"DELETE FROM evidence WHERE id IN ({','.join('?' * len(chunk))})", chunk)
+        orphaned = conn.execute(
+            "DELETE FROM lemmas WHERE kind = 'word' AND "
+            "lemma NOT IN (SELECT DISTINCT lemma FROM evidence)").rowcount
+        conn.commit()
+        promote(conn)
+        return {"purged": "played", "evidence": len(dead), "retained": len(rows) - len(dead),
+                "lemma_rows": orphaned, "rating_retained": row["rating"] is not None}
     if row and row["watched"]:
         return {"purged": False, "reason": "watched — evidence retained"}
     ev = conn.execute(
@@ -1388,26 +1535,38 @@ def _days_between(a, b):
         return 0.0
 
 
-def _snapshot(rows, at_ts, freq_rank=None, pos=None, lemma="", exclude_id=None):
+def _snapshot(rows, at_ts, freq_rank=None, pos=None, lemma="", exclude_id=None,
+              coverage=None):
     """Feature snapshot of one word from its evidence rows (id, source, ts,
     context, episode_id, watched) up to `at_ts` — the claim's own row, when
     it already exists (backfill), is passed as exclude_id. Shared by the
     claim-time recorder and promote's live scoring so train and serve
-    agree by construction."""
+    agree by construction. `coverage` (load_coverage) decides which
+    exposures were actually played; None = the watched flag alone."""
     before = [r for r in rows if r["ts"] <= at_ts and r["id"] != exclude_id]
-    exp = [r for r in before if r["source"] == "exposure" and r["watched"]]
-    ctxs = [_ctx(r) for r in exp]
+    exp, ctxs, played, occ_seen = [], [], [], 0.0
+    for r in before:
+        if r["source"] != "exposure":
+            continue
+        ctx = _ctx(r)
+        n, best = _exposure_credit(r, ctx, coverage)
+        if n <= 0:
+            continue
+        exp.append(r)
+        ctxs.append(ctx)
+        played.append(best)
+        occ_seen += n
     krs = [float(c["known_ratio"]) for c in ctxs
            if isinstance(c.get("known_ratio"), (int, float))]
     lookups, lookups_listed = _lookup_totals(before)
     return {
         "rank": freq_rank,
         "eps": len({r["episode_id"] for r in exp}),
-        "q": sum(_exposure_qualifies(c) for c in ctxs),
-        "q0": sum(c.get("other_unknown_count", 99) == 0 for c in ctxs),
+        "q": sum(_exposure_qualifies(c) and p for c, p in zip(ctxs, played)),
+        "q0": sum(c.get("other_unknown_count", 99) == 0 and p for c, p in zip(ctxs, played)),
         "kr_mean": round(sum(krs) / len(krs), 3) if krs else None,
         "kr_max": max(krs) if krs else None,
-        "occ": sum(c.get("occ", 1) for c in ctxs),
+        "occ": int(round(occ_seen)),
         "lookups": lookups,
         "lookups_listed": lookups_listed,
         "days_first": round(_days_between(exp[0]["ts"], at_ts), 1) if exp else 0.0,
@@ -1435,7 +1594,8 @@ def claim_snapshot(conn, lemma, kind="word", at_ts=None):
     rank = conn.execute("SELECT rank FROM freq WHERE lemma = ?", (lemma,)).fetchone()
     pos = conn.execute("SELECT pos FROM lemmas WHERE lemma = ?", (lemma,)).fetchone()
     snap = _snapshot(_lemma_rows(conn, lemma, kind), at_ts,
-                     rank[0] if rank else None, pos[0] if pos else None, lemma)
+                     rank[0] if rank else None, pos[0] if pos else None, lemma,
+                     coverage=load_coverage(conn))
     # global context at the moment — not a model feature, kept for later study
     snap["known_set_size"] = conn.execute(
         "SELECT COUNT(*) FROM lemmas WHERE status = 'known'").fetchone()[0]
@@ -1455,6 +1615,7 @@ def backfill_snapshots(conn):
             ORDER BY lemma, ts""", CLAIM_SOURCES).fetchall()
     done = 0
     rows_cache = {}
+    coverage = load_coverage(conn)
     for r in claims:
         ctx = _ctx(r)
         if "snap" in ctx:
@@ -1462,7 +1623,8 @@ def backfill_snapshots(conn):
         if r["lemma"] not in rows_cache:
             rows_cache[r["lemma"]] = _lemma_rows(conn, r["lemma"])
         ctx["snap"] = _snapshot(rows_cache[r["lemma"]], r["ts"], freq.get(r["lemma"]),
-                                pos_by.get(r["lemma"]), r["lemma"], exclude_id=r["id"])
+                                pos_by.get(r["lemma"]), r["lemma"], exclude_id=r["id"],
+                                coverage=coverage)
         conn.execute("UPDATE evidence SET context = ? WHERE id = ?",
                      (json.dumps(ctx, ensure_ascii=False), r["id"]))
         done += 1
@@ -1531,17 +1693,19 @@ def _maybe_refit(conn):
 
 
 def _judge(evs, theta, spread_needed, in_anki_known=False, plays=None, pos=None,
-           model=None, freq_rank=None, lemma=""):
+           model=None, freq_rank=None, lemma="", coverage=None):
     """Apply promote's rule order to one item's evidence rows (any kind —
     word, phrase, or grammar; sources an item never receives simply yield
     empty lists). Returns the projection fields.
 
-    plays: {episode_id: (active_plays, passive_plays)} from episode_plays —
-    multiplies each exposure's per-episode occurrence count (`occ`; 1 when
-    the row predates occurrence tracking) into the "times seen" tallies:
-    seen_active over watched exposures (a watched episode is at least one
-    play), seen_passive over every exposure (Listen-tab plays count whether
-    or not the episode was ever watched with subtitles).
+    coverage: load_coverage's map — what the player sittings actually
+    played. An exposure is active when its occurrences were played
+    (_exposure_credit): times seen is one per occurrence per range that
+    covered it, and only a row whose recorded sentence played qualifies
+    toward θ. Episodes with no sittings fall back to the watched flag (one
+    play of everything). plays: episode_plays, for the passive tally only —
+    seen_passive counts Listen-tab plays over every exposure whether or not
+    the episode was ever watched.
 
     pos: the item's Sudachi part of speech (words) — verbs face the higher
     known-ratio bar (CONFIRM_MIN_KNOWN_RATIO_VERB).
@@ -1556,27 +1720,34 @@ def _judge(evs, theta, spread_needed, in_anki_known=False, plays=None, pos=None,
     defers = [e for e in evs if e["source"] == "confirm_defer"]
     negatives = [e for e in evs if e["source"] in ("tap_unknown", "card_lapse")]
     mined = [e for e in evs if e["source"] == "mined_card"]
-    active_exposures = [e for e in evs if e["source"] == "exposure" and e["watched"]]
 
+    active_exposures = []
     qualifying = []
     seen_active = 0.0
     known_ratios = []
     by_mode = {}  # subtitle state → times seen; "unknown" = plays no sitting described
-    for e in active_exposures:
+    for e in evs:
+        if e["source"] != "exposure":
+            continue
         ctx = _ctx(e)
-        if _exposure_qualifies(ctx):
+        credit, best_played = _exposure_credit(e, ctx, coverage)
+        if credit <= 0:
+            continue  # never played (or, with no sittings on record, never marked watched)
+        active_exposures.append(e)
+        if best_played and _exposure_qualifies(ctx):
             qualifying.append(e)
         if isinstance(ctx.get("known_ratio"), (int, float)):
             known_ratios.append(float(ctx["known_ratio"]))
-        occ = ctx.get("occ", 1)
-        active, _passive, modes = plays.get(e["episode_id"], (0.0, 0.0, {}))
-        active = max(1.0, active)
-        seen_active += occ * active
-        for m, n in modes.items():
-            by_mode[m] = by_mode.get(m, 0.0) + occ * n
-        rest = active - sum(modes.values())
-        if rest > 1e-9:
-            by_mode["unknown"] = by_mode.get("unknown", 0.0) + occ * rest
+        seen_active += credit
+        # split the credit across the sittings' subtitle states in proportion
+        # to the seconds spent in each; sittings that reported none → unknown
+        modes = (coverage or {}).get(e["episode_id"], {}).get("modes", {})
+        total = sum(modes.values())
+        if total > 0:
+            for m, secs in modes.items():
+                by_mode[m] = by_mode.get(m, 0.0) + credit * secs / total
+        else:
+            by_mode["unknown"] = by_mode.get("unknown", 0.0) + credit
     seen_passive = 0.0
     for e in evs:
         if e["source"] != "exposure":
@@ -1607,7 +1778,7 @@ def _judge(evs, theta, spread_needed, in_anki_known=False, plays=None, pos=None,
     if model is not None and known_ratios:
         # the adaptive scorer: same snapshot function as the claims it was
         # fit on, taken "now" (a ts past every row)
-        snap = _snapshot(evs, "9999", freq_rank, pos, lemma)
+        snap = _snapshot(evs, "9999", freq_rank, pos, lemma, coverage=coverage)
         confirm_score = round(confirm_model.predict(model, snap), 3)
         if model.get("cutoff") is not None:
             context_ok = confirm_score >= model["cutoff"]
@@ -1708,6 +1879,7 @@ def promote(conn, anki_known=None):
     anki_known = anki_known or set()
     activate_played_episodes(conn)
     plays = episode_plays(conn)
+    coverage = load_coverage(conn)
     model = _maybe_refit(conn)
     rows = conn.execute(
         """SELECT e.id, e.lemma, e.kind, e.source, e.ts, e.context, e.episode_id,
@@ -1732,7 +1904,7 @@ def promote(conn, anki_known=None):
     for (kind, lemma), evs in by_key.items():
         if kind == "grammar":
             theta, spread_needed = grammar_theta_for(*grammar_prior.get(lemma, (None, None)))
-            v = _judge(evs, theta, spread_needed)
+            v = _judge(evs, theta, spread_needed, coverage=coverage)
             conn.execute(
                 """INSERT INTO grammar_points (pattern, status, confidence,
                        exposure_count, episode_spread, needs_review,
@@ -1761,7 +1933,7 @@ def promote(conn, anki_known=None):
         v = _judge(evs, theta, spread_needed, in_anki_known=lemma in anki_known,
                    plays=plays, pos=pos_by_lemma.get(lemma),
                    model=model if kind == "word" else None, freq_rank=freq_rank,
-                   lemma=lemma)
+                   lemma=lemma, coverage=coverage)
         conn.execute(
             """INSERT INTO lemmas (lemma, kind, freq_rank, status, confidence,
                                    exposure_count, episode_spread, seen_active,
@@ -1859,9 +2031,11 @@ def episode_plays(conn):
 
 def activate_played_episodes(conn):
     """Flip watched=1 on episodes the player has carried past
-    PLAY_ACTIVATION_FRACTION of their length — the no-taps, subtitles-off
-    watch that never went through the close-out. Idempotent; promote calls
-    it first so those exposures judge as active. Returns the ids flipped."""
+    PLAY_ACTIVATION_FRACTION of their length. Since 2026-09-10 this is a
+    *finished* marker (queue row state, purge rule for episodes without
+    sittings) — exposure credit itself comes from the played ranges
+    (load_coverage / _exposure_credit), not from this flag. Idempotent;
+    promote calls it first. Returns the ids flipped."""
     flipped = []
     for ep, (active, _passive, _modes) in episode_plays(conn).items():
         if active >= PLAY_ACTIVATION_FRACTION:
@@ -1878,34 +2052,40 @@ def occurrences_from_coverage(cov):
     """{item key: {occ, occ_clean, occ_near}} recounted from a coverage.json
     (its per-sentence tokens and phrase units) — the same tally
     engine.lemma.analyze_transcript stamps on fresh exposures, for rows
-    written before occurrence tracking. Phrase keys are prefixed 'phrase:'."""
+    written before occurrence tracking — plus `at`, the start time of every
+    occurrence's sentence, when the coverage carries sentence times. Phrase
+    keys are prefixed 'phrase:'."""
     out = {}
 
-    def bump(key, other):
+    def bump(key, other, start):
         o = out.setdefault(key, {"occ": 0, "occ_clean": 0, "occ_near": 0})
         o["occ"] += 1
         if other == 0:
             o["occ_clean"] += 1
         elif other == 1:
             o["occ_near"] += 1
+        if isinstance(start, (int, float)):
+            o.setdefault("at", []).append(round(float(start), 1))
 
     for sent in cov.get("sentences", []):
         unknown = set(sent.get("unknown") or ())
+        start = sent.get("start")
         for t in sent.get("tokens", []):
             if not t.get("c"):
                 continue
-            bump(t["l"], len(unknown) - (1 if t["l"] in unknown else 0))
+            bump(t["l"], len(unknown) - (1 if t["l"] in unknown else 0), start)
         for u in sent.get("phrases") or ():
             hw = u["phrase"]
-            bump("phrase:" + hw, len(unknown) - (1 if hw in unknown else 0))
+            bump("phrase:" + hw, len(unknown) - (1 if hw in unknown else 0), start)
     return out
 
 
 def backfill_occurrences(conn, episodes_root):
-    """Stamp occ / occ_clean / occ_near onto exposure rows whose episode still
+    """Stamp occ / occ_clean / occ_near / at (occurrence sentence times) and
+    t (the recorded sentence's start) onto exposure rows whose episode still
     has a coverage.json under episodes_root (purged episodes can't be
     recounted; their rows keep reading as one occurrence). Re-runnable — a
-    row already carrying `occ` is left alone unless the recount differs."""
+    row already carrying the values is left alone unless the recount differs."""
     root = Path(episodes_root)
     episodes = 0
     updated = 0
@@ -1919,6 +2099,11 @@ def backfill_occurrences(conn, episodes_root):
         if not counts:
             continue
         episodes += 1
+        starts = {}
+        for i, sent in enumerate(cov.get("sentences", [])):
+            idx = sent.get("idx", sent.get("index", i))
+            if isinstance(sent.get("start"), (int, float)):
+                starts[idx] = round(float(sent["start"]), 1)
         rows = conn.execute(
             "SELECT id, lemma, kind, context FROM evidence "
             "WHERE source = 'exposure' AND episode_id = ?", (ep,)).fetchall()
@@ -1928,6 +2113,9 @@ def backfill_occurrences(conn, episodes_root):
             if not c:
                 continue
             ctx = _ctx(r)
+            c = dict(c)
+            if ctx.get("sentence_idx") in starts:
+                c["t"] = starts[ctx["sentence_idx"]]
             if all(ctx.get(k) == v for k, v in c.items()):
                 continue
             ctx.update(c)
@@ -2381,12 +2569,14 @@ def query_calibration(conn, target=0.6):
     when no bucket does — which is the 2026-09-07 finding (the count doesn't
     separate yes from not-yet in the 2–8 range; see
     WORD_QUALIFYING_MAX_OTHER_UNKNOWN)."""
-    watched = {r[0] for r in conn.execute("SELECT id FROM episodes WHERE watched = 1")}
+    coverage = load_coverage(conn)
     freq = dict(conn.execute("SELECT lemma, rank FROM freq").fetchall())
     by_lemma = {}
     for r in conn.execute(
-            "SELECT lemma, source, episode_id, context, ts FROM evidence "
-            "WHERE kind = 'word' ORDER BY ts, id"):
+            """SELECT e.lemma, e.source, e.episode_id, e.context, e.ts,
+                      COALESCE(ep.watched, 0) AS watched
+               FROM evidence e LEFT JOIN episodes ep ON ep.id = e.episode_id
+               WHERE e.kind = 'word' ORDER BY e.ts, e.id"""):
         by_lemma.setdefault(r["lemma"], []).append(r)
 
     def band(rank):
@@ -2429,14 +2619,16 @@ def query_calibration(conn, target=0.6):
                 known_at = e["ts"]
                 d = lookups_before_known.setdefault(b, {})
                 d[bucket(looked)] = d.get(bucket(looked), 0) + 1
-            ctxs = [_ctx(x) for x in seen if x["episode_id"] in watched]
+            credited = [(_ctx(x), *_exposure_credit(x, _ctx(x), coverage)) for x in seen]
+            credited = [(c, n, p) for c, n, p in credited if n > 0]
+            ctxs = [c for c, _n, _p in credited]
             occ_rows += len(ctxs)
             occ_known += sum("occ" in c for c in ctxs)
             krs = [c["known_ratio"] for c in ctxs
                    if isinstance(c.get("known_ratio"), (int, float))]
             state = {"band": b, "eps": len(ctxs),
-                     "q": sum(_exposure_qualifies(c) for c in ctxs),
-                     "occ": sum(c.get("occ", 1) for c in ctxs),
+                     "q": sum(_exposure_qualifies(c) and p for c, _n, p in credited),
+                     "occ": int(round(sum(n for _c, n, _p in credited))),
                      "kr": round(sum(krs) / len(krs), 1) if krs else None,
                      "yes": e["source"] in ("confirm_known", "tap_known")}
             (answers if e["source"].startswith("confirm") else taps).append(state)

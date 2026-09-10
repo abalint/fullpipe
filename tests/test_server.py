@@ -258,6 +258,12 @@ class TestRoutes(ServerTestBase):
         self.assertEqual(self.client.post(f"/jobs/{job_id}/passive", json={},
                                           headers=self.auth).status_code, 409)
         conn = q.open_queue(queue_db_path(self.cfg))
+        # a close-out still running counts as watched for shelving purposes
+        # (the player's passive button marks watched + shelves back to back)
+        q.set_state(conn, job_id, "pushing")
+        r = self.client.post(f"/jobs/{job_id}/passive", json={}, headers=self.auth)
+        self.assertIs(r.json()["passive"], True)
+        q.set_passive(conn, job_id, False)
         q.set_state(conn, job_id, "watched")
         r = self.client.post(f"/jobs/{job_id}/passive", json={}, headers=self.auth)
         self.assertIs(r.json()["passive"], True)
@@ -979,6 +985,60 @@ class TestRoutes(ServerTestBase):
         self.assertEqual([x["id"] for x in
                           self.client.get("/viewtime", headers=self.auth).json()["sessions"]],
                          ["a1"])
+
+    def test_viewtime_flips_watched_from_play_time(self):
+        """No mark-watched button (2026-09-10): a watch sitting that carries
+        the episode past PLAY_ACTIVATION_FRACTION flips the ledger row watched
+        and moves the queue row to `watched`; a short sitting does neither,
+        and a listen sitting never does."""
+        self.stage_episode(with_curate=True)
+        qconn, _ = self._enqueue_at("staged")
+        lconn = lc.open_db(self.cfg["ledger_db"])
+        base = {"episode_id": EP, "kind": "watch", "day": "2026-09-10",
+                "start": "2026-09-10T20:00:00-06:00", "duration": 1000.0}
+        r = self.client.post("/viewtime", json={**base, "id": "short", "secs": 300},
+                             headers=self.auth)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertNotIn("job_watched", r.json())
+        self.assertEqual(q.get_job(qconn, EP)["state"], "staged")
+        self.assertEqual(lconn.execute(
+            "SELECT watched FROM episodes WHERE id=?", (EP,)).fetchone()[0], 0)
+        # passive minutes never count toward watching
+        self.client.post("/viewtime", json={**base, "id": "bg", "kind": "listen",
+                                            "secs": 900}, headers=self.auth)
+        self.assertEqual(q.get_job(qconn, EP)["state"], "staged")
+        # the second sitting carries it over the bar (300 + 600 of 1000)
+        r = self.client.post("/viewtime", json={**base, "id": "rest", "secs": 600},
+                             headers=self.auth)
+        self.assertIs(r.json()["job_watched"], True)
+        self.assertEqual(q.get_job(qconn, EP)["state"], "watched")
+        self.assertEqual(lconn.execute(
+            "SELECT watched FROM episodes WHERE id=?", (EP,)).fetchone()[0], 1)
+        # a replay of the same sitting changes nothing
+        r = self.client.post("/viewtime", json={**base, "id": "rest", "secs": 600},
+                             headers=self.auth)
+        self.assertEqual(r.json(), {"id": "rest", "duplicate": True})
+        # and deleting it later keeps what was played (every exposure here —
+        # the fixture's rows carry no occurrence times, so they take the
+        # episode's whole-episode plays)
+        r = self.client.delete(f"/jobs/{EP}", headers=self.auth)
+        self.assertEqual(r.json()["ledger"]["purged"], "played")
+        self.assertEqual(r.json()["ledger"]["evidence"], 0)
+
+    def test_viewtime_played_ranges_roundtrip(self):
+        """The sitting's played media ranges land and come back (they are
+        what credits exposures — test_ledger covers the crediting)."""
+        seg = {"id": "rng1", "episode_id": "yt_x", "kind": "watch", "day": "2026-09-10",
+               "start": "2026-09-10T20:00:00-06:00", "secs": 30, "duration": 100,
+               "played": [[0, 12.34], [10, 22.5]]}
+        self.assertEqual(self.client.post("/viewtime", json=seg, headers=self.auth)
+                         .status_code, 200)
+        got = self.client.get("/viewtime", headers=self.auth).json()["sessions"]
+        self.assertEqual(got[0]["played"], [[0.0, 12.3], [10.0, 22.5]])
+        for bad in ([[5, 2]], [[-1, 2]], [[1]], "0-5", [["a", "b"]]):
+            r = self.client.post("/viewtime", json={**seg, "id": "bad", "played": bad},
+                                 headers=self.auth)
+            self.assertEqual(r.status_code, 422, bad)
 
     def test_viewtime_rejects_bad_input(self):
         base = {"id": "x1", "episode_id": EP, "kind": "watch", "day": "2026-09-02",

@@ -96,8 +96,8 @@ them when PRIME mode is built.
 | `init` | create the database |
 | `materialize-known` | the ledger's promoted known set (ledger-only, no Anki) |
 | `import-anki` | one-shot: fold the live Anki known-set into the ledger as import evidence |
-| `record-exposure payload.json` | inert exposures for an analyzed episode |
-| `mark-watched EPISODE_ID` | activate an episode's exposures (P5) |
+| `record-exposure payload.json` | inert exposures for an analyzed episode (each with its occurrence times) — credited by the sittings that play them |
+| `mark-watched EPISODE_ID` | flip the *finished* marker (display / purge rule; credit comes from played ranges — see `record-view-session`) |
 | `apply-taps payload.json` | tap batch → implies mark-watched + lapse poll + promote |
 | `import-known list.csv` | bulk-seed knowns from an external list (AnkiMorphs export etc.) + promote |
 | `promote` | recompute the projection (retunes thresholds for free) |

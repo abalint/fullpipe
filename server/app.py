@@ -333,7 +333,9 @@ def create_app(cfg, start_worker=True):
         the flag just decides which phone list shows the row."""
         job = get_job_or_404(id_)
         passive = bool(body.get("passive", True))
-        if passive and job["state"] != "watched":
+        # `pushing` counts: the phone's passive button marks watched and
+        # shelves in one go, and the close-out thread may still be running
+        if passive and job["state"] not in POST_WATCH_STATES:
             raise HTTPException(
                 409, f"job is {job['state']} — only watched episodes go passive")
         conn = queue_conn()
@@ -874,13 +876,36 @@ def create_app(cfg, start_worker=True):
     def post_viewtime(body: dict):
         """Store one phone-recorded playback session: {id, episode_id, kind:
         watch|listen, day (device-local YYYY-MM-DD), start, secs, reached?,
-        duration?, title?}. Idempotent on the client-minted id (outbox replays
-        dedupe). The episode need not exist — time spent is kept even after
-        the row is deleted, so a stale episode never 404s the outbox."""
+        duration?, title?, played?: [[from, to], ...]}. `played` — the media
+        ranges that actually ran — is what credits the episode's word
+        exposures (ledger load_coverage): a word was seen when its line
+        played, nothing more and nothing less. Idempotent on the client-minted
+        id (outbox replays dedupe). The episode need not exist — time spent
+        is kept even after the row is deleted, so a stale episode never 404s
+        the outbox."""
+        conn = ledger_conn()
         try:
-            return lc.record_view_session(ledger_conn(), body)
+            result = lc.record_view_session(conn, body)
         except ValueError as e:
             raise HTTPException(422, str(e))
+        # "Finished" is known from play time, not a button (2026-09-10): once
+        # the sittings carry an episode past PLAY_ACTIVATION_FRACTION the
+        # ledger's finished marker flips and the queue row follows, so the
+        # phone's lists / backlog / series progress read the truth. That flag
+        # is display only — exposure credit comes from `played` above.
+        # `POST /watched` is now the mint-cards / passive step.
+        if not result.get("duplicate") and body.get("kind") == "watch":
+            lc.activate_played_episodes(conn)
+            ep = body.get("episode_id")
+            row = conn.execute("SELECT watched FROM episodes WHERE id = ?", (ep,)).fetchone()
+            if row and row["watched"]:
+                qconn = queue_conn()
+                job = q.get_job(qconn, ep)
+                if job and job["state"] in ("staged", "reconciled"):
+                    q.set_state(qconn, job["id"], "watched",
+                                episode_id=job["episode_id"], title=job.get("title"))
+                    result["job_watched"] = True
+        return result
 
     @app.delete("/viewtime/{sid}", dependencies=[Depends(auth)])
     def delete_viewtime(sid: str):

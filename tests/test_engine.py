@@ -268,6 +268,11 @@ class LemmaTest(unittest.TestCase):
                           exp["犬"].get("occ_near")), (4, 3, None))
         self.assertEqual((exp["走る"]["occ"], exp["走る"]["occ_clean"]), (3, 3))
         self.assertEqual((exp["縄張り"]["occ"], exp["縄張り"]["occ_near"]), (1, 1))
+        # when each occurrence played: sentence starts, one per occurrence;
+        # `t` is the recorded (best) sentence's start
+        self.assertEqual(exp["犬"]["at"], [0.0, 2.0, 4.0, 4.0])
+        self.assertEqual(exp["犬"]["t"], 0.0)
+        self.assertEqual((exp["縄張り"]["at"], exp["縄張り"]["t"]), ([2.0], 2.0))
         # the best-context swap keeps the running tallies
         self.assertEqual(exp["犬"]["other_unknown_count"], 0)
 

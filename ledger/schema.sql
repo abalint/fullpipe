@@ -221,6 +221,7 @@ CREATE TABLE IF NOT EXISTS view_sessions (
     duration    REAL,               -- media length (s), when the client knew it
     source      TEXT NOT NULL DEFAULT 'app',  -- app (recorded) | manual (typed in) | import (historic sheet)
     modes       TEXT,               -- JSON {on|kw|off|audio: secs}: the sitting's seconds per subtitle state (watch kind)
+    played      TEXT,               -- JSON [[from, to], ...] media seconds actually played (a rewind is a second range)
     received_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_view_sessions_day ON view_sessions(day);
