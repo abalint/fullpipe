@@ -9,6 +9,7 @@ Run:
 """
 
 import argparse
+import contextvars
 import shutil
 import subprocess
 import sys
@@ -158,6 +159,12 @@ def episode_phrases(coverage, curate, live=None):
     return at
 
 
+# Connections opened by the request helpers in create_app, closed by its
+# middleware. A ContextVar (not a thread-local): the endpoint runs on a
+# threadpool thread, and anyio copies the request's context into it.
+_request_conns = contextvars.ContextVar("fullpipe_request_conns", default=None)
+
+
 def create_app(cfg, start_worker=True):
     token = cfg.get("server", {}).get("token", "")
 
@@ -183,11 +190,39 @@ def create_app(cfg, start_worker=True):
 
     # Per-request connections: SQLite handles are thread-bound and FastAPI's
     # sync endpoints run on a threadpool. Opening is cheap (idempotent schema).
+    # Every handle opened through these helpers is closed when the request
+    # ends (middleware below) — a handler that raised mid-write used to leave
+    # its connection, and the uncommitted transaction's write lock, alive
+    # until garbage collection, and every later write (deletes, viewtime)
+    # failed with "database is locked" until the server was restarted.
+    def _track(conn):
+        conns = _request_conns.get()
+        if conns is not None:
+            conns.append(conn)
+        return conn
+
+    # check_same_thread=False: opened on the endpoint's threadpool thread,
+    # closed by the middleware on the event loop. Never shared between
+    # requests, so there is no concurrent use of one handle.
     def queue_conn():
-        return q.open_queue(queue_db_path(cfg))
+        return _track(q.open_queue(queue_db_path(cfg), check_same_thread=False))
 
     def ledger_conn():
-        return lc.open_db(cfg["ledger_db"])
+        return _track(lc.open_db(cfg["ledger_db"], check_same_thread=False))
+
+    @app.middleware("http")
+    async def close_request_conns(request: Request, call_next):
+        conns = []
+        token = _request_conns.set(conns)
+        try:
+            return await call_next(request)
+        finally:
+            _request_conns.reset(token)
+            for conn in conns:
+                try:
+                    conn.close()  # rolls back anything left uncommitted
+                except Exception:
+                    pass
 
     def get_job_or_404(id_):
         job = q.get_job(queue_conn(), id_)
@@ -749,6 +784,16 @@ def create_app(cfg, start_worker=True):
         /watched is safe, AnkiConnect skips duplicates)."""
         qconn = q.open_queue(queue_db_path(cfg))  # own handles: thread-bound
         lconn = lc.open_db(cfg["ledger_db"])
+        try:
+            _close_out_inner(episode_id, picks, qconn, lconn)
+        finally:
+            for c in (qconn, lconn):
+                try:
+                    c.close()
+                except Exception:
+                    pass
+
+    def _close_out_inner(episode_id, picks, qconn, lconn):
         job = q.get_job(qconn, episode_id)
 
         def progress(msg):

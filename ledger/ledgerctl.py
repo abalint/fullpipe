@@ -203,10 +203,19 @@ def now_iso():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def open_db(db_path):
-    """Connect and ensure the schema exists (idempotent)."""
+BUSY_TIMEOUT_S = 30.0
+
+
+def open_db(db_path, check_same_thread=True):
+    """Connect and ensure the schema exists (idempotent). `check_same_thread`
+    is passed through to sqlite3: the sync server opens handles on a
+    threadpool thread and closes them from its event loop."""
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path)
+    # 30 s busy wait (default 5 s): the sync server's close-out thread holds
+    # the write lock across ffmpeg + AnkiConnect round-trips, and a phone
+    # request landing meanwhile used to die with "database is locked".
+    conn = sqlite3.connect(db_path, timeout=BUSY_TIMEOUT_S,
+                           check_same_thread=check_same_thread)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
     _migrate(conn)

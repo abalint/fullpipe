@@ -53,9 +53,10 @@ def now_iso():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def open_queue(db_path):
+def open_queue(db_path, check_same_thread=True):
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30.0,  # see ledgerctl.BUSY_TIMEOUT_S
+                           check_same_thread=check_same_thread)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
     # pre-flag databases: CREATE IF NOT EXISTS won't touch them

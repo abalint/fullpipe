@@ -1343,6 +1343,69 @@ class TestRoutes(ServerTestBase):
             self.assertLessEqual(b["known"], b["total"])
 
 
+class TestRequestConnections(ServerTestBase):
+    """Per-request SQLite handles are closed when the request ends — even
+    when the handler raised mid-write. Before 2026-09-11 a leaked handle kept
+    its uncommitted transaction's write lock until GC, and every later write
+    (DELETE /jobs, POST /viewtime) died with "database is locked"."""
+
+    def assert_closed(self, conn):
+        # sqlite3 raises ProgrammingError for a cross-thread use too — assert
+        # on the message so a merely thread-bound handle can't pass as closed
+        with self.assertRaisesRegex(lc.sqlite3.ProgrammingError, "closed database"):
+            conn.execute("SELECT 1")
+
+    def _opened_handles(self):
+        opened = []
+        real = lc.open_db
+
+        def spy(path, **kw):
+            conn = real(path, **kw)
+            opened.append(conn)
+            return conn
+        return opened, unittest.mock.patch("server.app.lc.open_db", side_effect=spy)
+
+    def test_handles_closed_after_request(self):
+        opened, patch = self._opened_handles()
+        with patch:
+            r = self.client.get("/jobs", headers=self.auth)
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(opened, "endpoint should have opened a ledger handle")
+        for conn in opened:
+            self.assert_closed(conn)
+
+    def test_failed_write_releases_lock(self):
+        """A handler that begins a write and then raises must not hold the
+        ledger's write lock afterwards."""
+        self.stage_episode()
+        opened, patch = self._opened_handles()
+
+        def explode(conn, body):
+            conn.execute("INSERT INTO view_sessions (id, episode_id, kind, day, "
+                         "start, secs, received_at) VALUES ('boom', ?, 'watch', "
+                         "'2026-09-11', '2026-09-11T10:00:00-06:00', 5, 'now')", (EP,))
+            raise RuntimeError("simulated crash after an uncommitted write")
+        with patch, unittest.mock.patch("server.app.lc.record_view_session",
+                                        side_effect=explode):
+            with self.assertRaises(RuntimeError):  # TestClient re-raises
+                self.client.post("/viewtime", json={"id": "boom"}, headers=self.auth)
+        self.assertTrue(opened)
+        for conn in opened:
+            self.assert_closed(conn)
+        # a fresh writer gets the lock immediately, and the crash rolled back
+        probe = lc.open_db(self.cfg["ledger_db"])
+        probe.execute("BEGIN IMMEDIATE")
+        self.assertIsNone(probe.execute(
+            "SELECT id FROM view_sessions WHERE id = 'boom'").fetchone())
+        probe.rollback()
+        probe.close()
+        # and the real endpoint works again
+        r = self.client.post("/viewtime", json={
+            "id": "v1", "episode_id": EP, "kind": "watch", "day": "2026-09-11",
+            "start": "2026-09-11T10:00:00-06:00", "secs": 10}, headers=self.auth)
+        self.assertEqual(r.status_code, 200, r.text)
+
+
 class TestTypedConfirm(ServerTestBase):
     """GRAMMAR.md: the confirm queue and /stats over the three item kinds."""
 
