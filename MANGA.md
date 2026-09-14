@@ -106,11 +106,24 @@ shown to the agent as a hint, labelled as often wrong.
 ## The reader (phone)
 
 Behaviours ported from the comicReader app (Kotlin/Compose, the user's
-reader): RTL page order by default (per-series toggle), tap zones (far side
-in the reading direction turns forward, centre toggles the chrome), swipe to
-turn, pinch 1–5× and double-tap 1↔2× about the finger, zoom kept across page
-turns, a pull past the edge of a zoomed page turns it, spreads (w/h > 1.2)
-fit to width, resume at the last page, page slider. The overlay lays each
+reader): its reading modes — page order RTL (default) or LTR, or a vertical
+scroll — and its "Scroll" checkbox, continuous scrolling (every page in one
+strip: fit to the stage width and stacked when vertical, fit to the height
+and side by side otherwise, page 0 at the right end for RTL; flung with the
+finger; only the pages within a viewport of the window are mounted) versus
+one page at a time; both remembered per series and as the default for the
+next series, exactly as the app does. Paged: tap zones (far side in the
+reading direction turns forward — top/bottom thirds when vertical — centre
+toggles the chrome), swipe to turn at 1× (the page rides with the finger,
+springs back if the swipe doesn't commit), spreads (w/h > 1.2) fit to
+width. A zoomed page only pans — comicReader's pull-past-the-edge turn was
+dropped on 2026-09-14 at the user's request: reading a panel up close must
+never skip a page. Always: pinch 1–5× and double-tap 1↔2× about the finger,
+pans keep their momentum after the finger lifts, zoom kept across page
+turns, resume at the last page, page slider. In continuous mode the page under the viewport's
+centre is the current page — the counter, the resume point and the
+ReadRecorder's page follow it, so exposure credit still goes to the pages
+that were actually on screen. The overlay lays each
 bubble's tokens back into its printed lines by character count
 (`manga-layout.blockLines`) so the washes sit on the printed words; `T`
 shows the OCR text (checking a bubble), `◨` hides the washes. The gloss popup,

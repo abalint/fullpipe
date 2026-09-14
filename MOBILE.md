@@ -262,7 +262,9 @@ dictionary entries + a synopsis. The phone's **Read** tab (the Pages tab, rename
 under a series header; ⬇ pulls the bundle (structure + tokens + dictionary +
 every page, resumable), 📖 opens the manga reader — page scans with the
 bubble text laid invisibly over them, so the usual colour washes and taps land
-on the printed words. Swipe-delete on a volume is phone-local, like series.
+on the printed words; comicReader's reading modes (RTL / LTR / vertical) and
+continuous scrolling, remembered per series (MANGA.md "The reader").
+Swipe-delete on a volume is phone-local, like series.
 
 ## Series — box sets from the PC library (2026-09-04)
 
