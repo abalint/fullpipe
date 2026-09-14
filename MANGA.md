@@ -125,8 +125,22 @@ centre is the current page — the counter, the resume point and the
 ReadRecorder's page follow it, so exposure credit still goes to the pages
 that were actually on screen. The overlay lays each
 bubble's tokens back into its printed lines by character count
-(`manga-layout.blockLines`) so the washes sit on the printed words; `T`
-shows the OCR text (checking a bubble), `◨` hides the washes. The gloss popup,
+(`manga-layout.blockLines`) and each line onto its own OCR box — `line_boxes`
+per block in manga.json, from mokuro's `lines_coords`, whenever the polygons
+pair one-to-one with the read's lines (97 % of Dandadan's bubbles, 87 % of
+Dragon Ball's); the glyphs are sized to the line's pitch and spread with
+letter-spacing so each sits on the printed one; then, since mokuro's boxes
+run loose (a tenth longer than the lettering, which is packed tighter than
+one em), the phone measures the scan itself once it loads (mobile
+`manga-ink.ts`: ink runs along each line's axis, reconciled with the read's
+character count) and pins each token to its glyphs' ink — and a bubble
+without boxes shares its block box evenly as before (`tools.manga rebuild <id>` re-emits
+the structure for a volume already read, without touching coverage) — so the
+washes sit on the printed words — the
+player's paints (mobile `highlight.ts`, one pass for both surfaces: the
+global lists, high-value candidates, the i+1 target, unknowns, phrase spans
+and grammar units from their own state) under the player's off / focus /
+learn tiers; `T` shows the OCR text (checking a bubble), `◨` cycles the tier. The gloss popup,
 mark cycle, lookups and live sync are the player's, unchanged.
 
 ## Server API additions

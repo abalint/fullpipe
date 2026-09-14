@@ -334,7 +334,15 @@ def page_from_ocr(page_no, file, ocr, sentences, read=None, glosses=None):
     {"lines": [...], "gloss": str|None}}. Where present its lines replace
     mokuro's draft (an empty list drops the block — a watermark, a logo),
     and its gloss lands on every sentence of the bubble via `glosses`
-    ({sentence idx → gloss})."""
+    ({sentence idx → gloss}).
+
+    Geometry: the block box, and — when mokuro's per-line polygons
+    (`lines_coords`) pair one-to-one with the lines kept — `line_boxes`,
+    one [x1, y1, x2, y2] per printed line, so the phone lays each line on
+    the glyphs it was read from instead of sharing the bubble box evenly
+    (the read keeps the printed line breaks, so the pairing holds on
+    nearly every bubble; where the counts differ the bubble box alone
+    ships and the reader falls back)."""
     w, h = int(ocr.get("img_width") or 0), int(ocr.get("img_height") or 0)
     blocks = []
     raw = ocr.get("blocks") or []
@@ -342,8 +350,13 @@ def page_from_ocr(page_no, file, ocr, sentences, read=None, glosses=None):
     for k, b in enumerate(order):
         got = (read or {}).get(str(b["_k"]))
         src_lines = got["lines"] if got is not None else (b.get("lines") or [])
-        lines = [clean_line(l) for l in src_lines]
-        lines = [l for l in lines if l]
+        coords = b.get("lines_coords") or []
+        if len(coords) != len(src_lines):
+            coords = [None] * len(src_lines)
+        kept = [(clean_line(l), c) for l, c in zip(src_lines, coords)]
+        kept = [(l, c) for l, c in kept if l]
+        lines = [l for l, _ in kept]
+        line_boxes = [line_box(c) for _, c in kept]
         text = "".join(lines)
         if not text or not is_dialogue(text):
             continue
@@ -358,10 +371,57 @@ def page_from_ocr(page_no, file, ocr, sentences, read=None, glosses=None):
             for si in sents:
                 glosses[si] = str(gloss).strip()
         box = [round(float(v), 1) for v in b["box"]]
-        blocks.append({"box": box, "vertical": bool(b.get("vertical", True)),
-                       "font_size": round(float(b.get("font_size") or 0), 1),
-                       "lines": [len(l) for l in lines], "sents": sents, "k": b["_k"]})
+        block = {"box": box, "vertical": bool(b.get("vertical", True)),
+                 "font_size": round(float(b.get("font_size") or 0), 1),
+                 "lines": [len(l) for l in lines], "sents": sents, "k": b["_k"]}
+        if line_boxes and all(line_boxes):
+            block["line_boxes"] = line_boxes
+        blocks.append(block)
     return {"n": page_no, "file": file, "w": w, "h": h, "blocks": blocks}
+
+
+def line_box(poly):
+    """A mokuro line polygon (4 points, any order) → its axis-aligned box
+    [x1, y1, x2, y2]; None for a missing / malformed polygon."""
+    try:
+        xs = [float(p[0]) for p in poly]
+        ys = [float(p[1]) for p in poly]
+    except (TypeError, IndexError, ValueError):
+        return None
+    if not xs or not ys:
+        return None
+    return [round(min(xs), 1), round(min(ys), 1), round(max(xs), 1), round(max(ys), 1)]
+
+
+def rebuild(cfg, episode_id, log=print):
+    """Re-emit manga.json + transcript.json from the OCR + read already on
+    disk, without touching coverage — for a structure change (new block
+    fields) on a volume already read and covered. Refuses if the sentence
+    track would differ from the one coverage.json indexes: the reader
+    joins the two by idx."""
+    ep_dir = episode_dir(cfg, episode_id)
+    doc = read_json(ep_dir / "manga.json")
+    before = read_json(ep_dir / "transcript.json")["sentences"]
+    meta = {"slug": doc["slug"], "vol_no": doc["vol_no"], "label": doc.get("label"),
+            "title": doc["title"], "series_title": doc["series_title"]}
+    files = [p["file"] for p in doc["pages"]]
+    sentences, pages, glosses = [], [], {}
+    read = load_read(ep_dir / "ocr")
+    for n, file in enumerate(files):
+        p = ep_dir / "ocr" / (Path(file).stem + ".json")
+        ocr = read_json(p) if p.exists() else {"blocks": []}
+        pages.append(page_from_ocr(n, file, ocr, sentences,
+                                   read=read.get(Path(file).stem), glosses=glosses))
+    if [s["text"] for s in sentences] != [s["text"] for s in before]:
+        raise RuntimeError("sentence track would change — run read-apply (re-runs coverage)")
+    doc["pages"] = pages
+    doc["page_count"] = len(pages)
+    doc["built_at"] = now_iso()
+    write_json(ep_dir / "manga.json", doc)
+    lined = sum(1 for pg in pages for b in pg["blocks"] if b.get("line_boxes"))
+    n_blocks = sum(len(pg["blocks"]) for pg in pages)
+    log(f"rebuilt {len(pages)} pages / {n_blocks} bubbles ({lined} with line boxes) → {ep_dir}")
+    return {"pages": len(pages), "blocks": n_blocks, "lined": lined}
 
 
 def load_read(ocr_dir):
@@ -787,6 +847,8 @@ def main(argv=None):
     p.add_argument("episode_id")
     p = sub.add_parser("read-apply", help="rebuild from the agents' reads + re-run coverage")
     p.add_argument("episode_id")
+    p = sub.add_parser("rebuild", help="re-emit manga.json from ocr/ + read/ (structure only, no coverage)")
+    p.add_argument("episode_id")
     args = ap.parse_args(argv)
     cfg = load_config(args.config)
     log = lambda m: print(m, file=sys.stderr)  # noqa: E731
@@ -825,6 +887,8 @@ def main(argv=None):
         print(json.dumps(read_status(cfg, args.episode_id), ensure_ascii=False, indent=1))
     elif args.cmd == "read-apply":
         print(json.dumps(read_apply(cfg, args.episode_id, log=log), ensure_ascii=False, indent=1))
+    elif args.cmd == "rebuild":
+        print(json.dumps(rebuild(cfg, args.episode_id, log=log), ensure_ascii=False, indent=1))
 
 
 if __name__ == "__main__":

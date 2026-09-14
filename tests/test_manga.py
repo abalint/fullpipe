@@ -114,6 +114,30 @@ class TestBlocks(unittest.TestCase):
         self.assertEqual(sentences[-1]["start"], 3 * MG.PAGE_SECS)
         self.assertFalse(page2["blocks"][0]["vertical"])
 
+    def test_line_boxes_ride_along_when_polygons_pair_with_the_lines(self):
+        ocr = {"img_width": 764, "img_height": 1200, "blocks": [
+            {"box": [100, 50, 220, 300], "vertical": True, "font_size": 22,
+             "lines": ["公園へ ", "", "行く。"],
+             "lines_coords": [[[190, 52], [220, 50], [219, 180], [190, 181]],
+                              [[160, 50], [186, 50], [186, 60], [160, 60]],
+                              [[100, 50], [130, 50], [130, 300], [100, 300]]]},
+            # polygon count off (a furigana column mokuro counted): box only
+            {"box": [500, 40, 640, 320], "vertical": True, "font_size": 22,
+             "lines": ["犬が走る。"], "lines_coords": [[[500, 40], [640, 40], [640, 320], [500, 320]]] * 2},
+        ]}
+        sentences = []
+        page = MG.page_from_ocr(0, "p.jpg", ocr, sentences)
+        b1, b0 = page["blocks"]  # reading order: the right-hand bubble first
+        # the empty line is dropped with its polygon; boxes are axis-aligned
+        self.assertEqual(b0["lines"], [3, 3])
+        self.assertEqual(b0["line_boxes"], [[190.0, 50.0, 220.0, 181.0], [100.0, 50.0, 130.0, 300.0]])
+        self.assertNotIn("line_boxes", b1)
+        # the AI read pairs by the raw line order too
+        read = {"0": {"lines": ["公園へ", "行く。"], "gloss": None}}
+        ocr["blocks"][0]["lines_coords"] = ocr["blocks"][0]["lines_coords"][::2]
+        page = MG.page_from_ocr(0, "p.jpg", ocr, [], read=read, glosses={})
+        self.assertEqual(len(page["blocks"][1]["line_boxes"]), 2)  # the 公園 bubble, read second
+
     def test_blocks_without_japanese_are_not_dialogue(self):
         ocr = {"img_width": 100, "img_height": 100, "blocks": [
             {"box": [0, 0, 10, 10], "vertical": False, "font_size": 8, "lines": ["ｍａｎｇｏ「ｅｏｄｅｒ．ｔｏ"]},
