@@ -21,3 +21,4 @@ openai            # punctuation restore (engine/punctuation.py)
 fastapi
 uvicorn[standard]
 httpx             # FastAPI TestClient (tests/test_server.py)
+pillow>=10  # tools.manga: numbered-box page renders for the AI read

@@ -69,3 +69,34 @@ In `config.json`:
 ```
 `auto` prefers this service for Japanese, and transparently falls back to CPU
 ReazonSpeech / ElevenLabs when the desktop is off.
+
+## Manga OCR (tools/manga.py — MANGA.md)
+
+`ocr_volume.py` is the second thing this box does: OCR a manga volume folder
+with [mokuro](https://github.com/kha-white/mokuro) (comic-text-detector for
+the speech-bubble boxes + manga-ocr for the text). Since the AI read
+(MANGA.md) only the **boxes** matter — the text is a draft that Opus
+subagents replace by reading the pages themselves. It is not part of the HTTP
+service — the Mac runs it over ssh (`config.json → manga.remote_python /
+remote_script`) and streams its progress:
+
+```
+I:\transcribe\mokuro\.venv\Scripts\python.exe I:\transcribe\ocr_volume.py "<volume dir>" "<out dir>"
+```
+
+Setup (done 2026-09-14): a separate venv, since torch is heavy and the ASR
+service needs none of it —
+
+```
+"C:\Program Files\Python311\python.exe" -m venv I:\transcribe\mokuro\.venv
+I:\transcribe\mokuro\.venv\Scripts\python.exe -m pip install "torch>=2.6" torchvision --index-url https://download.pytorch.org/whl/cu124
+I:\transcribe\mokuro\.venv\Scripts\python.exe -m pip install mokuro "transformers<5"
+```
+
+Pins that matter: transformers 4.x refuses `torch.load` below torch 2.6
+(manga-ocr ships `.bin` weights); transformers 5.x cannot load manga-ocr's
+image-processor config. Models land in `HF_HOME=I:\transcribe\hf_cache`
+(manga-ocr-base) and mokuro's own cache (comictextdetector.pt). ~3 s per page
+on the 2070 Super; output is one JSON per page plus `_done.json`, cached under
+`I:/transcribe/fullpipe_manga/<slug>/vNN/` so a re-run is free. The source
+folder is only ever read.

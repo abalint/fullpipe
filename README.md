@@ -311,3 +311,5 @@ Next: `/reconcile` skill for the offline-blob path (the online path is now
 client, then the end-to-end overnight-batch proof. Before corpus-leverage
 scoring: re-parse phrases-full.db at mode C (P1); ReazonSpeech word-timestamp
 spike before offline alignment code (P8).
+
+- **Manga (2026-09-14):** volumes from the PC library — mokuro on the desktop GPU boxes the bubbles, Opus subagents read the pages and gloss every bubble (`/manga read`), the phone's Read tab lays the text invisibly over the scans with the same tappable, colour-coded words as the player, and reading time is its own sitting kind — `/manga`, `tools/manga.py`, MANGA.md.

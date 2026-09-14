@@ -726,8 +726,11 @@ def record_curation(conn, episode_id, curation):
 
 
 # Immersion-time log kinds (MOBILE.md — viewing time): active watching in
-# the in-app player vs passive listening in the background audio service.
-VIEW_KINDS = ("watch", "listen")
+# the in-app player, passive listening in the background audio service, and
+# reading in the manga reader (2026-09-14) — active like a watch (it credits
+# exposures and the finished marker), tallied on its own.
+VIEW_KINDS = ("watch", "listen", "read")
+ACTIVE_VIEW_KINDS = ("watch", "read")
 # Where a session came from: recorded by the app's player/service, typed in
 # by hand on the Progress tab (listening done outside the app), or imported
 # from the pre-app spreadsheet (tools/import_tracker_pdf.py).
@@ -737,8 +740,9 @@ VIEW_SOURCES = ("app", "manual", "import")
 # 🎧 handoff (screen off, native service). Listen-tab time is its own kind.
 SUB_MODES = ("on", "kw", "off", "audio")
 # Where a word was met when it was looked up or marked (claim / lookup
-# context.mode): a player state, the Listen tab, a 5ch page, the prep doc.
-ENCOUNTER_MODES = SUB_MODES + ("listen", "page", "prep")
+# context.mode): a player state, the Listen tab, a 5ch page, the prep doc,
+# a manga page in the reader.
+ENCOUNTER_MODES = SUB_MODES + ("listen", "page", "prep", "manga")
 
 
 def record_view_session(conn, session):
@@ -859,7 +863,8 @@ def query_view_sessions(conn, since=None):
 
 def load_coverage(conn):
     """{episode_id: {"ranges": [(from, to), ...], "plays": float, "modes": {state: secs}}}
-    from the phone's player sittings (view_sessions, source='app', kind='watch').
+    from the phone's player / reader sittings (view_sessions, source='app',
+    kind watch or read — ACTIVE_VIEW_KINDS).
 
     ranges: every played media range across every sitting — a rewound
             stretch appears twice, so an occurrence inside it is seen twice.
@@ -880,7 +885,7 @@ def load_coverage(conn):
     out = {}
     for r in conn.execute(
             "SELECT episode_id, secs, reached, duration, modes, played FROM view_sessions "
-            "WHERE source = 'app' AND kind = 'watch'"):
+            "WHERE source = 'app' AND kind IN ('watch', 'read')"):
         ep = r["episode_id"]
         c = out.setdefault(ep, {"ranges": [], "plays": 0.0, "modes": {}, "_uniform": 0.0})
         dur = r["duration"] or durations.get(ep)
@@ -962,7 +967,7 @@ def query_view_totals(conn):
     for r in conn.execute(
             "SELECT day, kind, SUM(secs) AS secs FROM view_sessions "
             "GROUP BY day, kind ORDER BY day DESC"):
-        out.setdefault(r["day"], {"day": r["day"], "watch": 0.0, "listen": 0.0})
+        out.setdefault(r["day"], {"day": r["day"], "watch": 0.0, "listen": 0.0, "read": 0.0})
         out[r["day"]][r["kind"]] = round(r["secs"], 1)
     return list(out.values())
 
@@ -2023,7 +2028,7 @@ def episode_plays(conn):
             per_sec = frac / r["secs"] if r["secs"] else 0.0
         a, p, by_mode = plays.get(r["episode_id"], (0.0, 0.0, {}))
         by_mode = dict(by_mode)
-        if r["kind"] == "watch":
+        if r["kind"] in ACTIVE_VIEW_KINDS:
             a += frac
             try:
                 modes = json.loads(r["modes"]) if r["modes"] else {}

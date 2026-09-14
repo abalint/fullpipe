@@ -944,8 +944,8 @@ class TestRoutes(ServerTestBase):
         # the CLI's per-day totals
         totals = lc.query_view_totals(lconn)
         self.assertEqual(totals, [
-            {"day": "2026-09-02", "watch": 1234.5, "listen": 0.0},
-            {"day": "2026-09-01", "watch": 0.0, "listen": 600.0},
+            {"day": "2026-09-02", "watch": 1234.5, "listen": 0.0, "read": 0.0},
+            {"day": "2026-09-01", "watch": 0.0, "listen": 600.0, "read": 0.0},
         ])
 
     def test_viewtime_carries_subtitle_state(self):

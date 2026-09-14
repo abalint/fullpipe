@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from engine.downloader import _extract_video_id  # noqa: E402
 from engine.local_file import generate_local_file_id, is_local_file  # noqa: E402
 from tools.pages import page_episode_id  # noqa: E402
+from tools.manga import manga_episode_id  # noqa: E402
 from tools.series import series_episode_id  # noqa: E402
 
 STATES = ("queued", "downloading", "transcribing", "tokenizing", "prepared",
@@ -78,6 +79,9 @@ def derive_job_id(source):
     series_id = series_episode_id(source)
     if series_id:
         return series_id
+    manga_id = manga_episode_id(source)
+    if manga_id:
+        return manga_id
     if is_local_file(source):
         return generate_local_file_id(source)
     page_id = page_episode_id(source)
@@ -98,10 +102,25 @@ def job_dict(row):
     d["episode_id"] = d["episode_id"] or d["id"]
     d["passive"] = bool(d.get("passive"))
     d.pop("debrief", None)  # retired flag; still a column in pre-2026-09 queue.db files
-    # Pages are marked by their id prefix (page_episode_id) — derived, not
-    # stored, so pre-pages rows need no migration.
-    d["kind"] = "page" if d["id"].startswith("page_") else "episode"
+    # Pages / manga are marked by their id prefix (page_episode_id,
+    # manga_episode_id) — derived, not stored, so older rows need no migration.
+    d["kind"] = job_kind(d["id"])
     return d
+
+
+def job_kind(job_id):
+    """'page' (5ch thread, tools.pages) · 'manga' (a volume, tools.manga) ·
+    'episode' (everything that plays)."""
+    if job_id.startswith("page_"):
+        return "page"
+    if job_id.startswith("manga_"):
+        return "manga"
+    return "episode"
+
+
+def is_text_kind(job_id):
+    """Read, not played: no video, no cards, no card selection on taps."""
+    return job_kind(job_id) in ("page", "manga")
 
 
 def enqueue(conn, source, *, title=None, series=None, series_title=None, ep_no=None):

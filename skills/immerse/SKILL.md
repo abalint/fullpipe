@@ -75,6 +75,7 @@ block, then decide together what this session does:
 | `queued` · `downloading` · `transcribing` · `tokenizing` | worker still grinding | report progress (`progress_msg`); don't touch |
 | `staged` | curated, phone can pull | nothing to do — mention it |
 | `staged` **page job** (`page_` id) without `curate.json` | readable now, popup un-enriched | offer the **page pass (Step 1.5)** |
+| `prepared` **manga volume** (`manga_` id, the `/manga` skill) | readable on the phone now; popup un-enriched, no synopsis | run the **manga pass (Step 1.6)** — never Steps 2.5–6 |
 | `watched` · `reconciled` | loop closed | nothing to do |
 | `failed` | Stage 1 blew up | show `error`; **ask** whether to retry (re-`enqueue` the same source resets it to queued) or drop it |
 
@@ -142,6 +143,65 @@ taste/recommender data), and no state change (already `staged`).
    The phone refreshes its cached dictionary on the next online open of the
    reader (the transcript's `curated` flag flips true once curate.json
    exists).
+
+## Step 1.6 — manga pass (manga_ jobs: defs + synopsis, no cards)
+
+Manga volumes (`manga_<slug>_vNN` — ingested from the PC library by the
+`/manga` skill, OCR'd on the desktop GPU, `tools/manga.py`) land on
+`prepared` and are readable on the phone immediately: the reader lays the
+bubble text invisibly over the page scans with the plain JMdict popup. This
+pass is the page pass plus a synopsis, and it is the whole of Stage 2 for
+manga — **no** punctuation/repair gates (OCR, not ASR — a garbled bubble is
+an OCR miss, leave it), **no** focal points / `picks.json` / render / deck /
+`record-curation`. It ends by moving the job to `staged` itself.
+
+0. **Precondition — the AI read has been applied**: `$PY -m tools.manga
+   read-status EPISODE_ID` → `applied: true`. If not, stop and run the
+   `/manga` skill's read procedure first (Opus agents transcribe the pages
+   and gloss every bubble in one pass); this pass keys on sentence idxs
+   that the read rewrites.
+
+1. Worklist — every lemma in the volume with no dictionary entry:
+
+   ```sh
+   $PY -m tools.jmdict missing EPISODE_ID        # [{lemma, count, example}]
+   ```
+
+2. Judge each item against its example bubble. Gloss what a reader taps:
+   character and place names (pos "name (person)" / "name (place)"), sound
+   words and mimetics JMdict lacks (ドカッ, ずーっ), slang and contractions
+   (オラんち, ねえんだよ), the series' own terms. **Skip OCR debris** — a
+   furigana edition sometimes merges a ruby into the base text (`どうしや`
+   for 自動車, `じいっい`); a non-word from a misread stays unglossed.
+   High-recurrence first.
+
+3. **Line glosses** — already written by the AI read (`read/lines.json`,
+   served on `/transcript`). Add `lines` entries here only as overrides —
+   a bubble whose read gloss is wrong or missing that you noticed while
+   judging the worklist. The rules for what deserves one: Word popups plus grammar
+   labels do not add up to "what did they just say" in casual manga speech
+   (`いい加減．．．ヤラしてくれるならいいぜ`), so gloss the bubbles a reader
+   would be lost on: every sentence coverage classed `too_hard`, plus any
+   with slang, contractions (ヤラして = やらせて), dropped particles, heavy
+   ellipsis, wordplay, or a sound word carrying the meaning — typically a
+   quarter to a third of the bubbles, never all of them (a clean
+   `おはよう` needs nothing). Read the page's bubbles together (the
+   transcript is in reading order; `manga.json` groups them per page) so
+   the gloss reflects who is talking to whom. Plain English, one line,
+   what the speaker is saying or doing — no grammar jargon
+   (`plain-English grammar labels`). Skip front/back matter (credits,
+   contents, ads) entirely.
+
+4. Write `<episode_dir>/curate.json` with `defs` (episode defs schema —
+   word / reading / gloss / pos, plain-English), `lines`
+   (`[{idx, gloss}]` — transcript sentence idx), `synopsis` (2–3
+   sentences, Japanese-free English, no spoilers past the volume),
+   `genre`, `format: "manga"`, `topics`. Nothing else.
+
+5. `$PY -m server.jobqueue set-state EPISODE_ID staged` (the worker's
+   Stage-2 watcher also flips it once `curate.json` exists). The phone
+   refreshes its cached transcript + dictionary (line glosses, defs) on
+   the next online open of the reader.
 
 ## Step 2 — acquire + coverage (direct mode / missing artifacts only)
 

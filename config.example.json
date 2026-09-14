@@ -77,6 +77,13 @@
     "remote_stage_dir": "I:/transcribe/fullpipe_stage",
     "ssh_timeout": 3600
   },
+  "manga": {
+    "_comment": "tools.manga: manga volumes on the PC (page scans, read-only). remote_root is the library (H:/manga/<Series>/<VOL n>/NNN.jpg); OCR runs on the desktop GPU in the mokuro venv (remote_python + remote_script = gpu_service/ocr_volume.py deployed to I:/transcribe) and caches per-volume JSON under remote_ocr_dir. ssh settings come from the series block.",
+    "remote_root": "H:/manga",
+    "remote_ocr_dir": "I:/transcribe/fullpipe_manga",
+    "remote_python": "I:/transcribe/mokuro/.venv/Scripts/python.exe",
+    "remote_script": "I:/transcribe/ocr_volume.py"
+  },
   "freq": {
     "show_graph_db": "~/Documents/code/anki/phrases/japaneseShowGraph/subs/japaneseShowGraph.db",
     "leeds_fallback": "~/Documents/code/audioPrimeProd/data/ja_frequency.txt"

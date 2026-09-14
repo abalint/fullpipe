@@ -29,6 +29,7 @@ from server import jobqueue as q  # noqa: E402
 from tools._staging import downloads_dir, episode_dir  # noqa: E402
 from tools.acquire import acquire  # noqa: E402
 from tools.coverage import run_coverage  # noqa: E402
+from tools.manga import acquire_manga, is_manga_source  # noqa: E402
 from tools.pages import acquire_page, is_page_source  # noqa: E402
 
 VIDEO_EXTS = {".mp4", ".m4v", ".mkv", ".webm", ".mov", ".avi", ".ts"}
@@ -140,11 +141,35 @@ def process_page_job(cfg, conn, job, log=print):
         log(f"  [{job_id}] FAILED: {e}")
 
 
+def process_manga_job(cfg, conn, job, log=print):
+    """Stage 1 for a manga volume (tools.manga): OCR on the desktop GPU +
+    pull the pages (`downloading`, narrated page by page), then coverage
+    over the bubble sentences (`tokenizing`). Lands on `prepared` like an
+    episode — readable on the phone right away, and /immerse's manga pass
+    (defs + synopsis, no cards) takes it to `staged`."""
+    job_id = job["id"]
+    try:
+        q.set_state(conn, job_id, "downloading")
+        record = acquire_manga(job["source"], cfg,
+                               log=lambda m: q.set_progress(conn, job_id, str(m)[:200]))
+        episode_id = record["episode"]["id"]
+        title = record["episode"].get("title")
+        q.set_state(conn, job_id, "tokenizing", episode_id=episode_id, title=title)
+        run_coverage(cfg, episode_id)
+        q.set_state(conn, job_id, "prepared", episode_id=episode_id, title=title)
+        log(f"  [{job_id}] prepared (manga)")
+    except Exception as e:
+        q.set_state(conn, job_id, "failed", error=str(e)[:500])
+        log(f"  [{job_id}] FAILED: {e}")
+
+
 def process_job(cfg, conn, job, log=print):
     """Run Stage 1 for one job. State transitions + artifacts; raises nothing
     (failures land in state='failed' with the error on the job)."""
     if is_page_source(job["source"]):
         return process_page_job(cfg, conn, job, log=log)
+    if is_manga_source(job["source"]):
+        return process_manga_job(cfg, conn, job, log=log)
     job_id = job["id"]
     try:
         q.set_state(conn, job_id, "downloading")
@@ -186,7 +211,9 @@ def scan_stage2(cfg, conn, log=print):
         if job["state"] not in ("prepared", "curating"):
             continue
         ep_dir = episode_dir(cfg, job["episode_id"])
-        if (ep_dir / "curate.json").exists() and (ep_dir / "prep.html").exists():
+        # manga has no prep doc: the manga pass writes curate.json alone
+        rendered = job["kind"] == "manga" or (ep_dir / "prep.html").exists()
+        if (ep_dir / "curate.json").exists() and rendered:
             q.set_state(conn, job["id"], "staged",
                         episode_id=job["episode_id"], title=job.get("title"))
             log(f"  [{job['id']}] staged (curate artifacts detected)")

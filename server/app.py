@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -32,7 +33,8 @@ from lib_config import load_config  # noqa: E402
 from server import jobqueue as q  # noqa: E402
 from server.worker import Worker  # noqa: E402
 from tools import jmdict  # noqa: E402
-from tools import series as series_tool  # noqa: E402
+from tools import series as series_tool
+from tools import manga as manga_tool  # noqa: E402
 from tools._staging import (  # noqa: E402
     downloads_dir, episode_dir, load_coverage, load_transcript, read_json)
 from tools.render import build_prep_data  # noqa: E402
@@ -442,6 +444,75 @@ def create_app(cfg, start_worker=True):
             raise HTTPException(404, f"no staged page for {episode_id}")
         return read_json(path)
 
+    @app.get("/manga/library", dependencies=[Depends(auth)])
+    def get_manga_library(refresh: bool = False):
+        """The PC's manga root (tools.manga library): series folders with
+        their volumes, annotated with the queue state of volumes already
+        ingested — the phone's library picker. One ssh listing, cached for
+        ten minutes (the folder rarely changes); ?refresh=true re-lists."""
+        now = time.time()
+        if refresh or now - manga_lib["at"] > 600:
+            try:
+                manga_lib["items"] = manga_tool.library(cfg)
+            except Exception as e:
+                raise HTTPException(503, f"PC library unavailable: {e}")
+            manga_lib["at"] = now
+        states = {}
+        for job in q.list_jobs(queue_conn()):
+            if job["kind"] == "manga":
+                states[job["id"]] = job["state"]
+        out = []
+        for s_ in manga_lib["items"]:
+            vols = [{**v, "id": manga_tool.episode_id_for(s_["slug"], v["vol_no"]),
+                     "state": states.get(manga_tool.episode_id_for(s_["slug"], v["vol_no"]))}
+                    for v in s_["volumes"]]
+            out.append({**s_, "volumes": vols})
+        return {"root": manga_tool.manga_cfg(cfg)["remote_root"], "at": manga_lib["at"],
+                "series": out}
+
+    @app.post("/manga/ingest", dependencies=[Depends(auth)])
+    def post_manga_ingest(body: dict):
+        """Queue volumes of one PC series folder: {remote_dir, volumes?:
+        [n, …], title?, slug?}. Writes the manifest and enqueues one job per
+        volume (tools.manga ingest); the worker then OCRs on the PC, pulls
+        the pages and runs coverage. Runs the ssh scan on the request thread
+        (a directory listing — seconds)."""
+        remote_dir = (body or {}).get("remote_dir")
+        if not remote_dir:
+            raise HTTPException(422, "missing remote_dir")
+        vols = body.get("volumes")
+        spec = ",".join(str(int(v)) for v in vols) if vols else None
+        try:
+            summary = manga_tool.ingest(cfg, remote_dir, slug=body.get("slug"),
+                                        title=body.get("title"), volumes=spec,
+                                        log=lambda m: None)
+        except (RuntimeError, ValueError) as e:
+            raise HTTPException(422, str(e))
+        return summary
+
+    @app.get("/manga/{episode_id}", dependencies=[Depends(auth)])
+    def get_manga(episode_id: str):
+        """The reader structure for a manga volume (tools.manga): per page
+        file/size + text blocks (box, vertical, font size, per-line char
+        counts) as runs of sentence idxs into /transcript. The page images
+        are /manga/{id}/page/{file}."""
+        path = episode_dir(cfg, episode_id) / "manga.json"
+        if not path.exists():
+            raise HTTPException(404, f"no staged manga volume for {episode_id}")
+        return read_json(path)
+
+    @app.get("/manga/{episode_id}/page/{name}")
+    def get_manga_page(episode_id: str, name: str, request: Request,
+                       t: str | None = None):
+        """One page scan (media auth: header or ?t=, like /video)."""
+        media_auth(request, t)
+        if "/" in name or "\\" in name or name.startswith("."):
+            raise HTTPException(404, "bad page name")
+        path = episode_dir(cfg, episode_id) / "pages" / name
+        if not path.exists():
+            raise HTTPException(404, f"no page {name} for {episode_id}")
+        return FileResponse(path)
+
     @app.get("/transcript/{episode_id}", dependencies=[Depends(auth)])
     def get_transcript(episode_id: str):
         """Full tokenized sentence track for the in-app player's subtitle
@@ -488,6 +559,18 @@ def create_app(cfg, start_worker=True):
             if not pattern:
                 note["proposed"] = True
             notes_at.setdefault(idx, []).append(note)
+        # the curate pass's whole-line glosses (manga pass `lines`: what a
+        # hard or slangy bubble means, plain English) — the popup's foot
+        line_gloss = {}
+        read_lines = episode_dir(cfg, episode_id) / "read" / "lines.json"
+        if read_lines.exists():  # the AI read's bubble meanings (tools.manga)
+            for ln in read_json(read_lines).get("lines", []):
+                if isinstance(ln.get("idx"), int) and ln.get("gloss"):
+                    line_gloss[ln["idx"]] = ln["gloss"]
+        for ln in curate.get("lines", []):  # the curate pass overrides
+            idx, gloss = ln.get("idx"), (ln.get("gloss") or "").strip()
+            if isinstance(idx, int) and gloss:
+                line_gloss[idx] = gloss
         units_at = episode_grammar(ledger_conn(), episode_id, coverage)
         grammar_at: dict[int, list] = {}
         for idx in set(units_at) | set(notes_at):
@@ -532,6 +615,8 @@ def create_app(cfg, start_worker=True):
                  "tokens": [tok(t) for t in s["tokens"]]}
             if s["idx"] in grammar_at:
                 d["grammar"] = grammar_at[s["idx"]]
+            if s["idx"] in line_gloss:
+                d["gloss"] = line_gloss[s["idx"]]
             if s["idx"] in phrases_at:
                 # each phrase as one unit: its token span (so the player
                 # paints 血が騒いだ as a whole and the popup opens a phrase
@@ -669,6 +754,7 @@ def create_app(cfg, start_worker=True):
             return
         raise HTTPException(401, "bad or missing token")
 
+    manga_lib = {"at": 0.0, "items": []}  # GET /manga/library cache
     restores = {}  # episode_id → thread re-pulling an evicted series video
 
     def _restore_series_video(job):
@@ -752,9 +838,9 @@ def create_app(cfg, start_worker=True):
         result = lc.apply_taps(conn, payload, anki_call=None, watched=False)
         if not result["duplicate"]:
             result["promote"] = lc.promote(conn)
-            if episode_id.startswith("page_"):
-                # pages mint no cards: taps are pure ledger evidence, and the
-                # row's state stays put (staged → read is the page lifecycle)
+            if q.is_text_kind(episode_id):
+                # pages / manga mint no cards: taps are pure ledger evidence,
+                # and the row's state stays put (read is the whole lifecycle)
                 result["cards_selected"] = None
                 result["page"] = True
             elif post_watch:
@@ -858,10 +944,10 @@ def create_app(cfg, start_worker=True):
             raise HTTPException(404, str(e))
 
         picks = None
-        if episode_id.startswith("page_"):
-            # a read page: exposures activate like any watch, but pages never
-            # mint cards regardless of what the client sent
-            result["cards"] = {"queued": 0, "note": "page — no cards"}
+        if q.is_text_kind(episode_id):
+            # a read page / volume: exposures activate like any watch, but
+            # text kinds never mint cards regardless of what the client sent
+            result["cards"] = {"queued": 0, "note": f"{q.job_kind(episode_id)} — no cards"}
         elif not (body or {}).get("cards", True):
             result["cards"] = {"queued": 0, "note": "declined — cards skipped"}
         else:
@@ -920,7 +1006,7 @@ def create_app(cfg, start_worker=True):
     @app.post("/viewtime", dependencies=[Depends(auth)])
     def post_viewtime(body: dict):
         """Store one phone-recorded playback session: {id, episode_id, kind:
-        watch|listen, day (device-local YYYY-MM-DD), start, secs, reached?,
+        watch|listen|read, day (device-local YYYY-MM-DD), start, secs, reached?,
         duration?, title?, played?: [[from, to], ...]}. `played` — the media
         ranges that actually ran — is what credits the episode's word
         exposures (ledger load_coverage): a word was seen when its line
@@ -939,7 +1025,7 @@ def create_app(cfg, start_worker=True):
         # phone's lists / backlog / series progress read the truth. That flag
         # is display only — exposure credit comes from `played` above.
         # `POST /watched` is now the mint-cards / passive step.
-        if not result.get("duplicate") and body.get("kind") == "watch":
+        if not result.get("duplicate") and body.get("kind") in lc.ACTIVE_VIEW_KINDS:
             lc.activate_played_episodes(conn)
             ep = body.get("episode_id")
             row = conn.execute("SELECT watched FROM episodes WHERE id = ?", (ep,)).fetchone()
