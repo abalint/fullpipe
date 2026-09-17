@@ -1,6 +1,7 @@
 """Manga tests: identity + folder parsing, mokuro blocks → reading-order
-sentence track + reader structure, the worker's manga Stage-1 path (PC OCR
-and pull mocked, coverage real), and the manga-aware server routes."""
+sentence track + reader structure, the worker's manga Stage-1 path (pages
+off a temp-dir stand-in for the mounted library; the PC's OCR, push and
+pull mocked; coverage real), and the manga-aware server routes."""
 
 import json
 import sys
@@ -83,7 +84,7 @@ class TestIdentity(unittest.TestCase):
         vols, unparsed = MG.group_volumes(paths, "H:/manga/Dandadan")
         self.assertEqual([(v["vol_no"], v["label"], v["pages"]) for v in vols],
                          [(1, "VOL 1 (JA)", 5), (2, "VOL 2 (JA)", 5)])
-        self.assertEqual(unparsed, [f"{root}\\extras"])
+        self.assertEqual(unparsed, [f"{root}/extras".replace("\\", "/")])  # normalized
 
     def test_series_folder_holding_pages_is_one_volume(self):
         paths = [f"H:\\manga\\OneShot\\{n:03d}.jpg" for n in range(1, 9)]
@@ -164,8 +165,21 @@ class TestBlocks(unittest.TestCase):
         self.assertEqual("".join(MG.split_sentences("犬が走る。公園")), "犬が走る。公園")
 
 
+def make_library(tmp):
+    """<tmp>/library/manga/Dandadan/VOL 1 (JA)/001..003.jpg — the mounted
+    share's stand-in. Returns (cfg fragment, series dir)."""
+    root = Path(tmp) / "library" / "manga"
+    vol = root / "Dandadan" / "VOL 1 (JA)"
+    vol.mkdir(parents=True, exist_ok=True)
+    for n in range(1, 4):
+        (vol / f"{n:03d}.jpg").write_bytes(b"\xff\xd8jpeg")
+    (vol / "._001.jpg").write_bytes(b"junk")  # AppleDouble twin: never a page
+    return {"mounts": {}, "manga_root": str(root)}, str(root / "Dandadan")
+
+
 class FakeRemote:
-    """Stands in for the ssh side: OCR + pulls land fixture files locally."""
+    """Stands in for the desktop (ssh): OCR, push and pull land fixture
+    files locally."""
 
     def __init__(self, tmp):
         self.calls = []
@@ -173,9 +187,11 @@ class FakeRemote:
         self.timeout = 5
         self.host = "fake"
 
-    def listing(self, remote_dir):
-        root = str(remote_dir).replace("/", "\\")
-        return [f"{root}\\VOL 1 (JA)\\{n:03d}.jpg" for n in range(1, 4)]
+    def exists(self, remote_path):
+        return False
+
+    def rmtree(self, remote_dir):
+        self.calls.append(("rmtree", remote_dir))
 
 
 def fake_remote_ocr(remote, mcfg, src_dir, out_dir, log=print, timeout=None):
@@ -193,26 +209,35 @@ def fake_pull_tree(remote, remote_dir, local_dir, log=print):
     remote.calls.append(("pull", remote_dir, str(local_dir)))
     local_dir = Path(local_dir)
     local_dir.mkdir(parents=True, exist_ok=True)
-    if "fullpipe_manga" in str(remote_dir):  # the OCR cache
-        for p in (remote.tmp / "remote_ocr").glob("*.json"):
-            (local_dir / p.name).write_bytes(p.read_bytes())
-    else:  # the page scans
-        for n in range(1, 4):
-            (local_dir / f"{n:03d}.jpg").write_bytes(b"\xff\xd8jpeg")
+    for p in (remote.tmp / "remote_ocr").glob("*.json"):  # the OCR cache
+        (local_dir / p.name).write_bytes(p.read_bytes())
+
+
+def fake_push_tree(remote, local_dir, remote_dir, log=print):
+    remote.calls.append(("push", sorted(p.name for p in Path(local_dir).iterdir()), remote_dir))
+
+
+def patched(remote):
+    return (unittest.mock.patch.object(MG, "Remote", lambda mcfg: remote),
+            unittest.mock.patch.object(MG, "remote_ocr", fake_remote_ocr),
+            unittest.mock.patch.object(MG, "pull_tree", fake_pull_tree),
+            unittest.mock.patch.object(MG, "push_tree", fake_push_tree))
 
 
 class TestMangaStage1(ServerTestBase):
     def ingest_and_run(self):
         conn = q.open_queue(Path(self.cfg["work_dir"]) / "queue.db")
+        self.cfg["library"], series_dir = make_library(self.tmp.name)
         remote = FakeRemote(self.tmp.name)
-        summary = MG.ingest(self.cfg, "H:/manga/Dandadan", remote=remote, log=lambda m: None)
+        # the series name alone resolves under the manga root
+        summary = MG.ingest(self.cfg, "Dandadan", log=lambda m: None)
         self.assertEqual(summary["enqueued"], [VOL_EP])
+        self.assertEqual(MG.load_manifest(self.cfg, SLUG)["remote_dir"], series_dir)
         job = q.get_job(conn, VOL_EP)
         self.assertEqual((job["state"], job["series"], job["ep_no"], job["title"]),
                          ("queued", SLUG, 1, "Dandadan Vol. 1"))
-        with unittest.mock.patch.object(MG, "Remote", lambda mcfg: remote), \
-                unittest.mock.patch.object(MG, "remote_ocr", fake_remote_ocr), \
-                unittest.mock.patch.object(MG, "pull_tree", fake_pull_tree):
+        p1, p2, p3, p4 = patched(remote)
+        with p1, p2, p3, p4:
             process_job(self.cfg, conn, job, log=lambda m: None)
         return conn, remote, q.get_job(conn, VOL_EP)
 
@@ -220,7 +245,10 @@ class TestMangaStage1(ServerTestBase):
         conn, remote, job = self.ingest_and_run()
         self.assertEqual(job["state"], "prepared", job.get("error"))
         self.assertEqual(job["kind"], "manga")
-        self.assertEqual([c[0] for c in remote.calls], ["ocr", "pull", "pull"])
+        # pages come off the mount; the PC only sees them parked for the boxing
+        self.assertEqual([c[0] for c in remote.calls], ["push", "ocr", "pull", "rmtree"])
+        self.assertEqual(remote.calls[0][1], ["001.jpg", "002.jpg", "003.jpg"])  # no ._ twin
+        self.assertEqual(remote.calls[0][2], "I:/transcribe/fullpipe_manga_src/dandadan/v01")
 
         ep_dir = episode_dir(self.cfg, VOL_EP)
         transcript = read_json(ep_dir / "transcript.json")
@@ -249,9 +277,8 @@ class TestMangaStage1(ServerTestBase):
         conn, remote, _ = self.ingest_and_run()
         remote.calls.clear()
         q.set_state(conn, VOL_EP, "queued")
-        with unittest.mock.patch.object(MG, "Remote", lambda mcfg: remote), \
-                unittest.mock.patch.object(MG, "remote_ocr", fake_remote_ocr), \
-                unittest.mock.patch.object(MG, "pull_tree", fake_pull_tree):
+        p1, p2, p3, p4 = patched(remote)
+        with p1, p2, p3, p4:
             process_job(self.cfg, conn, q.get_job(conn, VOL_EP), log=lambda m: None)
         self.assertEqual(remote.calls, [])  # OCR json + pages already local
         self.assertEqual(q.get_job(conn, VOL_EP)["state"], "prepared")
@@ -362,16 +389,16 @@ class TestMangaStage1(ServerTestBase):
         self.assertTrue(MG.read_status(self.cfg, VOL_EP)["applied"])
 
     def test_library_and_ingest_routes(self):
-        remote = FakeRemote(self.tmp.name)
-        lib = [{"name": "Dandadan", "slug": SLUG, "remote_dir": "H:/manga/Dandadan",
-                "volumes": [{"vol_no": 1, "label": "VOL 1 (JA)", "pages": 3}]}]
-        with unittest.mock.patch.object(MG, "library", return_value=lib), \
-                unittest.mock.patch.object(MG, "Remote", lambda mcfg: remote):
+        self.cfg["library"], series_dir = make_library(self.tmp.name)
+        lib = MG.library(self.cfg)  # the real walk over the stand-in
+        self.assertEqual(lib, [{"name": "Dandadan", "slug": SLUG, "remote_dir": series_dir,
+                                "volumes": [{"vol_no": 1, "label": "VOL 1 (JA)", "pages": 3}]}])
+        with unittest.mock.patch.object(MG, "library", return_value=lib):
             r = self.client.get("/manga/library", headers=self.auth)
             self.assertEqual(r.status_code, 200)
             self.assertIsNone(r.json()["series"][0]["volumes"][0]["state"])
             r = self.client.post("/manga/ingest", headers=self.auth,
-                                 json={"remote_dir": "H:/manga/Dandadan", "volumes": [1]})
+                                 json={"remote_dir": series_dir, "volumes": [1]})
             self.assertEqual(r.status_code, 200, r.text)
             self.assertEqual(r.json()["enqueued"], [VOL_EP])
             r = self.client.get("/manga/library", headers=self.auth)

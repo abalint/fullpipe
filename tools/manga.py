@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
-"""manga — manga volumes from the PC library → OCR'd, tokenized, readable on the phone.
+"""manga — manga volumes from the media server → boxed on the desktop GPU, read by Opus, readable on the phone.
 
-The reading sibling of tools.series: the page scans live on the Windows
-desktop (H:/manga/<Series>/<VOL n>/NNN.jpg) and are never written to. A
-queued volume gets the same Stage-1 treatment as a video — text track →
-coverage → any-word popup → ledger exposures — but the "transcript" is what
-the desktop GPU reads off the pages (mokuro: comic-text-detector for the
-speech-bubble boxes, manga-ocr for the text; gpu_service/ocr_volume.py), and
-the phone renders it as an invisible, tappable, colour-washed layer over the
-original page in the manga reader instead of playing anything.
+The reading sibling of tools.series: the page scans live on the Raspberry
+Pi media server's `library` share, mounted on the Mac
+(/Volumes/library/Japanese/manga/<Series>/<VOL n>/NNN.jpg — tools/library.py),
+and are never written to. A queued volume gets the same Stage-1 treatment
+as a video — text track → coverage → any-word popup → ledger exposures —
+but the "transcript" starts as what the desktop GPU reads off the pages
+(mokuro: comic-text-detector for the speech-bubble boxes, manga-ocr for a
+draft of the text; gpu_service/ocr_volume.py). The Pi has no GPU, so the
+Mac copies the pages off the mount, parks them on the desktop over ssh
+(tools/pcremote.py) just for the boxing, pulls the JSON back and drops the
+parked copy. Opus subagents then read the pages themselves (`read-*`), and
+the phone renders it all as an invisible, tappable, colour-washed layer
+over the original page in the manga reader instead of playing anything.
 
 Identity: source `manga://<slug>/<vol_no>` → episode id `manga_<slug>_v<nn>`
 (the manga_ prefix is the job's kind marker everywhere downstream, like
@@ -16,7 +21,7 @@ page_). Rows carry `series` / `series_title` / `ep_no` so the phone groups
 volumes under one header in order, the way box sets group.
 
 Stages under <work_dir>/episodes/manga_<slug>_v<nn>/:
-    pages/NNN.jpg     the page scans, pulled from the PC as-is (~300 kB each)
+    pages/NNN.jpg     the page scans, copied off the mount as-is (~300 kB each)
     ocr/NNN.json      mokuro's raw per-page result (kept for rebuilds)
     transcript.json   the sentence track — one sentence per speech-bubble
                       sentence, in reading order (right-to-left, top-to-
@@ -28,11 +33,15 @@ Stages under <work_dir>/episodes/manga_<slug>_v<nn>/:
                       (box, vertical, font size, per-line char counts) as
                       runs of sentence idxs into the transcript
 
+Folders are given as they are on the Mac (/Volumes/library/Japanese/manga/
+Dandadan), by series name under the manga root (Dandadan), or in the old
+desktop form (H:/manga/Dandadan) — all resolve to the mount.
+
 CLI:
-    python -m tools.manga library                              # what's on the PC (H:/manga)
-    python -m tools.manga scan   "H:/manga/Dandadan"           # volumes that would be ingested
-    python -m tools.manga ingest "H:/manga/Dandadan" [--slug S] [--title T] [--volumes 1,3-5]
-                                                     [--dry-run] [--no-drain]
+    python -m tools.manga library                              # what's on the media server (manga root)
+    python -m tools.manga scan   Dandadan                      # volumes that would be ingested
+    python -m tools.manga ingest Dandadan [--slug S] [--title T] [--volumes 1,3-5]
+                                          [--dry-run] [--no-drain]
     python -m tools.manga list
     python -m tools.manga status dandadan
     python -m tools.manga remove dandadan [--remote]           # Mac (+ PC OCR cache); never the scans
@@ -40,7 +49,9 @@ CLI:
 
 import argparse
 import json
+import os
 import re
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -49,7 +60,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tools._staging import episode_dir, read_json, write_json  # noqa: E402
-from tools.series import Remote, _win, _wname, series_cfg, slugify  # noqa: E402
+from tools import library as lib  # noqa: E402
+from tools.pcremote import WinRemote, _win, pull_tree, push_tree  # noqa: E402
+from tools.series import _wname, slugify  # noqa: E402
 
 SCHEME = "manga://"
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
@@ -60,8 +73,12 @@ PAGE_SECS = 30.0
 SENTENCE_ENDERS = "。！？…‼⁉"
 MIN_PAGES = 3  # a folder with fewer images is a cover/extras dir, not a volume
 DEFAULTS = {
-    "remote_root": "H:/manga",
-    "remote_ocr_dir": "I:/transcribe/fullpipe_manga",
+    # the desktop (GPU box) — boxing only; the library itself is the mount
+    "ocr_ssh_host": "transcribe-svc@192.168.0.230",
+    "ocr_ssh_identity": "~/.ssh/transcribe_remote_ed25519",
+    "ocr_ssh_timeout": 3600,
+    "remote_src_dir": "I:/transcribe/fullpipe_manga_src",  # pages parked for the OCR
+    "remote_ocr_dir": "I:/transcribe/fullpipe_manga",      # per-volume JSON cache
     "remote_python": "I:/transcribe/mokuro/.venv/Scripts/python.exe",
     "remote_script": "I:/transcribe/ocr_volume.py",
 }
@@ -103,9 +120,17 @@ def now_iso():
 # --- config / manifests ----------------------------------------------------------
 
 def manga_cfg(cfg):
-    """ssh settings come from the series block (same desktop); the manga
-    block adds the library root + the OCR venv/script/cache on the PC."""
-    return {**series_cfg(cfg), **DEFAULTS, **(cfg.get("manga") or {})}
+    """The manga block: the desktop's ssh + OCR venv/script/cache. The
+    library root comes from the library block (tools.library) unless the
+    manga block's `remote_root` overrides it."""
+    return {"remote_root": lib.library_cfg(cfg)["manga_root"],
+            **DEFAULTS, **(cfg.get("manga") or {})}
+
+
+def Remote(mcfg):
+    """The desktop over ssh — for the OCR only (tools.pcremote)."""
+    return WinRemote(mcfg["ocr_ssh_host"], mcfg["ocr_ssh_identity"],
+                     mcfg.get("ocr_ssh_timeout", 3600))
 
 
 def manga_root(cfg):
@@ -152,6 +177,10 @@ def remote_ocr_dir(mcfg, slug, vol_no):
     return f"{mcfg['remote_ocr_dir']}/{slug}/v{int(vol_no):02d}"
 
 
+def remote_src_dir(mcfg, slug, vol_no):
+    return f"{mcfg['remote_src_dir']}/{slug}/v{int(vol_no):02d}"
+
+
 # --- folder names ----------------------------------------------------------------
 
 _VOL_PATTERNS = (
@@ -178,33 +207,24 @@ def natural_key(name):
     return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", str(name))]
 
 
-def _wsuffix(p):
-    name = _wname(p)
-    return ("." + name.rsplit(".", 1)[1].lower()) if "." in name else ""
-
-
-def _wparent(p):
-    return str(p)[: len(str(p)) - len(_wname(p))].rstrip("\\/")
-
-
 def group_volumes(paths, remote_dir):
-    """PC file listing under a series folder → volumes: every folder holding
+    """File listing under a series folder → volumes: every folder holding
     at least MIN_PAGES page images, numbered from its name (relative to the
     series folder). A series folder that holds the pages itself is one
-    volume. Returns (volumes sorted by vol_no, folders that didn't parse)."""
+    volume. Either separator is fine (old manifests, the mount). Returns
+    (volumes sorted by vol_no, folders that didn't parse)."""
     by_dir = {}
     for p in paths:
-        if _wsuffix(p) in IMAGE_EXTS and not _wname(p).startswith("."):
-            by_dir.setdefault(_wparent(p), []).append(_wname(p))
-    root = str(remote_dir).replace("/", "\\").rstrip("\\")
+        if lib.suffix_of(p) in IMAGE_EXTS and not lib.name_of(p).startswith("."):
+            by_dir.setdefault(lib.parent_of(p), []).append(lib.name_of(p))
+    root = lib.norm(remote_dir).rstrip("/")
     volumes, unparsed = [], []
     for d, files in by_dir.items():
         if len(files) < MIN_PAGES:
             continue
-        rel = d.replace("/", "\\")
-        rel = rel[len(root):].strip("\\") if rel.lower().startswith(root.lower()) else _wname(d)
+        rel = d[len(root):].strip("/") if d.lower().startswith(root.lower()) else lib.name_of(d)
         if not rel:  # the series folder itself is the volume
-            vol_no, label = 1, _wname(root)
+            vol_no, label = 1, lib.name_of(root)
         else:
             vol_no, label = parse_volume(rel), rel
         if vol_no is None:
@@ -223,39 +243,47 @@ def group_volumes(paths, remote_dir):
     return out, unparsed
 
 
+def resolve_series_dir(cfg, remote_dir):
+    """A series folder as it is on the Mac: absolute, `H:/manga/...`, or
+    just the series name under the manga root."""
+    s = lib.norm(remote_dir).rstrip("/")
+    if s.startswith("/") or s.startswith("~") or re.match(r"^[A-Za-z]:/", s):
+        return lib.resolve(cfg, s)
+    return f"{manga_cfg(cfg)['remote_root'].rstrip('/')}/{s}"
+
+
 def scan(cfg, remote_dir, remote=None, log=print):
-    remote = remote or Remote(manga_cfg(cfg))
-    paths = remote.listing(remote_dir)
+    remote_dir = resolve_series_dir(cfg, remote_dir)
+    lib.ensure_mounted(cfg, remote_dir, log=log)
+    paths = lib.listing(remote_dir)
     volumes, unparsed = group_volumes(paths, remote_dir)
     log(f"{len(paths)} files under {remote_dir}: {len(volumes)} volume(s)")
     return volumes, unparsed
 
 
 def library(cfg, remote=None):
-    """Every series folder under the PC's manga root with its volumes —
-    what the phone's library picker and `/manga library` show. One
-    recursive listing (a few seconds for ~50k files)."""
-    mcfg = manga_cfg(cfg)
-    remote = remote or Remote(mcfg)
-    root = str(mcfg["remote_root"]).replace("/", "\\").rstrip("\\")
-    paths = remote.listing(root)
+    """Every series folder under the manga root on the media server with
+    its volumes — what the phone's library picker and `/manga library`
+    show. One walk of the mount (~30k files in a few seconds)."""
+    root = lib.norm(manga_cfg(cfg)["remote_root"]).rstrip("/")
+    lib.ensure_mounted(cfg, root, log=lambda m: None)
+    paths = lib.listing(root)
     by_series = {}
     for p in paths:
-        rel = str(p).replace("/", "\\")
-        if not rel.lower().startswith(root.lower() + "\\"):
+        rel = lib.norm(p)
+        if not rel.lower().startswith(root.lower() + "/"):
             continue
-        head = rel[len(root) + 1:].split("\\", 1)[0]
+        head = rel[len(root) + 1:].split("/", 1)[0]
         by_series.setdefault(head, []).append(p)
     out = []
     for name, files in sorted(by_series.items(), key=lambda kv: natural_key(kv[0])):
-        sdir = f"{root}\\{name}"
-        if _wsuffix(name) in IMAGE_EXTS:  # a loose image at the root, not a series
+        sdir = f"{root}/{name}"
+        if lib.suffix_of(name) in IMAGE_EXTS:  # a loose image at the root, not a series
             continue
         volumes, _ = group_volumes(files, sdir)
         if not volumes:
             continue
-        out.append({"name": name, "slug": slugify(name),
-                    "remote_dir": sdir.replace("\\", "/"),
+        out.append({"name": name, "slug": slugify(name), "remote_dir": sdir,
                     "volumes": [{k: v[k] for k in ("vol_no", "label", "pages")}
                                 for v in volumes]})
     return out
@@ -494,12 +522,13 @@ def build_volume(cfg, episode_id, meta, ocr_dir, page_files, log=print):
     return record
 
 
-# --- the PC: OCR + pull ---------------------------------------------------------------
+# --- pages off the mount, boxes from the desktop GPU --------------------------------
 
 def remote_ocr(remote, mcfg, src_dir, out_dir, log=print, timeout=None):
-    """Run gpu_service/ocr_volume.py on the desktop, streaming its progress
-    lines to `log` (the worker narrates them on the queue row). Idempotent:
-    the script skips pages already done and a finished volume is a no-op."""
+    """Run gpu_service/ocr_volume.py on the desktop over the pages parked
+    at src_dir, streaming its progress lines to `log` (the worker narrates
+    them on the queue row). Idempotent: the script skips pages already done
+    and a finished volume is a no-op."""
     # cmd.exe `set` keeps a trailing space in the value — the quoted form doesn't
     hf_home = _win(mcfg.get("remote_hf_home") or "I:/transcribe/hf_cache")
     cmd = (f'set "PYTHONIOENCODING=utf-8" & set "HF_HOME={hf_home}" & '
@@ -520,32 +549,23 @@ def remote_ocr(remote, mcfg, src_dir, out_dir, log=print, timeout=None):
         raise RuntimeError("remote OCR failed:\n" + "\n".join(tail))
 
 
-def pull_tree(remote, remote_dir, local_dir, log=print):
-    """Copy a PC folder to the Mac in one ssh stream (Windows' bsdtar →
-    local tar) — one connection for 200 page files instead of 200 scp
-    handshakes. Falls back to scp -r when tar isn't available remotely."""
-    local_dir = Path(local_dir)
-    local_dir.mkdir(parents=True, exist_ok=True)
-    log(f"pulling {remote_dir}")
-    src = subprocess.Popen([*remote._base("ssh"), remote.host,
-                            f'tar -cf - -C "{_win(remote_dir)}" .'],
-                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    dst = subprocess.Popen(["tar", "-xf", "-", "-C", str(local_dir)],
-                           stdin=src.stdout, stderr=subprocess.PIPE)
-    src.stdout.close()
-    _, dst_err = dst.communicate(timeout=remote.timeout)
-    src_err = src.communicate(timeout=60)[1]
-    if src.returncode == 0 and dst.returncode == 0:
-        return local_dir
-    err = (src_err + dst_err).decode("utf-8", "replace")
-    log(f"tar stream failed ({src.returncode}/{dst.returncode}) — falling back to scp")
-    r = subprocess.run([*remote._base("scp"), "-q", "-r",
-                        f"{remote.host}:{remote_dir}/.", str(local_dir)],
-                       capture_output=True, timeout=remote.timeout)
-    if r.returncode != 0:
-        raise RuntimeError(f"pull failed: {err.strip()[-300:]} / "
-                           f"{r.stderr.decode('utf-8', 'replace').strip()[-300:]}")
-    return local_dir
+def copy_pages(cfg, src_dir, pages_dir, log=print):
+    """The volume's page images (top level of its folder, natural order)
+    off the library share into the episode dir. Skips pages already there;
+    the share is only read."""
+    src_dir = lib.resolve(cfg, src_dir)
+    lib.ensure_mounted(cfg, src_dir, log=log)
+    if not os.path.isdir(src_dir):
+        raise RuntimeError(f"volume folder missing on the library share: {src_dir}")
+    pages_dir = Path(pages_dir)
+    pages_dir.mkdir(parents=True, exist_ok=True)
+    names = page_files_in(src_dir)
+    todo = [n for n in names if not (pages_dir / n).exists()]
+    if todo:
+        log(f"copying {len(todo)}/{len(names)} pages from {lib.name_of(src_dir)}")
+    for n in todo:
+        lib.copy_file(os.path.join(src_dir, n), pages_dir / n)
+    return names
 
 
 def page_files_in(local_dir):
@@ -558,9 +578,10 @@ def page_files_in(local_dir):
 
 
 def acquire_manga(source, cfg, log=print, remote=None):
-    """Stage 1's acquire for a manga volume: OCR on the PC (skipped when its
-    cache says done) → pull pages + OCR json → build the sentence track.
-    Returns the transcript record (same contract as tools.acquire.acquire)."""
+    """Stage 1's acquire for a manga volume: pages off the mount → boxes
+    from the desktop GPU (pages parked there over ssh; skipped when the
+    OCR cache says done) → build the sentence track. Returns the
+    transcript record (same contract as tools.acquire.acquire)."""
     parsed = parse_manga_source(source)
     if not parsed:
         raise RuntimeError(f"not a manga source: {source}")
@@ -569,20 +590,24 @@ def acquire_manga(source, cfg, log=print, remote=None):
     vol = find_volume(man, vol_no)
     episode_id = episode_id_for(slug, vol_no)
     mcfg = manga_cfg(cfg)
-    remote = remote or Remote(mcfg)
     ep_dir = episode_dir(cfg, episode_id, create=True)
     pages_dir, ocr_dir = ep_dir / "pages", ep_dir / "ocr"
 
-    out_dir = remote_ocr_dir(mcfg, slug, vol_no)
+    if len(page_files_in(pages_dir)) < (vol.get("pages") or 1):
+        copy_pages(cfg, vol["remote_dir"], pages_dir, log=log)
     if not (ocr_dir / "_done.json").exists():
-        log(f"OCR {vol['label']} on the PC ({vol.get('pages', '?')} pages)")
-        remote_ocr(remote, mcfg, vol["remote_dir"], out_dir, log=log)
-        pull_tree(remote, out_dir, ocr_dir, log=log)
+        gpu = remote or Remote(mcfg)
+        out_dir = remote_ocr_dir(mcfg, slug, vol_no)
+        src_dir = remote_src_dir(mcfg, slug, vol_no)
+        if not gpu.exists(f"{out_dir}/_done.json"):
+            push_tree(gpu, pages_dir, src_dir, log=log)
+        log(f"OCR {vol['label']} on the PC ({len(page_files_in(pages_dir))} pages)")
+        remote_ocr(gpu, mcfg, src_dir, out_dir, log=log)
+        pull_tree(gpu, out_dir, ocr_dir, log=log)
+        gpu.rmtree(src_dir)  # parked for the boxing only; the mount is the source
     if not (ocr_dir / "_done.json").exists():
         raise RuntimeError("OCR finished without a _done.json — check the PC log")
     done = read_json(ocr_dir / "_done.json")
-    if len(page_files_in(pages_dir)) < len(done["pages"]):
-        pull_tree(remote, vol["remote_dir"], pages_dir, log=log)
     # ._NNN.jpg AppleDouble twins (scans copied from a Mac) OCR as junk on
     # the PC and never extract here — they are not pages
     files = [f for f in done["pages"]
@@ -723,13 +748,14 @@ def parse_volume_spec(spec):
 
 def ingest(cfg, remote_dir, slug=None, title=None, volumes=None, dry_run=False,
            log=print, remote=None):
-    """Scan the PC folder → manifest → enqueue one job per volume. The heavy
+    """Scan the series folder → manifest → enqueue one job per volume. The heavy
     work (OCR, pull, coverage) is Stage 1 — the server's worker (or a local
     drain) runs it, so the phone can queue volumes from the library picker
     the same way. Idempotent: re-runs add volumes, keep existing rows."""
+    remote_dir = resolve_series_dir(cfg, remote_dir)
     title = title or _wname(str(remote_dir).rstrip("/\\"))
     slug = slug or slugify(title)
-    found, unparsed = scan(cfg, remote_dir, remote=remote, log=log)
+    found, unparsed = scan(cfg, remote_dir, log=log)
     if not found:
         raise RuntimeError(f"no volumes with page images under {remote_dir}"
                            + (f" (unparsed: {unparsed[:5]})" if unparsed else ""))
@@ -791,8 +817,8 @@ def remove(cfg, slug, remote_too=False, log=print):
     """Full delete on the Mac: queue rows, episode dirs (pages, OCR, derived
     data), the ledger footprint of unread volumes (read evidence is kept, as
     the server's DELETE does), the manifest — and with remote_too the PC's
-    OCR cache. The scans under the PC's manga root are never touched."""
-    import shutil
+    OCR cache (and any parked pages). The scans on the library share are
+    never touched."""
 
     from ledger import ledgerctl as lc
     from server import jobqueue as q
@@ -809,8 +835,9 @@ def remove(cfg, slug, remote_too=False, log=print):
         removed.append(v["id"])
     if remote_too:
         mcfg = manga_cfg(cfg)
-        base = _win(mcfg["remote_ocr_dir"])
-        Remote(mcfg).run(f'if exist "{base}\\{slug}" rmdir /s /q "{base}\\{slug}"')
+        gpu = Remote(mcfg)
+        gpu.rmtree(f"{mcfg['remote_ocr_dir']}/{slug}")
+        gpu.rmtree(f"{mcfg['remote_src_dir']}/{slug}")
     shutil.rmtree(manga_dir(cfg, slug), ignore_errors=True)
     log(f"removed manga {slug}: {len(removed)} volume(s)")
     return {"removed": removed, "remote_ocr_removed": remote_too}
@@ -824,8 +851,8 @@ def main(argv=None):
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--config")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("library", help="series + volumes under the PC's manga root")
-    p = sub.add_parser("scan", help="volumes under one PC folder")
+    sub.add_parser("library", help="series + volumes under the manga root on the media server")
+    p = sub.add_parser("scan", help="volumes under one series folder")
     p.add_argument("remote_dir")
     p = sub.add_parser("ingest", help="manifest + enqueue volumes (Stage 1 = the worker)")
     p.add_argument("remote_dir")

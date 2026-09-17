@@ -13,3 +13,7 @@
   cache is never worth user data.
 - The same bar applies to anything under `~/immersion/` (episodes, videos,
   ledger): treat it as irreplaceable user data, not build output.
+- The media server's `library` share (`/Volumes/library`, the Raspberry Pi at
+  192.168.0.147) is the user's whole Japanese library — **read-only, never
+  write, move or delete anything there.** The `t7` share (`/Volumes/t7`) is
+  scratch: our stage copies under `fullpipe_stage/` are ours to manage.

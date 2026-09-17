@@ -1,6 +1,7 @@
-"""tools.series: identity, episode-number parsing, PC-folder pairing, the
-queue/ledger plumbing, and the server's series-aware routes. The PC itself is
-never contacted — Remote is stubbed."""
+"""tools.series: identity, episode-number parsing, folder pairing, the
+Mac-side prepare (ffmpeg stubbed), the stage tier on the media server (a
+temp dir stands in for the t7 share), the queue/ledger plumbing, and the
+server's series-aware routes."""
 
 import sys
 import tempfile
@@ -16,6 +17,7 @@ from engine import srt_parser as SP
 from ledger import ledgerctl as lc
 from server import jobqueue as q
 from server.app import create_app
+from tools import library as L
 from tools import series as S
 from tools._staging import episode_dir
 
@@ -106,14 +108,44 @@ class GroupFilesTest(unittest.TestCase):
 
     def test_transcode_cmd_scales_only_when_taller(self):
         v = {"height": 1080}
-        cmd = S.transcode_cmd(r"E:\a b\x.mkv", "I:/stage/x.mp4", v, 1, cap=480)
-        self.assertIn("scale=-2:480", cmd)
-        self.assertIn("h264_nvenc", cmd)
-        self.assertIn('"E:\\a b\\x.mkv"', cmd)
-        self.assertIn("-map 0:a:1", cmd)
+        cmd = S.transcode_cmd("/Volumes/library/Japanese/a b/x.mkv", "/w/x.mp4", v, 1, cap=480)
+        self.assertIn("scale=-2:480,format=yuv420p", cmd)
+        self.assertIn("h264_videotoolbox", cmd)
+        self.assertIn("/Volumes/library/Japanese/a b/x.mkv", cmd)  # argv, no shell quoting
+        self.assertEqual(cmd[cmd.index("-map", cmd.index("-map") + 1) + 1], "0:a:1")
         cmd = S.transcode_cmd("a.mkv", "b.mp4", {"height": 480}, 0, cap=480, encoder="x264")
-        self.assertNotIn("scale=", cmd)
+        self.assertNotIn("scale=-2:480,format=yuv420p", cmd)
         self.assertIn("libx264", cmd)
+
+
+class LibraryPathsTest(unittest.TestCase):
+    """tools.library: desktop-era paths map onto the mount; nothing outside
+    the configured mounts is ever mounted."""
+
+    CFG = {"library": {"mounts": {}, "series_root": "/Volumes/library/Japanese",
+                       "manga_root": "/Volumes/library/Japanese/manga",
+                       "legacy_roots": {"E:/Japanese": "/Volumes/library/Japanese",
+                                        "H:/manga": "/Volumes/library/Japanese/manga"}}}
+
+    def test_resolve(self):
+        self.assertEqual(L.resolve(self.CFG, r"E:\Japanese\drama\hotspot\ep1.mkv"),
+                         "/Volumes/library/Japanese/drama/hotspot/ep1.mkv")
+        self.assertEqual(L.resolve(self.CFG, "H:/manga/Dandadan/VOL 1 (JA)"),
+                         "/Volumes/library/Japanese/manga/Dandadan/VOL 1 (JA)")
+        self.assertEqual(L.resolve(self.CFG, "drama/hotspot"),
+                         "/Volumes/library/Japanese/drama/hotspot")
+        self.assertEqual(L.resolve(self.CFG, "/Volumes/library/Japanese/anime/X/"),
+                         "/Volumes/library/Japanese/anime/X")
+        with self.assertRaises(FileNotFoundError):
+            L.resolve(self.CFG, "Z:/nowhere/x.mkv")
+
+    def test_mount_of_and_ensure(self):
+        cfg = {"library": {"mounts": {"library": "/Volumes/library", "t7": "/Volumes/t7"}}}
+        self.assertEqual(L.mount_of(cfg, "/Volumes/t7/fullpipe_stage/x.mp4"), ("t7", "/Volumes/t7"))
+        self.assertIsNone(L.mount_of(cfg, "/tmp/elsewhere"))
+        with unittest.mock.patch.object(L, "mount_share") as ms:
+            L.ensure_mounted(cfg, "/tmp/elsewhere")  # not ours — never mounts
+            ms.assert_not_called()
 
 
 class MarkupStripTest(unittest.TestCase):
@@ -205,28 +237,84 @@ class QueueAndLedgerTest(unittest.TestCase):
         res = S.evict(self.cfg, "hotspot", all_states=True, log=lambda m: None)
         self.assertEqual(res["evicted"], ["EP01", "EP02"])
 
-    def test_materialize_pulls_from_stage_copy(self):
-        man = {"slug": "hotspot", "title": "Hot Spot", "remote_dir": "E:/x", "cap": 480,
-               "episodes": [{"ep_no": 1, "label": "EP01", "id": "ser_hotspot_e01",
-                             "remote_video": r"E:\x\ep1.mkv", "remote_subs": None}]}
+    def _library(self):
+        """A stand-in for the mounted shares: an original + sidecar under
+        <tmp>/library, an empty stage dir under <tmp>/t7."""
+        lib_dir, stage = self.work / "library" / "drama" / "hotspot", self.work / "t7" / "stage"
+        lib_dir.mkdir(parents=True)
+        (lib_dir / "Hot.Spot.EP01.1080p.mkv").write_bytes(b"ORIGINAL")
+        (lib_dir / "Hot.Spot.EP01.Jpn.srt").write_bytes(b"1\n")
+        self.cfg["library"] = {"mounts": {}, "series_root": str(self.work / "library"),
+                               "stage_dir": str(stage),
+                               "legacy_roots": {"E:/Japanese": str(self.work / "library")}}
+        man = {"slug": "hotspot", "title": "Hot Spot", "remote_dir": "E:/Japanese/drama/hotspot",
+               "cap": 480, "episodes": [{
+                   "ep_no": 1, "label": "EP01", "id": "ser_hotspot_e01",
+                   "remote_video": r"E:\Japanese\drama\hotspot\Hot.Spot.EP01.1080p.mkv",
+                   "remote_subs": r"E:\Japanese\drama\hotspot\Hot.Spot.EP01.Jpn.srt"}]}
         S.save_manifest(self.cfg, man)
-        remote = unittest.mock.Mock()
-        remote.exists.return_value = True
-        remote.size.return_value = 123
+        return lib_dir, stage
 
-        def scp(remote_path, local_path):
-            Path(local_path).parent.mkdir(parents=True, exist_ok=True)
-            Path(local_path).write_bytes(b"v" if remote_path.endswith(".mp4") else b"1\n")
-            return Path(local_path)
-        remote.scp_from.side_effect = scp
-        dest = S.materialize(self.cfg, "hotspot", 1, log=lambda m: None, remote=remote)
-        self.assertTrue(dest.exists())
-        self.assertTrue(S.local_subs_path(self.cfg, "hotspot", 1).exists())
-        self.assertEqual(remote.scp_from.call_count, 2)
-        # second call: nothing to pull, nothing to transcode
-        S.materialize(self.cfg, "hotspot", 1, log=lambda m: None, remote=remote)
-        self.assertEqual(remote.scp_from.call_count, 2)
-        self.assertEqual(S.load_manifest(self.cfg, "hotspot")["episodes"][0]["size"], 1)
+    @staticmethod
+    def _fake_ffmpeg(argv):
+        Path(argv[-1]).write_bytes(b"v")  # the output is always last
+
+    def test_materialize_transcodes_then_parks_a_stage_copy(self):
+        lib_dir, stage = self._library()
+        probe = {"streams": [{"index": 0, "codec_type": "video", "codec_name": "h264", "height": 1080},
+                             {"index": 1, "codec_type": "audio", "tags": {"language": "jpn"}}],
+                 "format": {"duration": "2755.07"}}
+        with unittest.mock.patch.object(S, "probe", return_value=probe), \
+                unittest.mock.patch.object(S, "_ffmpeg", side_effect=self._fake_ffmpeg) as ff:
+            dest = S.materialize(self.cfg, "hotspot", 1, log=lambda m: None)
+        self.assertEqual(dest.read_bytes(), b"v")
+        argv = ff.call_args_list[0].args[0]
+        self.assertIn("h264_videotoolbox", argv)
+        self.assertEqual(argv[argv.index("-i") + 1], str(lib_dir / "Hot.Spot.EP01.1080p.mkv"))
+        self.assertEqual(S.local_subs_path(self.cfg, "hotspot", 1).read_bytes(), b"1\n")
+        # stage tier: the copy + srt are parked on the (fake) t7 share
+        self.assertEqual((stage / "hotspot" / "hotspot-e01.mp4").read_bytes(), b"v")
+        self.assertTrue((stage / "hotspot" / "hotspot-e01.ja.srt").exists())
+        ep = S.load_manifest(self.cfg, "hotspot")["episodes"][0]
+        self.assertEqual((ep["subs"], ep["duration"], ep["size"]), ("sidecar", 2755.07, 1))
+        # original untouched
+        self.assertEqual((lib_dir / "Hot.Spot.EP01.1080p.mkv").read_bytes(), b"ORIGINAL")
+
+        # evict, then fetch: the stage copy is copied back, no transcode
+        S.evict(self.cfg, "hotspot", all_states=True, log=lambda m: None)
+        self.assertFalse(dest.exists())
+        with unittest.mock.patch.object(S, "_ffmpeg") as ff, \
+                unittest.mock.patch.object(S, "probe") as pr:
+            S.materialize(self.cfg, "hotspot", 1, log=lambda m: None)
+            ff.assert_not_called()
+            pr.assert_not_called()
+        self.assertEqual(dest.read_bytes(), b"v")
+        # nothing to do the second time either
+        with unittest.mock.patch.object(S, "_ffmpeg") as ff:
+            S.materialize(self.cfg, "hotspot", 1, log=lambda m: None)
+            ff.assert_not_called()
+
+    def test_materialize_extracts_embedded_subs_and_survives_no_stage(self):
+        lib_dir, stage = self._library()
+        self.cfg["library"]["stage_dir"] = ""  # no stage tier configured
+        man = S.load_manifest(self.cfg, "hotspot")
+        man["episodes"][0]["remote_subs"] = None
+        S.save_manifest(self.cfg, man)
+        probe = {"streams": [{"index": 0, "codec_type": "video", "codec_name": "hevc", "height": 720},
+                             {"index": 1, "codec_type": "audio", "tags": {"language": "eng"}},
+                             {"index": 2, "codec_type": "audio", "tags": {"language": "jpn"}},
+                             {"index": 3, "codec_type": "subtitle", "codec_name": "ass",
+                              "tags": {"language": "jpn"}}],
+                 "format": {"duration": "10"}}
+        with unittest.mock.patch.object(S, "probe", return_value=probe), \
+                unittest.mock.patch.object(S, "_ffmpeg", side_effect=self._fake_ffmpeg) as ff:
+            S.materialize(self.cfg, "hotspot", 1, log=lambda m: None)
+        calls = [c.args[0] for c in ff.call_args_list]
+        self.assertEqual(len(calls), 2)  # transcode + subtitle extraction
+        self.assertIn("0:a:1", calls[0])  # jpn is the second audio stream
+        self.assertEqual(calls[1][calls[1].index("-map") + 1], "0:3")
+        self.assertEqual(S.load_manifest(self.cfg, "hotspot")["episodes"][0]["subs"], "embedded")
+        self.assertFalse((self.work / "t7").exists())
 
 
 class ServerRoutesTest(unittest.TestCase):

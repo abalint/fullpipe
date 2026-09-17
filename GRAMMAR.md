@@ -495,8 +495,13 @@ popup** — exactly the machinery tracked phrases already ride.
   grammar layer above the word layer (pattern, N-tier, how it surfaces on
   this line, the curate note, the taxonomy gloss, its own mark — `"g:"` +
   pattern in the tap store, kind `grammar` on the wire). The line's other
-  grammar units are foot notes with their own marks; the "?" badge is now
-  only for curate-only tags with no span.
+  *placed* grammar units are **not** listed under an unrelated word
+  (2026-09-16: with bare particles in the taxonomy that foot was 25 rows
+  of 〜が／〜を／〜て on a long line) — every matcher unit is token-anchored,
+  so each is reached by tapping it. Only grammar with **no span** keeps a
+  foot row with its own mark: a curate-only note the matcher did not
+  place, or a proposed pattern (the "?" badge) — there is no token to tap
+  for those, so the foot is their only home.
 - **Curate pass.** `/immerse` no longer tags patterns for exposure — Stage
   1 has that. It still emits `grammar` entries, but as *notes*: a plain-
   English `form_note` on the usages worth explaining (shown in the layer),

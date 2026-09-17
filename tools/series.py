@@ -1,24 +1,31 @@
 #!/usr/bin/env python3
-"""series — ingest already-downloaded box sets from the PC (MOBILE.md — Series).
+"""series — ingest already-downloaded box sets from the media server (MOBILE.md — Series).
 
-The originals live on the Windows desktop (E:/Japanese/...) and are never
-written to. For each episode the PC (NVENC) transcodes a 480p H.264 copy into
-its stage dir, the Mac pulls that copy over the LAN into
-<work_dir>/episodes/<id>/video.mp4 together with the Japanese subtitle
-sidecar, and a queue job is enqueued with the series' playlist identity
-(series slug + episode order) so the normal Stage 1 → curate → watch flow
-runs unchanged. Derived data (transcript, coverage, curation, cards, ledger
-evidence) is never tied to the video's presence: the phone drops its local
-copy freely, the Mac can `evict` a watched episode's video to reclaim disk,
-and either is re-materialized from the PC's stage copy (or re-transcoded from
-the original) on demand.
+The originals live on the Raspberry Pi media server's `library` share,
+mounted on the Mac (`/Volumes/library/Japanese/...` — tools/library.py),
+and are never written to. For each episode the Mac transcodes a 480p H.264
+copy (VideoToolbox; libx264 fallback) straight off the mount into
+<work_dir>/episodes/<id>/video.mp4, puts the Japanese subtitle sidecar
+beside the manifest, parks a copy of both in the stage dir on the server's
+writable `t7` share (so a later fetch is a copy, not a transcode), and a
+queue job is enqueued with the series' playlist identity (series slug +
+episode order) so the normal Stage 1 → curate → watch flow runs unchanged.
+Derived data (transcript, coverage, curation, cards, ledger evidence) is
+never tied to the video's presence: the phone drops its local copy freely,
+the Mac can `evict` a watched episode's video to reclaim disk, and either is
+re-materialized from the stage copy (or re-transcoded from the original)
+on demand.
 
 Identity: source `series://<slug>/<ep_no>` → episode id `ser_<slug>_e<nn>`,
 stable across evict/fetch cycles (unlike local_<hash>, which bakes in mtime).
 
+Folders are given as they are on the Mac (`/Volumes/library/Japanese/drama/
+hotspot`), relative to the series root (`drama/hotspot`), or in the old
+desktop form (`E:/Japanese/drama/hotspot`) — all three resolve to the mount.
+
 CLI:
-    python -m tools.series scan   <pc-dir>                     # what would be ingested
-    python -m tools.series ingest <pc-dir> [--slug S] [--title T] [--episodes 1,3-5]
+    python -m tools.series scan   <folder>                     # what would be ingested
+    python -m tools.series ingest <folder> [--slug S] [--title T] [--episodes 1,3-5]
                                            [--dry-run] [--no-drain]
     python -m tools.series list
     python -m tools.series status <slug>
@@ -31,6 +38,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -38,18 +46,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from tools import library as lib  # noqa: E402
 from tools._staging import downloads_dir, episode_dir, read_json, write_json  # noqa: E402
 
 SCHEME = "series://"
 VIDEO_EXTS = {".mkv", ".mp4", ".m4v", ".avi", ".mov", ".webm", ".ts", ".wmv", ".flv"}
 SUB_EXTS = {".srt", ".ass", ".ssa", ".vtt"}
 JA_TOKENS = {"ja", "jpn", "jp", "japanese", "日本語", "jap"}
-DEFAULTS = {
-    "ssh_host": "transcribe-svc@192.168.0.230",
-    "ssh_identity": "~/.ssh/transcribe_remote_ed25519",
-    "remote_stage_dir": "I:/transcribe/fullpipe_stage",
-    "ssh_timeout": 3600,
-}
+DEFAULT_CAP = 480  # phone-sized copies
 
 
 # --- identity ------------------------------------------------------------------
@@ -87,7 +91,8 @@ def now_iso():
 # --- config / manifests ---------------------------------------------------------
 
 def series_cfg(cfg):
-    return {**DEFAULTS, **(cfg.get("series") or {})}
+    """The library block (tools.library): mounts, roots, stage dir."""
+    return lib.library_cfg(cfg)
 
 
 def series_root(cfg):
@@ -136,7 +141,12 @@ def local_subs_path(cfg, slug, ep_no):
 
 
 def remote_stage_paths(scfg, slug, ep_no):
-    base = f"{scfg['remote_stage_dir'].rstrip('/')}/{slug}/{slug}-e{int(ep_no):02d}"
+    """(mp4, srt) of the episode's stage copy on the server's t7 share —
+    (None, None) when no stage dir is configured."""
+    sd = (scfg.get("stage_dir") or "").rstrip("/")
+    if not sd:
+        return None, None
+    base = f"{sd}/{slug}/{slug}-e{int(ep_no):02d}"
     return base + ".mp4", base + ".ja.srt"
 
 
@@ -181,79 +191,11 @@ def ep_label(season, ep):
     return f"S{season}E{ep:02d}" if season else f"EP{ep:02d}"
 
 
-# --- the PC over ssh -------------------------------------------------------------
-
-def _win(p):
-    return str(p).replace("/", "\\")
-
-
-class Remote:
-    """cmd.exe on the desktop over the LAN ssh host (Windows OpenSSH)."""
-
-    def __init__(self, scfg):
-        self.host = scfg["ssh_host"]
-        self.identity = os.path.expanduser(scfg["ssh_identity"])
-        self.timeout = int(scfg.get("ssh_timeout", 3600))
-
-    def _base(self, prog):
-        return [prog, "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
-                "-o", "ServerAliveInterval=30",
-                "-i", self.identity, "-o", "IdentitiesOnly=yes"]
-
-    def run(self, cmd, timeout=None, check=True):
-        r = subprocess.run([*self._base("ssh"), self.host, cmd],
-                           capture_output=True, timeout=timeout or self.timeout)
-        out = r.stdout.decode("utf-8", errors="replace")
-        err = r.stderr.decode("utf-8", errors="replace")
-        # Windows OpenSSH's pq-kex banner lands on stderr for every call
-        err = "\n".join(l for l in err.splitlines() if not l.startswith("**")).strip()
-        if check and r.returncode != 0:
-            raise RuntimeError(f"remote command failed ({r.returncode}): {cmd[:120]}…\n"
-                               f"{(err or out).strip()[-600:]}")
-        return r.returncode, out, err
-
-    def listing(self, remote_dir):
-        """Every file under remote_dir, full Windows paths (UTF-8 via chcp)."""
-        _, out, _ = self.run(f'chcp 65001 >nul & dir /s /b /a-d "{_win(remote_dir)}"')
-        return [l.strip().lstrip("\ufeff") for l in out.splitlines() if l.strip()]
-
-    def exists(self, remote_path):
-        rc, _, _ = self.run(f'if exist "{_win(remote_path)}" (exit 0) else (exit 1)',
-                            check=False)
-        return rc == 0
-
-    def size(self, remote_path):
-        rc, out, _ = self.run(f'for %A in ("{_win(remote_path)}") do @echo %~zA',
-                              check=False)
-        try:
-            return int(out.strip().splitlines()[-1])
-        except (ValueError, IndexError):
-            return None
-
-    def probe(self, remote_path):
-        _, out, _ = self.run(
-            'ffprobe -v error -show_entries '
-            'stream=index,codec_type,codec_name,height,pix_fmt:stream_tags=language,title'
-            f':format=duration -of json "{_win(remote_path)}"')
-        return json.loads(out or "{}")
-
-    def scp_from(self, remote_path, local_path):
-        local_path = Path(local_path)
-        local_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = local_path.with_name(local_path.name + ".part")
-        r = subprocess.run([*self._base("scp"), "-q", f"{self.host}:{remote_path}", str(tmp)],
-                           capture_output=True, timeout=self.timeout)
-        if r.returncode != 0:
-            tmp.unlink(missing_ok=True)
-            raise RuntimeError(f"scp failed: {r.stderr.decode('utf-8', 'replace').strip()[-400:]}")
-        tmp.replace(local_path)
-        return local_path
-
-
-# --- scanning the PC folder ---------------------------------------------------------
+# --- scanning the library folder ---------------------------------------------------------
 
 def _wname(p):
-    """File name of a PC (backslash) path — pathlib on the Mac won't split it."""
+    """File name of a path with either separator (old manifests carry the
+    desktop's backslashes; the mount is POSIX)."""
     return re.split(r"[\\/]", str(p))[-1]
 
 
@@ -323,14 +265,27 @@ def group_files(paths):
 
 
 def scan(cfg, remote_dir, log=print):
-    remote = Remote(series_cfg(cfg))
-    paths = remote.listing(remote_dir)
+    remote_dir = lib.resolve(cfg, remote_dir)
+    lib.ensure_mounted(cfg, remote_dir, log=log)
+    paths = lib.listing(remote_dir)
     episodes, unparsed = group_files(paths)
     log(f"{len(paths)} files under {remote_dir}: {len(episodes)} episode(s)")
     return episodes, unparsed
 
 
-# --- transcode / subtitle prep on the PC ---------------------------------------------
+# --- transcode / subtitle prep on the Mac -------------------------------------------
+
+def probe(path):
+    """ffprobe (local — the original is read in place over the mount)."""
+    r = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries",
+         "stream=index,codec_type,codec_name,height,pix_fmt:stream_tags=language,title"
+         ":format=duration", "-of", "json", str(path)],
+        capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(f"ffprobe failed on {path}: {r.stderr.strip()[-300:]}")
+    return json.loads(r.stdout or "{}")
+
 
 def _pick_streams(probe):
     """(video stream, audio index-within-audio, text-sub stream index or None)
@@ -355,70 +310,122 @@ def _pick_streams(probe):
     return video, a_idx, sub
 
 
-def transcode_cmd(src, dst, video, a_idx, cap=480, encoder="nvenc"):
+def transcode_cmd(src, dst, video, a_idx, cap=DEFAULT_CAP, encoder="videotoolbox"):
+    """ffmpeg argv: 480p H.264 + stereo AAC, faststart. VideoToolbox is the
+    Mac's hardware encoder (far faster than realtime, the SMB read is the
+    bottleneck); libx264 is the software fallback."""
     height = int(video.get("height") or 0)
-    too_tall = bool(cap and height > cap)
     vf = ["format=yuv420p"]
-    if too_tall:
+    if cap and height > cap:
         vf.insert(0, f"scale=-2:{cap}")
-    if encoder == "nvenc":
-        venc = ["-c:v", "h264_nvenc", "-preset", "p5", "-rc", "vbr", "-cq", "27",
-                "-b:v", "0", "-maxrate", "2500k", "-bufsize", "5000k", "-profile:v", "high"]
+    if encoder == "videotoolbox":
+        venc = ["-c:v", "h264_videotoolbox", "-b:v", "1500k", "-maxrate", "2500k",
+                "-bufsize", "5000k", "-profile:v", "high", "-allow_sw", "1"]
     else:
         venc = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-profile:v", "high"]
-    parts = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", f'"{_win(src)}"',
-             "-map", "0:v:0", "-map", f"0:a:{a_idx}", "-sn", "-dn",
-             "-vf", '"' + ",".join(vf) + '"', *venc,
-             "-c:a", "aac", "-b:a", "128k", "-ac", "2",
-             "-movflags", "+faststart", f'"{_win(dst)}"']
-    return " ".join(parts)
+    return ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(src),
+            "-map", "0:v:0", "-map", f"0:a:{a_idx}", "-sn", "-dn",
+            "-vf", ",".join(vf), *venc,
+            "-c:a", "aac", "-b:a", "128k", "-ac", "2",
+            "-movflags", "+faststart", str(dst)]
 
 
-def remote_prepare_episode(remote, ep, stage_mp4, stage_srt, cap=480, log=print):
-    """On the PC: 480p copy of the original into the stage dir (skipped if it
-    is already there) and a Japanese .srt beside it — from the sidecar, or
-    extracted from the container's text subtitle track. Read-only on the
-    original. Returns {"video": bool, "subs": "sidecar"|"embedded"|None}."""
-    stage_dir = stage_mp4.rsplit("/", 1)[0]
-    remote.run(f'if not exist "{_win(stage_dir)}" mkdir "{_win(stage_dir)}"')
-    probe = remote.probe(ep["remote_video"])
-    video, a_idx, sub_idx = _pick_streams(probe)
+def _ffmpeg(argv):
+    r = subprocess.run(argv, capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(f"ffmpeg failed: {r.stderr.strip()[-400:]}")
+    return r
+
+
+def _stage_has(cfg, path):
+    """The stage copy exists (and the share is up). Never raises — the stage
+    tier is a shortcut, not a requirement."""
+    if not path:
+        return False
+    try:
+        lib.ensure_mounted(cfg, path, log=lambda m: None)
+    except RuntimeError:
+        return False
+    return os.path.isfile(path) and os.path.getsize(path) > 0
+
+
+def stage_copies(cfg, slug, ep_no, dest, subs, log=print, label=None):
+    """Park the Mac's 480p copy + srt in the stage dir on the server's t7
+    share, so a later fetch after an evict is a copy, not a transcode.
+    Best-effort: a missing share only costs the shortcut."""
+    stage_mp4, stage_srt = remote_stage_paths(series_cfg(cfg), slug, ep_no)
+    if not stage_mp4:
+        return False
+    try:
+        lib.ensure_mounted(cfg, stage_mp4, log=log)
+        if not _stage_has(cfg, stage_mp4):
+            log(f"  {label or ep_label_of(slug, ep_no)}: parking the 480p copy on the media server…")
+            lib.copy_file(dest, stage_mp4)
+        if subs.exists() and not os.path.isfile(stage_srt):
+            lib.copy_file(subs, stage_srt)
+        return True
+    except (OSError, RuntimeError) as ex:
+        log(f"  stage copy skipped ({ex})")
+        return False
+
+
+def ep_label_of(slug, ep_no):
+    return f"{slug} e{int(ep_no):02d}"
+
+
+def prepare_episode(cfg, man, ep, log=print):
+    """The Mac's 480p copy of an original on the library share (skipped if
+    video.mp4 is already there) and its Japanese .srt beside the manifest —
+    from the sidecar, or extracted from the container's text subtitle
+    track. The original is only ever read. Returns {"video", "subs",
+    "duration"}."""
+    slug, ep_no = man["slug"], ep["ep_no"]
+    src = lib.resolve(cfg, ep["remote_video"])
+    lib.ensure_mounted(cfg, src, log=log)
+    if not os.path.isfile(src):
+        raise RuntimeError(f"original missing on the library share: {src}")
+    dest = video_path(cfg, slug, ep_no)
+    subs = local_subs_path(cfg, slug, ep_no)
+    pr = probe(src)
+    video, a_idx, sub_idx = _pick_streams(pr)
     if video is None:
-        raise RuntimeError(f"no video stream in {ep['remote_video']}")
+        raise RuntimeError(f"no video stream in {src}")
     result = {"video": False, "subs": None,
-              "duration": float(probe.get("format", {}).get("duration") or 0) or None}
+              "duration": float(pr.get("format", {}).get("duration") or 0) or None}
+    cap = man.get("cap", DEFAULT_CAP)
 
-    if remote.exists(stage_mp4) and (remote.size(stage_mp4) or 0) > 0:
-        log(f"  {ep['label']}: stage copy already on the PC")
-        result["video"] = True
+    if dest.exists() and dest.stat().st_size > 0:
+        log(f"  {ep['label']}: 480p copy already on the Mac")
     else:
-        tmp = stage_mp4 + ".part.mp4"
-        log(f"  {ep['label']}: transcoding {video.get('height')}p → {cap}p on the PC (NVENC)…")
-        rc, out, err = remote.run(transcode_cmd(ep["remote_video"], tmp, video, a_idx, cap),
-                                  check=False)
-        if rc != 0:
-            log(f"  {ep['label']}: NVENC failed ({err[-200:]}); retrying with libx264…")
-            remote.run(transcode_cmd(ep["remote_video"], tmp, video, a_idx, cap, encoder="x264"))
-        remote.run(f'move /y "{_win(tmp)}" "{_win(stage_mp4)}" >nul')
-        result["video"] = True
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dest.with_name(dest.name + ".part.mp4")
+        log(f"  {ep['label']}: transcoding {video.get('height')}p → {cap}p on the Mac (VideoToolbox)…")
+        try:
+            _ffmpeg(transcode_cmd(src, tmp, video, a_idx, cap))
+        except RuntimeError as ex:
+            log(f"  {ep['label']}: VideoToolbox failed ({str(ex)[-200:]}); retrying with libx264…")
+            _ffmpeg(transcode_cmd(src, tmp, video, a_idx, cap, encoder="x264"))
+        tmp.replace(dest)
+    result["video"] = True
 
-    if remote.exists(stage_srt):
-        result["subs"] = "sidecar" if ep.get("remote_subs") else "embedded"
+    if subs.exists():
+        result["subs"] = ep.get("subs") or "sidecar"
     elif ep.get("remote_subs"):
-        src = ep["remote_subs"]
-        if _wsuffix(src) == ".srt":
-            remote.run(f'copy /y "{_win(src)}" "{_win(stage_srt)}" >nul')
+        sc = lib.resolve(cfg, ep["remote_subs"])
+        if lib.suffix_of(sc) == ".srt":
+            lib.copy_file(sc, subs)
         else:  # .ass/.vtt → srt
-            remote.run(f'ffmpeg -hide_banner -loglevel error -y -i "{_win(src)}" '
-                       f'-c:s srt "{_win(stage_srt)}"')
+            _ffmpeg(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", sc,
+                     "-c:s", "srt", str(subs)])
         result["subs"] = "sidecar"
     elif sub_idx is not None:
         log(f"  {ep['label']}: extracting embedded Japanese subtitle track {sub_idx}…")
-        remote.run(f'ffmpeg -hide_banner -loglevel error -y -i "{_win(ep["remote_video"])}" '
-                   f'-map 0:{sub_idx} -c:s srt "{_win(stage_srt)}"')
+        _ffmpeg(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", src,
+                 "-map", f"0:{sub_idx}", "-c:s", "srt", str(subs)])
         result["subs"] = "embedded"
     else:
         log(f"  {ep['label']}: no Japanese subtitles — Stage 1 will ASR it")
+    stage_copies(cfg, slug, ep_no, dest, subs, log=log, label=ep["label"])
     return result
 
 
@@ -430,28 +437,39 @@ def video_path(cfg, slug, ep_no):
 
 def materialize(cfg, slug, ep_no, log=print, remote=None):
     """Ensure <episode_dir>/video.mp4 (and the subtitle sidecar) exist
-    locally, pulling from the PC's stage copy — re-transcoding from the
-    original first if the stage copy is gone. Returns the video path."""
+    locally: copy the stage copy from the server's t7 share when there is
+    one, else transcode from the original on the library share. Records
+    subs/duration/fetched_at on the manifest row. Returns the video path.
+    (`remote` is accepted for old callers and ignored.)"""
     man = load_manifest(cfg, slug)
     ep = find_episode(man, ep_no)
-    scfg = series_cfg(cfg)
-    remote = remote or Remote(scfg)
-    stage_mp4, stage_srt = remote_stage_paths(scfg, slug, ep_no)
     dest = video_path(cfg, slug, ep_no)
     subs = local_subs_path(cfg, slug, ep_no)
-    if not (remote.exists(stage_mp4) and (remote.size(stage_mp4) or 0) > 0) or \
-            (not subs.exists() and not remote.exists(stage_srt)):
-        remote_prepare_episode(remote, ep, stage_mp4, stage_srt,
-                               cap=man.get("cap", 480), log=log)
-    if not dest.exists():
-        log(f"  {ep['label']}: pulling 480p copy from the PC…")
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        remote.scp_from(stage_mp4, dest)
+    stage_mp4, stage_srt = remote_stage_paths(series_cfg(cfg), slug, ep_no)
+    changed = False
+    if not (dest.exists() and dest.stat().st_size > 0):
+        if _stage_has(cfg, stage_mp4):
+            log(f"  {ep['label']}: copying the 480p stage copy from the media server…")
+            lib.copy_file(stage_mp4, dest)
+            if not subs.exists() and _stage_has(cfg, stage_srt):
+                lib.copy_file(stage_srt, subs)
+        else:
+            res = prepare_episode(cfg, man, ep, log=log)
+            ep["subs"] = res["subs"]
+            if res.get("duration"):
+                ep["duration"] = res["duration"]
+            ep["staged_at"] = now_iso()
         ep["fetched_at"] = now_iso()
         ep["size"] = dest.stat().st_size
+        changed = True
+    elif not subs.exists() and ep.get("subs"):
+        # video here, sidecar lost: the stage copy, else a fresh extraction
+        if _stage_has(cfg, stage_srt):
+            lib.copy_file(stage_srt, subs)
+        else:
+            prepare_episode(cfg, man, ep, log=log)
+    if changed:
         save_manifest(cfg, man)
-    if not subs.exists() and remote.exists(stage_srt):
-        remote.scp_from(stage_srt, subs)
     return dest
 
 
@@ -504,11 +522,10 @@ def parse_episode_spec(spec):
 
 def ingest(cfg, remote_dir, slug=None, title=None, episodes=None, dry_run=False,
            log=print):
-    """Scan → manifest → per episode: PC transcode + subs → pull → enqueue.
-    Idempotent: a re-run skips stage copies, local videos and queue rows that
-    already exist, so an interrupted ingest just resumes."""
-    scfg = series_cfg(cfg)
-    remote = Remote(scfg)
+    """Scan → manifest → per episode: transcode (or stage copy) + subs →
+    enqueue. Idempotent: a re-run skips local videos, stage copies and queue
+    rows that already exist, so an interrupted ingest just resumes."""
+    remote_dir = lib.resolve(cfg, remote_dir)
     title = title or _wname(remote_dir.rstrip("/\\"))
     slug = slug or slugify(title)
     found, unparsed = scan(cfg, remote_dir, log=log)
@@ -544,8 +561,8 @@ def ingest(cfg, remote_dir, slug=None, title=None, episodes=None, dry_run=False,
             "id": episode_id_for(slug, e["ep_no"]),
             "title": f"{man['title']} {e['label']}",
             "remote_video": e["remote_video"], "remote_subs": e["remote_subs"],
-            "remote_stage": remote_stage_paths(scfg, slug, e["ep_no"])[0],
         })
+        row.pop("remote_stage", None)  # desktop-era field; the stage path is config now
     man["episodes"] = sorted(by_no.values(), key=lambda r: r["ep_no"])
     save_manifest(cfg, man)
 
@@ -556,17 +573,9 @@ def ingest(cfg, remote_dir, slug=None, title=None, episodes=None, dry_run=False,
     for e in picked:
         row = by_no[e["ep_no"]]
         try:
-            stage_mp4, stage_srt = remote_stage_paths(scfg, slug, e["ep_no"])
-            res = remote_prepare_episode(remote, row, stage_mp4, stage_srt,
-                                         cap=man["cap"], log=log)
-            row["subs"] = res["subs"]
-            if res.get("duration"):
-                row["duration"] = res["duration"]
-            row["staged_at"] = now_iso()
-            save_manifest(cfg, man)
-            materialize(cfg, slug, e["ep_no"], log=log, remote=remote)
-            # materialize saved fetched_at/size on its own copy — reload so the
-            # next iteration's save doesn't clobber them
+            materialize(cfg, slug, e["ep_no"], log=log)
+            # materialize saved subs/duration/fetched_at/size on its own copy —
+            # reload so the next iteration's save doesn't clobber them
             man = load_manifest(cfg, slug)
             by_no = {r["ep_no"]: r for r in man["episodes"]}
             row = by_no[e["ep_no"]]
@@ -603,8 +612,9 @@ def status(cfg, slug):
 def remove(cfg, slug, remote_too=False, log=print):
     """Full delete of a series on the Mac: queue rows, episode dirs, the
     ledger footprint of unwatched episodes (watched evidence is kept, as the
-    server's DELETE does), the manifest — and with remote_too the PC's stage
-    copies. The originals under the PC's library dir are never touched."""
+    server's DELETE does), the manifest — and with remote_too the stage
+    copies on the server's t7 share. The originals on the library share are
+    never touched."""
     import shutil
 
     from ledger import ledgerctl as lc
@@ -623,10 +633,10 @@ def remove(cfg, slug, remote_too=False, log=print):
         q.delete_job(conn, e["id"])
         removed.append(e["id"])
     if remote_too:
-        scfg = series_cfg(cfg)
-        Remote(scfg).run(
-            f'if exist "{_win(scfg["remote_stage_dir"])}\\{slug}" '
-            f'rmdir /s /q "{_win(scfg["remote_stage_dir"])}\\{slug}"')
+        sd = lib.stage_dir(cfg)
+        if sd:
+            lib.ensure_mounted(cfg, sd, log=log)
+            shutil.rmtree(f"{sd}/{slug}", ignore_errors=True)
     shutil.rmtree(series_dir(cfg, slug), ignore_errors=True)
     log(f"removed series {slug}: {len(removed)} episode(s)")
     return {"removed": removed, "remote_stage_removed": remote_too}
@@ -641,9 +651,9 @@ def main(argv=None):
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--config")
     sub = ap.add_subparsers(dest="verb", required=True)
-    p = sub.add_parser("scan", help="list the episodes a PC folder would ingest")
+    p = sub.add_parser("scan", help="list the episodes a library folder would ingest")
     p.add_argument("remote_dir")
-    p = sub.add_parser("ingest", help="transcode on the PC, pull, enqueue")
+    p = sub.add_parser("ingest", help="transcode on the Mac, enqueue")
     p.add_argument("remote_dir")
     p.add_argument("--slug")
     p.add_argument("--title")
@@ -654,7 +664,7 @@ def main(argv=None):
     sub.add_parser("list", help="known series")
     p = sub.add_parser("status", help="per-episode state for one series")
     p.add_argument("slug")
-    p = sub.add_parser("fetch", help="re-pull evicted videos from the PC")
+    p = sub.add_parser("fetch", help="re-materialize evicted videos (stage copy or re-transcode)")
     p.add_argument("slug")
     p.add_argument("--episodes")
     p = sub.add_parser("evict", help="drop local video.mp4 (watched only unless --all)")
@@ -663,7 +673,7 @@ def main(argv=None):
     p.add_argument("--all", action="store_true")
     p = sub.add_parser("remove", help="delete the series from the Mac (never the originals)")
     p.add_argument("slug")
-    p.add_argument("--remote", action="store_true", help="also drop the PC's stage copies")
+    p.add_argument("--remote", action="store_true", help="also drop the stage copies on the media server")
     args = ap.parse_args(argv)
 
     cfg = load_config(args.config)
@@ -689,10 +699,9 @@ def main(argv=None):
     elif args.verb == "fetch":
         man = load_manifest(cfg, args.slug)
         wanted = parse_episode_spec(args.episodes)
-        remote = Remote(series_cfg(cfg))
         for e in man["episodes"]:
             if wanted is None or e["ep_no"] in wanted:
-                materialize(cfg, args.slug, e["ep_no"], log=log, remote=remote)
+                materialize(cfg, args.slug, e["ep_no"], log=log)
         print(json.dumps(status(cfg, args.slug), ensure_ascii=False, indent=2))
     elif args.verb == "evict":
         print(json.dumps(evict(cfg, args.slug, parse_episode_spec(args.episodes),

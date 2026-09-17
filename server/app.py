@@ -446,16 +446,17 @@ def create_app(cfg, start_worker=True):
 
     @app.get("/manga/library", dependencies=[Depends(auth)])
     def get_manga_library(refresh: bool = False):
-        """The PC's manga root (tools.manga library): series folders with
-        their volumes, annotated with the queue state of volumes already
-        ingested — the phone's library picker. One ssh listing, cached for
-        ten minutes (the folder rarely changes); ?refresh=true re-lists."""
+        """The manga root on the media server (tools.manga library): series
+        folders with their volumes, annotated with the queue state of volumes
+        already ingested — the phone's library picker. One walk of the mount,
+        cached for ten minutes (the folder rarely changes); ?refresh=true
+        re-lists."""
         now = time.time()
         if refresh or now - manga_lib["at"] > 600:
             try:
                 manga_lib["items"] = manga_tool.library(cfg)
             except Exception as e:
-                raise HTTPException(503, f"PC library unavailable: {e}")
+                raise HTTPException(503, f"media server library unavailable: {e}")
             manga_lib["at"] = now
         states = {}
         for job in q.list_jobs(queue_conn()):
@@ -472,11 +473,11 @@ def create_app(cfg, start_worker=True):
 
     @app.post("/manga/ingest", dependencies=[Depends(auth)])
     def post_manga_ingest(body: dict):
-        """Queue volumes of one PC series folder: {remote_dir, volumes?:
-        [n, …], title?, slug?}. Writes the manifest and enqueues one job per
-        volume (tools.manga ingest); the worker then OCRs on the PC, pulls
-        the pages and runs coverage. Runs the ssh scan on the request thread
-        (a directory listing — seconds)."""
+        """Queue volumes of one series folder on the media server: {remote_dir,
+        volumes?: [n, …], title?, slug?}. Writes the manifest and enqueues one
+        job per volume (tools.manga ingest); the worker then copies the pages
+        off the mount, boxes them on the PC and runs coverage. Runs the folder
+        scan on the request thread (a directory listing — seconds)."""
         remote_dir = (body or {}).get("remote_dir")
         if not remote_dir:
             raise HTTPException(422, "missing remote_dir")

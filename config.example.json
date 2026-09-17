@@ -70,16 +70,27 @@
     ],
     "channel_blocklist": []
   },
-  "series": {
-    "_comment": "tools.series: already-downloaded box sets on the PC. ssh_host is the desktop's LAN address (Tailscale works too, just slower); remote_stage_dir is where the PC keeps the 480p copies it transcodes (NVENC) — originals under the library folder are only ever read.",
-    "ssh_host": "transcribe-svc@192.168.0.230",
-    "ssh_identity": "~/.ssh/transcribe_remote_ed25519",
-    "remote_stage_dir": "I:/transcribe/fullpipe_stage",
-    "ssh_timeout": 3600
+  "library": {
+    "_comment": "tools.library: the Raspberry Pi media server (192.168.0.147, 'mediaserver'). Its SMB shares are mounted on the Mac as network drives: `library` (the Japanese media — read-only user data) and `t7` (scratch; our 480p stage copies). The login is in the keychain; the tools re-mount a dropped share themselves (Finder's mount volume). legacy_roots maps the desktop-era paths in old manifests / muscle memory onto the mount.",
+    "server": "smb://pi@192.168.0.147",
+    "mounts": {
+      "library": "/Volumes/library",
+      "t7": "/Volumes/t7"
+    },
+    "series_root": "/Volumes/library/Japanese",
+    "manga_root": "/Volumes/library/Japanese/manga",
+    "stage_dir": "/Volumes/t7/fullpipe_stage",
+    "legacy_roots": {
+      "E:/Japanese": "/Volumes/library/Japanese",
+      "H:/manga": "/Volumes/library/Japanese/manga"
+    }
   },
   "manga": {
-    "_comment": "tools.manga: manga volumes on the PC (page scans, read-only). remote_root is the library (H:/manga/<Series>/<VOL n>/NNN.jpg); OCR runs on the desktop GPU in the mokuro venv (remote_python + remote_script = gpu_service/ocr_volume.py deployed to I:/transcribe) and caches per-volume JSON under remote_ocr_dir. ssh settings come from the series block.",
-    "remote_root": "H:/manga",
+    "_comment": "tools.manga: the desktop is only the GPU box now — the pages come off the media server mount (library.manga_root) and are parked on the PC over ssh just for the boxing (mokuro in remote_python + remote_script = gpu_service/ocr_volume.py deployed to I:/transcribe), under remote_src_dir; per-volume JSON is cached under remote_ocr_dir.",
+    "ocr_ssh_host": "transcribe-svc@192.168.0.230",
+    "ocr_ssh_identity": "~/.ssh/transcribe_remote_ed25519",
+    "ocr_ssh_timeout": 3600,
+    "remote_src_dir": "I:/transcribe/fullpipe_manga_src",
     "remote_ocr_dir": "I:/transcribe/fullpipe_manga",
     "remote_python": "I:/transcribe/mokuro/.venv/Scripts/python.exe",
     "remote_script": "I:/transcribe/ocr_volume.py"

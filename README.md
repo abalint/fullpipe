@@ -243,11 +243,13 @@ same queue db/states/artifacts), then hands off to `/immerse` at `prepared`.
 Bare invocation drains whatever is already queued.
 
 **Series ingest (2026-09-04): `/series` skill** (`skills/series/SKILL.md`,
-`tools/series.py`) — already-downloaded box sets on the PC (`E:/Japanese/...`)
-become playlists: the desktop transcodes 480p copies (NVENC, originals only
-read), the Mac pulls them over the LAN with the Japanese subs, and each
-episode is queued as `ser_<slug>_eNN` carrying `series`/`ep_no`. Video is
-tiered (phone ⇄ Mac ⇄ PC stage copy) so deleting it anywhere never touches
+`tools/series.py`) — already-downloaded box sets on the media server (the
+Raspberry Pi's `library` share, mounted at `/Volumes/library/Japanese/...`
+since 2026-09-14 — `tools/library.py`) become playlists: the Mac transcodes
+480p copies off the mount (VideoToolbox, originals only read), parks a copy
+on the server's `t7` share, keeps the Japanese subs, and each episode is
+queued as `ser_<slug>_eNN` carrying `series`/`ep_no`. Video is tiered
+(phone ⇄ Mac ⇄ media-server stage copy) so deleting it anywhere never touches
 the transcript/coverage/curation/ledger; the phone groups series in order
 and autoplays the next episode. Netflix-style subtitle markup (bidi marks,
 speaker tags, dialogue dashes) is now stripped in acquire for every source.
@@ -312,4 +314,4 @@ client, then the end-to-end overnight-batch proof. Before corpus-leverage
 scoring: re-parse phrases-full.db at mode C (P1); ReazonSpeech word-timestamp
 spike before offline alignment code (P8).
 
-- **Manga (2026-09-14):** volumes from the PC library — mokuro on the desktop GPU boxes the bubbles, Opus subagents read the pages and gloss every bubble (`/manga read`), the phone's Read tab lays the text invisibly over the scans with the same tappable, colour-coded words as the player, and reading time is its own sitting kind — `/manga`, `tools/manga.py`, MANGA.md.
+- **Manga (2026-09-14):** volumes from the media server's library (pages off the mount; parked on the desktop over ssh only for the boxing — `tools/pcremote.py`) — mokuro on the desktop GPU boxes the bubbles, Opus subagents read the pages and gloss every bubble (`/manga read`), the phone's Read tab lays the text invisibly over the scans with the same tappable, colour-coded words as the player, and reading time is its own sitting kind — `/manga`, `tools/manga.py`, MANGA.md.

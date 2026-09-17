@@ -1,23 +1,32 @@
 ---
 name: series
-description: Ingest an already-downloaded TV/anime box set from the PC's library (E:/Japanese/...) into the fullPipe Immersion Workstation as a series playlist. `/series ingest <pc-folder>` transcodes 480p copies on the desktop (NVENC, originals never touched), pulls them to the Mac, pairs each episode with its Japanese subtitles, enqueues the episodes with series/episode-order identity, and runs Stage 1 — the phone then shows the series grouped in playlist order with autoplay-next; curation stays in `/immerse`. Also `/series list | status <slug> | fetch <slug> | evict <slug> | remove <slug>` for the video retention tiers (phone ⇄ Mac ⇄ PC). Use for "/series", "ingest this series", "add the drama folder on the PC", "set up a playlist for <show>", "free up disk from a watched series", "bring back the videos for <show>".
+description: Ingest an already-downloaded TV/anime box set from the media server's library (the Raspberry Pi's `library` share, mounted at /Volumes/library/Japanese/...) into the fullPipe Immersion Workstation as a series playlist. `/series ingest <folder>` transcodes 480p copies on the Mac (VideoToolbox, originals never touched), parks a stage copy on the server's `t7` share, pairs each episode with its Japanese subtitles, enqueues the episodes with series/episode-order identity, and runs Stage 1 — the phone then shows the series grouped in playlist order with autoplay-next; curation stays in `/immerse`. Also `/series list | status <slug> | fetch <slug> | evict <slug> | remove <slug>` for the video retention tiers (phone ⇄ Mac ⇄ media server). Use for "/series", "ingest this series", "add the drama folder on the media server / the Pi", "set up a playlist for <show>", "free up disk from a watched series", "bring back the videos for <show>".
 ---
 
-# /series — box sets from the PC library
+# /series — box sets from the media server
 
-The originals live on the Windows desktop under `E:/Japanese/...` (drama /
-anime / videos). This skill drives `tools/series.py`, which:
+The originals live on the Raspberry Pi media server (192.168.0.147,
+`mediaserver`), whose `library` share the Mac mounts as a network drive:
+`/Volumes/library/Japanese/{anime,drama,videos,…}` (`config.json → library`,
+tools/library.py). The desktop is no longer involved — it is only the GPU
+box for ASR and manga boxing. This skill drives `tools/series.py`, which:
 
-1. **scans** the PC folder over ssh (LAN address, `config.json → series`),
-   parses episode numbers (EP01 / S01E05 / 第3話 / "Show - 07" …) and pairs each
-   video with its Japanese subtitle (`.Jpn.srt` sidecar; else a text subtitle
-   track inside the container; else nothing → Stage 1 ASRs it on the GPU box);
-2. **transcodes a 480p H.264 copy on the PC** (NVENC, ~25× realtime) into the
-   PC's stage dir (`I:/transcribe/fullpipe_stage/<slug>/`). ffmpeg only reads the
-   original — nothing under the library folder is ever written or deleted;
-3. **pulls** the copy + subs to the Mac (`~/immersion/episodes/<id>/video.mp4`,
-   `~/immersion/series/<slug>/<slug>-eNN.ja.srt`) and writes the manifest
-   `~/immersion/series/<slug>/series.json`;
+1. **scans** the folder on the mount (re-mounting the share first if it
+   dropped — the login is in the keychain), parses episode numbers (EP01 /
+   S01E05 / 第3話 / "Show - 07" …) and pairs each video with its Japanese
+   subtitle (`.Jpn.srt` sidecar; else a text subtitle track inside the
+   container; else nothing → Stage 1 ASRs it on the GPU box);
+2. **transcodes a 480p H.264 copy on the Mac** (VideoToolbox, libx264
+   fallback) straight off the mount into `~/immersion/episodes/<id>/video.mp4`,
+   with the Japanese `.srt` beside the manifest
+   (`~/immersion/series/<slug>/<slug>-eNN.ja.srt`). ffmpeg only reads the
+   original — nothing under the library share is ever written or deleted.
+   The SMB read (~13 MB/s) is the bottleneck, not the encoder: a 1 GB
+   original takes ~1.5 min;
+3. **parks a copy** of the mp4 + srt in the stage dir on the server's
+   writable `t7` share (`/Volumes/t7/fullpipe_stage/<slug>/`) so a later
+   `fetch` after an `evict` is a copy, not a transcode. Best-effort: if t7
+   is unreachable the ingest still completes;
 4. **enqueues** `series://<slug>/<n>` → job/episode id `ser_<slug>_eNN` with
    `series`, `series_title`, `ep_no` on the row, and lets the worker run
    Stage 1 (the running server's worker picks it up; `--no-drain` off = drain
@@ -38,21 +47,30 @@ GPU ASR rather than searching long.
 
 ## Commands
 
+Folders can be given as they are on the Mac, relative to the series root, or
+in the old desktop form — all three resolve to the mount:
+`/Volumes/library/Japanese/drama/hotspot` = `drama/hotspot` = `E:/Japanese/drama/hotspot`.
+
 ```sh
 PY=.venv/bin/python
-$PY -m tools.series scan   "E:/Japanese/drama/hotspot"                  # dry look: episodes + subs pairing
-$PY -m tools.series ingest "E:/Japanese/drama/hotspot" --slug hotspot --title "Hot Spot" [--episodes 1,3-5] [--dry-run] [--no-drain]
+$PY -m tools.series scan   "drama/hotspot"                               # dry look: episodes + subs pairing
+$PY -m tools.series ingest "drama/hotspot" --slug hotspot --title "Hot Spot" [--episodes 1,3-5] [--dry-run] [--no-drain]
 $PY -m tools.series list
 $PY -m tools.series status hotspot                                       # per-episode state / video on Mac?
-$PY -m tools.series fetch  hotspot [--episodes 2-4]                      # re-pull evicted videos from the PC
+$PY -m tools.series fetch  hotspot [--episodes 2-4]                      # re-materialize evicted videos (stage copy, else re-transcode)
 $PY -m tools.series evict  hotspot [--episodes ...] [--all]              # drop Mac video.mp4 (+mp3); watched only unless --all
-$PY -m tools.series remove hotspot [--remote]                            # full delete on the Mac (never the originals)
+$PY -m tools.series remove hotspot [--remote]                            # full delete on the Mac (+ stage copies on t7); never the originals
 ```
 
-Ingest is idempotent: re-running skips stage copies, local videos and queue
+Ingest is idempotent: re-running skips local videos, stage copies and queue
 rows that already exist, so an interrupted run just resumes. A long series
 is best run in the background (`nohup … &`, log to a file) — per 45-min
-episode expect ~30 s transcode + ~30 s LAN pull + ~30 s Stage 1.
+1080p episode expect ~2 min read+transcode + ~30 s stage copy + ~30 s Stage 1.
+
+Series ingested from the desktop era keep working: their manifests still say
+`E:\Japanese\…`, and `tools/library.py` maps that prefix onto the mount
+(`library.legacy_roots`), so `fetch` re-transcodes from the same original
+on the Pi.
 
 ## Procedure
 
@@ -67,6 +85,9 @@ episode expect ~30 s transcode + ~30 s LAN pull + ~30 s Stage 1.
    `prepared`, then hand off to `/immerse`.
 4. The server must be running the current code for the phone to see series
    fields (restart it after pulling changes).
+5. If a command fails with "could not mount smb://pi@192.168.0.147/…", the
+   Pi is off or the keychain login is gone: `open smb://192.168.0.147` in
+   Finder, log in as `pi`, tick "remember in keychain", mount `library`.
 
 ## Retention tiers (the point of the design)
 
@@ -74,8 +95,8 @@ episode expect ~30 s transcode + ~30 s LAN pull + ~30 s Stage 1.
 |---|---|---|---|
 | phone | 480p video + sidecars | swipe-delete a series row = **phone-local only** (server untouched; taps/prep cache kept) | ⬇ on the row / series header |
 | Mac | `episodes/<id>/video.mp4` (+ `downloads/<id>.mp3`) | `evict` (watched by default) | `fetch`, or automatically when the phone asks `GET /video` (503 "restoring", retry) |
-| PC | stage copies `I:/transcribe/fullpipe_stage/<slug>/` | `remove --remote` | re-transcoded from the original on demand |
-| PC | originals under `E:/Japanese` | **never** | — |
+| media server `t7` | stage copies `/Volumes/t7/fullpipe_stage/<slug>/` | `remove --remote` | re-transcoded from the original on demand |
+| media server `library` | originals under `/Volumes/library/Japanese` | **never** | — |
 
 Derived data (transcript, coverage, curate, prep, picks, clips, ledger
 evidence, cards) is never tied to the video's presence. `DELETE /jobs/{id}`

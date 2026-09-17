@@ -202,15 +202,15 @@ Thin HTTP over `ledgerctl` verbs + the queue. (Verbs: `materialize-known`,
 | `GET /jobs` · `GET /jobs/{id}` | queue read | lifecycle state + progress; annotated with `duration` (seconds), `comprehensibility` (coverage's token_comprehensibility, 0..1) and the ledger episode row's `genre` / `format` / `channel` (the `/immerse` curation labels; null until curated) for the queue's sort/filter/display |
 | `POST /jobs/{id}/curate` | launch Stage 2 | kicks the live `/immerse` curate over one/many `prepared` jobs |
 | `POST /jobs/{id}/passive` | shelve to Listen tab | `{passive: bool}` — flags a `watched` episode as passive-listening material (409 otherwise; un-shelving always allowed). Pure flag flip: state/artifacts/ledger untouched; `passive` rides back on `GET /jobs` |
-| `DELETE /jobs/{id}` | purge | episode dir + cached download + queue row; watched episodes keep their ledger evidence and cards. **Series episodes are refused (409) without `?force=true`** — the phone's swipe-delete on them is local-only (below); the real removal is `tools.series remove` on the PC |
-| `GET /video/{id}` | staged file | **resumable** (HTTP range) — available at `prepared`. A series episode whose Mac copy was evicted (`tools.series evict`) answers **503 "restoring"** and re-pulls the 480p copy from the PC in the background — the app retries |
+| `DELETE /jobs/{id}` | purge | episode dir + cached download + queue row; watched episodes keep their ledger evidence and cards. **Series episodes are refused (409) without `?force=true`** — the phone's swipe-delete on them is local-only (below); the real removal is `tools.series remove` on the Mac |
+| `GET /video/{id}` | staged file | **resumable** (HTTP range) — available at `prepared`. A series episode whose Mac copy was evicted (`tools.series evict`) answers **503 "restoring"** and re-materializes the 480p copy from the media server in the background — the app retries |
 | `GET /video/{id}/subs` | staged file | subtitle sidecar |
 | `GET /prep/{id}` | prep-doc JSON | available at `staged`; pre-tokenized sentences w/ readings + glosses |
 | `GET /transcript/{id}` | staged coverage | **every** sentence w/ start/end + tokens (prep ships only the i+1 subset) — drives the in-app player's tap-able subtitle overlay; available at `prepared`. tokens carry `t` (aligned start seconds, engine/word_align.py — word/segment granularity for ASR, cue granularity for hand-subs) pacing the player's roll-up window; absent on pre-alignment episodes, where the player falls back to proportional pacing. Top-level `confirm` / `interest` / `should_know` = the ledger's three global lists narrowed to the lemmas in this episode — "think you know" (blue), the standing ★ want-to-learn set (purple), and the 100 most frequent words not yet known (green; `should_know_window` in config) — the snapshot every surface paints from until the live paint state (below) arrives (LIVE_REVIEW.md §6 for the six-colour scheme). Per-sentence `phrases` are units: `{canonical, surface, status, start, end}` — the curate pass's emissions merged with the tracked phrases Stage 1 detected, each with its token span (engine/lemma.py `phrase_span`) and ledger status, so the player underlines the span in the phrase's own colour (paint.ts `phraseClass`) and the popup opens a phrase layer with its own mark from any token inside it; `/definitions` serves the headwords. Per-sentence `grammar` are units too (2026-09-08, GRAMMAR.md — token-anchored units): `{pattern, start, end, status}` for every taxonomy pattern the matcher (engine/grammar.py) found on the line — span over the attachment's tokens (the てしまっ of 食べてしまった) — merged with the curate pass's `note` for that line (a curate-tagged pattern the matcher did not place rides along without a span, proposals flagged `proposed`); top-level `grammar_points` = `{pattern: {gloss, level}}` for every pattern present. The player paints each unit from the pattern's state (paint.ts `grammarClass`, dotted underline) and the popup opens a grammar layer with its own mark (`"g:"` + pattern in the tap store, kind `grammar` on the wire). Top-level `curated` = the curate pass's grammar/phrase notes are aboard; the app downloads its sidecars at video-download time (usually `prepared`) and refreshes them once the episode turns up staged (`refreshSidecars`) |
 | `GET /definitions/{id}` | jmdict.db + curate.json + repair.json | JMdict entries for **every** lemma in the episode — content words, particles, aux verbs, pronouns, names — the player's any-word popup (kana keys rank kana-natural/grammar entries first, so の leads with the particle, not 野). Keyed by the Sudachi lemma already on each token, so no client deinflection; the app narrates conjugation itself from the token chain (mobile `inflection.ts`). Compounds/expressions Sudachi splits (帝王切開 → 帝王\|切開, 気を付ける → 気\|を\|付ける) ride along keyed by the joined span — validated headwords only (`compound_entries`), and **lexical units only**: a run can't start inside a particle/auxiliary chain (に関して, として, という are grammar patterns — the grammar axis's job), needs two content tokens (本当に, 呼ばれる are the word plus its glue), and each entry must be the same words as the run (し+ない is not 市内; Sudachi reads both シ\|ナイ). The app reconstructs the join on tap (mobile `compounds.ts`) and shows the widest served run covering the tap (`servedCompoundsAt` — 桃山時代 inside 安土桃山時代 is one layer, not two). `{}` until `tools.jmdict build` has run. Curate-authored `defs` rows merge in flagged `ai`: sole entry for words JMdict lacks (worklist from `tools.jmdict missing`), **prepended** episode-sense entry for words it has — the popup leads with the sense used in this episode, full dictionary entries after. The repair gate's `names` (surface + kind + note) merge the same way, so name taps answer without waiting for curation |
 | `GET /episodes/{id}/paint` | ledger lists, live | **highlight state as of now** (2026-09-02), narrowed to the episode: `known` (words the ledger now calls known — additive over the sidecar's token `k`, which Stage-1 coverage froze), `unknown` (words ✗'d and not since re-claimed — the one list that *subtracts*, flipping a frozen `k` back off; 2026-09-05), `confirm` / `interest` / `should_know` (replace the sidecar's snapshot lists; ★ is additionally unioned with every ★ in any episode's tap store on the phone, so a word starred offline in one show paints purple in the next before it syncs — mobile `paint.ts` interestFor), `grammar_confirm` / `grammar_known` / `grammar_interest` / `grammar_unknown` (the grammar axis narrowed to the patterns the matcher found in this episode plus the curate pass's tags — each painted unit tracks the ledger like a word; the "?" line badge remains only for curate-only tags with no span). The app fetches it on every player / reader / prep open, caches it per episode, and adds every word tapped ✓ on the phone, so paints follow the ledger instead of the download |
 | `GET /page/{id}` | staged page doc | page jobs only (`page_` ids — 5ch threads, `tools/pages.py`): the reader's post structure (per post n/name/date/uid/replies_to + lines as runs of sentence idxs into `/transcript`). Page jobs skip curation and land straight on `staged`; the phone's Pages tab reads them, marks words through the normal tap flow, and `POST /watched {cards:false}` semantics apply on "finished reading". Deleting the row afterwards purges files, keeps evidence |
-| `GET /manga/library` · `POST /manga/ingest` · `GET /manga/{id}` · `GET /manga/{id}/page/{file}` | manga volumes | MANGA.md (2026-09-14): the PC's manga folder (series → volumes, queue state) and the Read tab's picker; a volume's reader structure (pages + bubbles as sentence-idx runs into `/transcript`) and its page scans (`media_auth`). Manga rows are `manga_<slug>_vNN`, carry `series`/`ep_no` (volume), land on `prepared` after OCR on the PC, and the `/immerse` manga pass takes them to `staged`. Text kinds (`page_`, `manga_`) never mint cards; exposure credit comes from the reader's sittings — `played` ranges in page pseudo-seconds (page × 30) |
+| `GET /manga/library` · `POST /manga/ingest` · `GET /manga/{id}` · `GET /manga/{id}/page/{file}` | manga volumes | MANGA.md (2026-09-14): the media server's manga folder (series → volumes, queue state) and the Read tab's picker; a volume's reader structure (pages + bubbles as sentence-idx runs into `/transcript`) and its page scans (`media_auth`). Manga rows are `manga_<slug>_vNN`, carry `series`/`ep_no` (volume), land on `prepared` after the pages are copied off the mount and boxed on the PC, and the `/immerse` manga pass takes them to `staged`. Text kinds (`page_`, `manga_`) never mint cards; exposure credit comes from the reader's sittings — `played` ranges in page pseudo-seconds (page × 30) |
 | `POST /taps` | `apply-taps` + `tools.select` | `{episode_id, batch_id, taps:[[lemma,"k"\|"h"],…]}` — a phrase mark from the popup's phrase layer rides as `[headword,"k"\|"h","phrase"]` and lands on the phrase item, never its words (GRAMMAR.md); pre-watch feedback: "k"→ledger, "h"→card priority; runs final card selection; does NOT imply watched. **Page jobs:** taps are pure ledger evidence — no card selection, no state change. **Lookups (2026-09-07):** the batch also carries `lookups:[[key, n, {confirm\|interest\|should_know\|known\|none: n}, "phrase"?],…]` — every popup open on an item in this episode (cumulative; a re-sent batch replaces the row) with what the word was painted as at each tap. Zero-weight `lookup` evidence: counted (`lemmas.lookups` / `lookups_listed`, `query calibration` → lookups before ✓), never judged — a word you only read stays on its list. **Where it was met (2026-09-08):** a mark entry may carry a 4th element (what the word was painted as) and a 5th (`on\|kw\|off\|audio\|listen\|page\|prep` — the subtitle state / surface at the tap), a lookup entry a 5th `{mode: n}`; both land in the evidence row's context (`list`, `mode`, `modes`) beside the claim snapshot |
 | `GET /lists/{name}` | ledger lists | **the other two global word lists as review rows** (2026-09-04, LIVE_REVIEW.md §1): `interest` = the standing ★ want-to-learn set (common words first), `should_know` = the `should_know_window` most frequent corpus words not yet known (rank order). `{list, words:[…]}`, each row in the confirm-queue word shape — reading, `reading_segs` furigana, `freq_rank`, `exposure_count` / `episode_spread`, watched-episode titles, JMdict `senses` — so the phone renders all three lists with one card (`#/list/interest`, `#/list/should_know`, reached from banners on Progress next to Confirm's) |
 | `POST /lists/mark` | `apply-taps` | `{lemma, mark:"k"\|"h", batch_id?}` — a mark made from a list review rather than inside an episode: `k` → tap_known → known (leaves every list), `h` → tap_interest → the ★ list (a should-know word pulled onto want-to-learn). No episode, no card selection; `batch_id` makes a re-flush idempotent. Returns `{lemma, mark, status, interest, duplicate}` |
@@ -250,12 +250,13 @@ Thin HTTP over `ledgerctl` verbs + the queue. (Verbs: `materialize-known`,
 
 ---
 
-## Manga — volumes from the PC library (2026-09-14)
+## Manga — volumes from the media server (2026-09-14)
 
-See MANGA.md. `tools/manga.py` (the `/manga` skill, or the Read tab's 📚 PC
-library picker) enqueues `manga://<slug>/<n>` volumes; the worker boxes the
-bubbles on the desktop GPU (mokuro — its text is only a draft), pulls the page
-scans, and runs coverage; then `/manga read` has Opus subagents read every page
+See MANGA.md. `tools/manga.py` (the `/manga` skill, or the Read tab's 📚
+library picker) enqueues `manga://<slug>/<n>` volumes; the worker copies the
+page scans off the media server's mount (`/Volumes/library/Japanese/manga`),
+boxes the bubbles on the desktop GPU (mokuro — its text is only a draft; the
+pages are parked on the PC over ssh just for that), and runs coverage; then `/manga read` has Opus subagents read every page
 and gloss every bubble in one pass (`read-apply` rebuilds the volume and its
 bubble glosses ride on `/transcript`), and the `/immerse` manga pass adds
 dictionary entries + a synopsis. The phone's **Read** tab (the Pages tab, renamed) groups volumes
@@ -266,12 +267,14 @@ on the printed words; comicReader's reading modes (RTL / LTR / vertical) and
 continuous scrolling, remembered per series (MANGA.md "The reader").
 Swipe-delete on a volume is phone-local, like series.
 
-## Series — box sets from the PC library (2026-09-04)
+## Series — box sets from the media server (2026-09-04; moved off the desktop 2026-09-14)
 
 `tools/series.py` (the `/series` skill) ingests already-downloaded shows from
-the desktop's library (`E:/Japanese/...`): the PC transcodes a 480p copy of
-each episode (NVENC; the original is only read), the Mac pulls it over the
-LAN with the Japanese subtitle sidecar, and the queue gets one job per
+the media server's library (the Raspberry Pi's `library` share, mounted at
+`/Volumes/library/Japanese/...` — tools/library.py): the Mac transcodes a
+480p copy of each episode straight off the mount (VideoToolbox; the original
+is only read), keeps the Japanese subtitle sidecar beside the manifest, parks
+a copy of both on the server's writable `t7` share, and the queue gets one job per
 episode carrying its **playlist identity** — `series` (slug), `series_title`,
 `ep_no` — with the stable id `ser_<slug>_eNN` (source `series://<slug>/<n>`).
 From `prepared` on it is an ordinary episode: `/immerse` curates, the phone
@@ -286,10 +289,11 @@ pulls, taps, marks watched, rates. The ledger row keeps `series` /
   a `⬇` for the same reason.
 - *Mac:* `tools.series evict <slug>` drops `video.mp4` (+ the acquire mp3) of
   watched episodes; `fetch` or the phone's next `GET /video` restores from the
-  PC (503 while the pull runs). Transcript, coverage, curate, prep, picks,
-  clips, ledger evidence and cards are untouched.
-- *PC:* 480p stage copies under `I:/transcribe/fullpipe_stage/<slug>/`; the
-  originals are never modified or deleted.
+  media server (503 while the copy runs). Transcript, coverage, curate, prep,
+  picks, clips, ledger evidence and cards are untouched.
+- *Media server:* 480p stage copies under `/Volumes/t7/fullpipe_stage/<slug>/`
+  (a copy, not a transcode, on restore); the originals on the `library`
+  share are never modified or deleted.
 
 **Playlist on the phone:** series rows sit under a collapsible header (title ·
 n/N watched · m on phone · `▶ EPnn` / `⬇ EPnn` for the next unwatched episode)

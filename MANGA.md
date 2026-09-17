@@ -1,9 +1,9 @@
-# Manga — volumes from the PC library, read on the phone (2026-09-14)
+# Manga — volumes from the media server, read on the phone (2026-09-14)
 
 The reading sibling of the video pipeline. A manga volume goes through the
 same spine — a sentence track → coverage → any-word popup → ledger
-exposures — but the "transcript" is what the desktop GPU reads off the page
-scans, and the phone renders it as an invisible, tappable, colour-washed
+exposures — but the "transcript" starts as what the desktop GPU reads off the page
+scans (the pages themselves come off the media server's mount), and the phone renders it as an invisible, tappable, colour-washed
 layer over the original art instead of playing anything. Nothing new lives in
 the ledger: manga rows are episodes of kind `manga`, their marks are ordinary
 tap batches (encounter mode `manga`), and exposure credit is the same
@@ -13,13 +13,16 @@ on screen".
 ## Topology
 
 ```
-PC (H:/manga/<Series>/<VOL n (JA)>/NNN.jpg — read-only)
+Media server (Raspberry Pi, SMB share `library` mounted on the Mac — read-only user data)
+  └─ /Volumes/library/Japanese/manga/<Series>/<VOL n (JA)>/NNN.jpg
+PC (GPU box only — tools/pcremote.py over ssh)
+  └─ I:/transcribe/fullpipe_manga_src/<slug>/vNN/   the pages, parked by the Mac for the boxing (dropped after)
   └─ gpu_service/ocr_volume.py  (mokuro venv, RTX 2070S)
        comic-text-detector → bubble boxes · manga-ocr → text per line
        cache: I:/transcribe/fullpipe_manga/<slug>/vNN/<page>.json (+ _done.json)
 Mac (tools/manga.py, run by the worker)
   └─ episodes/manga_<slug>_vNN/
-       pages/NNN.jpg      pulled as-is (one tar stream over ssh)
+       pages/NNN.jpg      copied off the mount as-is
        ocr/NNN.json       mokuro's raw result (kept for rebuilds)
        transcript.json    bubble sentences in reading order, pseudo-timed
        manga.json         per page: file, size, blocks {box, vertical, font_size,
@@ -35,8 +38,9 @@ Phone (mobile: manga.ts · manga-layout.ts · views/manga-reader.ts · Read tab)
 - Source `manga://<slug>/<n>` → job/episode id `manga_<slug>_vNN` (derivable
   offline, like `ser_` / `page_`). Rows carry `series`, `series_title`,
   `ep_no` (= volume) — the phone groups volumes under one header in order.
-- `queued → downloading` (OCR on the PC, narrated "ocr: page 12/215" on the
-  row; then the pulls) `→ tokenizing → prepared`. Readable at `prepared`.
+- `queued → downloading` (pages off the mount, pushed to the PC, OCR there —
+  narrated "ocr: page 12/215" on the row — JSON pulled back)
+  `→ tokenizing → prepared`. Readable at `prepared`.
 - `/immerse` Step 1.6 (manga pass) writes `curate.json` (defs for names,
   sound words, slang; a synopsis) and the row goes `staged`. No cards, no
   prep doc, no picks, no recommender footprint.
@@ -44,7 +48,7 @@ Phone (mobile: manga.ts · manga-layout.ts · views/manga-reader.ts · Read tab)
   the play-fraction rule once the sittings cover 80 % of the pages.
 - `DELETE /jobs/{id}` refuses manga rows without `?force=true` (they carry
   `series`); the phone's swipe-delete is local. `tools.manga remove <slug>
-  [--remote]` is the real removal. The scans on the PC are never touched.
+  [--remote]` is the real removal. The scans on the media server are never touched.
 
 ## Pseudo-time (why nothing in the ledger changed)
 
@@ -147,7 +151,7 @@ mark cycle, lookups and live sync are the player's, unchanged.
 
 | route | role |
 |---|---|
-| `GET /manga/library[?refresh=true]` | the PC's manga root: series → volumes (+ queue state); 10-min cache |
+| `GET /manga/library[?refresh=true]` | the manga root on the media server: series → volumes (+ queue state); one walk of the mount, 10-min cache |
 | `POST /manga/ingest {remote_dir, volumes?, title?, slug?}` | manifest + enqueue (the Read tab's 📚 picker) |
 | `GET /manga/{id}` | `manga.json` |
 | `GET /manga/{id}/page/{file}` | one page scan (`media_auth`: header or `?t=`) |
