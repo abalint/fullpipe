@@ -90,6 +90,11 @@ def tokenize(text):
     out = []
     with _sudachi_lock:
         for m in tok.tokenize(text, mode):
+            if not m.surface():
+                # Sudachi NFKC-expands … to ... (and ‥, ①…) before
+                # segmenting, then maps the extra morphemes back to empty
+                # surfaces — nothing printed, nothing to lay out or count
+                continue
             p = m.part_of_speech()
             out.append(Token(
                 m.surface(),
