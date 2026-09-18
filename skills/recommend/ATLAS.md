@@ -296,3 +296,74 @@ clean-turn-taking variant; never drop the cluster.
 - **離島・僻地チャレンジ旅** — getting somewhere absurd on a constraint.
   `離島 旅 チャレンジ` — hybrid. near-box: 秘境旅 sampled; the *challenge*
   frame (not the atmosphere frame) is what's new here.
+
+---
+
+## Expertise & practice (first mapped 2026-09-17, autopilot top-up pass)
+
+By the 179-rated mark every cluster above was either sampled or offered, so this
+section was added to keep the explore lane supplied. The unifying shape is **a
+practitioner explaining their own craft** — a region the record has barely
+touched outside 職人 docs, and one where the speaker is nearly always solo.
+
+- **弁護士・法律家の事件解説** — a practising lawyer walking through a real case
+  or judgment to camera (二番煎じと言われても, 弁護士宮田洸, 弁護士高橋裕樹).
+  `弁護士 事件 解説` · `判決文 読んでみた` — hybrid. Solo, structured, argumentative
+  register. Risk: the cluster's high-view tier is ABEMA Prime panel crosstalk (5-6
+  voices) — take the single-lawyer channels; and `ゆっくり事件` / `ゆっくり怪奇事件簿`
+  infest the search results. First offered 2026-09-17.
+- **競馬予想・レース回顧トーク** — handicappers arguing a race before or after it
+  (東スポレースチャンネル, 競馬予想SNSウマニティ, エキスポ競馬, ウマキんグ).
+  `競馬 予想 レース回顧` · `重賞 回顧` — fun. Very dense speech, a hard jargon shell
+  (blood/pace/track vocabulary) over ordinary argument language. Risk: the
+  多頭数ライブ tier runs 1-4 h with several talkers. First offered 2026-09-17.
+- **パチンコ・スロット実戦** — one player narrating a day (or a month) of
+  expected-value grinding (わーさん, アキ, げんぱち). `パチンコ 実戦 稼働` ·
+  `期待値稼働` — fun. Solo running commentary, extremely colloquial. Risk: the
+  machine noise floor, and the 実戦動画 tier that is all reels and no talking —
+  check tokens-per-minute. First offered 2026-09-17.
+- **プロ野球 解説・分析** — a retired player breaking down the week's games or one
+  team's problem (高木豊, 解体慎書 宮本慎也, 名球会チャンネル).
+  `プロ野球 解説` · `野球 解説 分析` — hybrid. Solo to camera, opinionated.
+  First offered 2026-09-17.
+- **サッカー戦術解説** — a pro or coach teaching positioning and pressing schemes
+  over a board or clips (Jリーグ公式 中村憲剛, PIVOT 守田英正, サッカー革命家チキン).
+  `サッカー 戦術 解説` · `ポジショニング 解説` — hybrid. The diagrams scaffold the
+  listening, which is the pattern that lands. First offered 2026-09-17.
+- **クラシック音楽 演奏家の解説** — a working musician talking about repertoire,
+  performers and the state of the art (車田和寿‐音楽に寄せて, 厳選クラシックちゃんねる).
+  `クラシック 音楽 解説 演奏家` · `音楽談話` — hybrid. Calm, unhurried, mid-register
+  solo speech to a fixed camera — mechanically one of the cleanest veins on the
+  platform. Risk: the abstract-aesthetics episodes pull the coverage estimate
+  down. First offered 2026-09-17.
+- **格闘ゲーム大会の実況** — live commentary over an arcade or stream tournament
+  (ゲーセンミカド, eスポーツ道, SHAKAch). `格闘ゲーム 大会 実況` · `格ゲー 実況` —
+  fun. The 実況+解説 pair is continuous, high-density speech. Risk: the
+  streamer-watching-a-bracket tier is mostly silence (one candidate measured 22
+  tokens/min) — take the commentated tournament, not the reaction stream; and the
+  move-name jargon is thick. First offered 2026-09-17.
+- **狂言** — two-actor classical comic theatre, usually posted by a school or a
+   能楽堂 with a spoken introduction before the piece (和泉流宗家狂言, 横浜能楽堂,
+  萬狂言). `狂言 公演` · `狂言 解説 鑑賞` — hybrid. Projected, enunciated, comic —
+  the spoken counterpart to the sung 能 on the same channels. Risk: Muromachi
+  register; and the 能 uploads next to it are chanted, not spoken. Distinct
+  enough from 落語 to count (an ensemble scene, not one voice doing everyone).
+  First offered 2026-09-17.
+- **お金・家計の解説** — a solo explainer on budgeting, saving and household
+  finance (倹者の流儀, 両学長 リベラルアーツ大学, 節約主婦 channels).
+  `家計 お金 解説 貯金` · `家計管理` — edu. Concrete, numbers-on-screen, everyday
+  register. Risk: 両学長's animated-slide format sits close to the AI-imagery veto
+  (it is hand-drawn, but ear- and eye-check); and the 家計簿公開 vlog tier is the
+  low-stakes talking-head shape that rates ★2. First offered 2026-09-17.
+- **家庭菜園・野菜づくり how-to** — a grower teaching soil, timing and technique in
+  the field (野菜作りの教科書, 塚原農園, 農家直伝！家庭菜園らいふ).
+  `家庭菜園 野菜づくり 解説` · `土作り 基本` — edu. Practical instruction, a whole
+  vocabulary the record has never met. Risk: the agricultural jargon drives the
+  coverage estimate low (52 % on the first sample). First offered 2026-09-17.
+- **気象予報士の天気解説** — a broadcast forecaster explaining the machinery behind
+  the forecast, longer than they get on air (MBS NEWS お天気解説, 気象研究クラブ).
+  `気象予報士 解説 天気` · `天気図 読み方` — edu. Studio audio, one clear voice, maps
+  to follow. First offered 2026-09-17.
+- **モトブログ / ソロツーリング** — see *Motion & outdoors*. First offered
+  2026-09-17 (near-box: solo travel under a constraint is a rated vein, so it does
+  not satisfy the quota).
