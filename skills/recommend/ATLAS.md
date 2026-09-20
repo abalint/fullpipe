@@ -367,3 +367,52 @@ touched outside 職人 docs, and one where the speaker is nearly always solo.
 - **モトブログ / ソロツーリング** — see *Motion & outdoors*. First offered
   2026-09-17 (near-box: solo travel under a constraint is a rated vein, so it does
   not satisfy the quota).
+
+---
+
+## Ordinary life & civic (first mapped 2026-09-20, open pass)
+
+By 2026-09-20 every cluster above had been sampled or offered, so this section
+maps a third region: **the everyday and civic Japan natives watch for practical
+reasons or spectacle** — cars, housing, politics, cleaning, rap — none of it near
+the rated veins. Speaker shapes are mostly solo-to-camera or one projected voice.
+
+- **車 試乗レビュー** — a motoring journalist or enthusiast driving a new car and
+  talking the whole way (E-CarLife 五味やすたか, Gocar, ワンソクTube, RIDE NOW).
+  `新型 試乗 レビュー` · `試乗 インプレッション 徹底` — hybrid. Solo, 60+ tokens/min,
+  concrete everyday register with a car-spec jargon shell; the footage scaffolds
+  the talk. Risk: the dealer-promo tier is near-silent. First offered 2026-09-20.
+- **不動産 内見・ルームツアー** — a host or realtor walking through a property and
+  commenting on it: the 珍物件 comedy tier (内見ゴリラ, 内見チューバー), the
+  practitioner-explainer tier (不動産Gメン滝島), the luxury tour tier (SUUMO,
+  豪邸探訪). `内見 物件 紹介 不動産屋` · `ルームツアー 豪邸 内見` — hybrid. Not the
+  walking vein: indoors, a room being inspected, not a place being felt. Risk:
+  `ゆっくり不動産` is TTS (blocklist catches it). First offered 2026-09-20.
+- **街頭演説・国会質疑** — a politician's stump speech posted uncut by a news
+  agency (時事通信, 産経, 日テレNEWS), or Diet questioning / 党首討論 clips (TBS
+  NEWS DIG, 日テレ). `街頭演説 ノーカット` · `国会 質疑 ノーカット` — edu. One
+  projected voice, rhetorical structure, real argument about real things — the
+  "people arguing politics" ask in its native form. Risk: outdoor PA audio on
+  street speeches; Diet 代表質問 coverage estimates land ~37 % (policy jargon);
+  the 4-hour 予算委員会 livestreams are the junk tier. First offered 2026-09-20.
+- **ゴミ屋敷片付け・特殊清掃** — cleaning crews narrating a hoarder-house or
+  post-death cleanup (片付けトントン, イーブイ, 特殊清掃ch すーさん, 関西クリーン
+  サービス, 遺品整理人メモリーズ) — an enormous native vein (1–3 M views per
+  upload). `ゴミ屋敷 片付け 密着` · `特殊清掃 現場` — hybrid. Risk: speech density
+  is middling (30–45 tokens/min: timelapse under BGM) — check tokens; the
+  特殊清掃 tier is graphic (孤独死). First offered 2026-09-20.
+- **MCバトル（フリースタイルラップ）** — Japanese freestyle battle rap: UMB,
+  戦極, フリースタイルダンジョン, and the 公認 バース集 compilations with burned-in
+  字幕. `MCバトル フリースタイル 名勝負` · `バース集 字幕` — fun. Rhymed,
+  rhythmic, slang-dense speech — a huge youth subculture the record has never
+  touched. Risk (measured): ASR captures only a fraction (~25 tokens/min on a
+  12-min battle), so the coverage estimate is unreliable and the pipeline
+  transcript will be rough; the 字幕 compilations carry the text on screen.
+  Treat as a wildcard. First offered 2026-09-20.
+- **プラネタリウム 生解説** — a planetarium 解説員 narrating the night sky
+  (宇宙 すずちゃんねる, 天リフ 講演). `プラネタリウム 生解説` — edu. One calm voice
+  over star maps. Risk: the search results are dominated by the 睡眠用 / ASMR
+  reading tier (junk); real 生解説 uploads are rare and short. Not yet offered.
+- near-box, for the exploit lane: **舞台演劇 全編公開 / NHK人形劇** — scripted
+  ensemble fiction on a stage (範宙遊泳, アフリカ座, 西野『プペル』; 人形劇 平家物語 /
+  三国志) is the audio-drama vein with pictures. Fine picks, do not count.
