@@ -957,6 +957,32 @@ class LedgerTest(unittest.TestCase):
         self.assertEqual(rated[0]["id"], "er")
         self.assertFalse(rated[0]["taste_valid"])
 
+    def test_series_rating_thumbs_append_only(self):
+        # A box set is rated as a whole (series_taste): thumbs in {-2,-1,1,2},
+        # append-only, latest wins, clear reads as None, replays dedupe.
+        self._episode()
+        lc.update_episode_meta(self.conn, "er", columns={"series": "hotspot", "ep_no": 1})
+        with self.assertRaises(KeyError):
+            lc.record_series_rating(self.conn, "nope", 1)
+        for bad in (0, 3, -3, True, "1"):
+            with self.assertRaises(ValueError):
+                lc.record_series_rating(self.conn, "hotspot", bad)
+        r = lc.record_series_rating(self.conn, "hotspot", 1, review_id="rv1")
+        self.assertEqual(r["rating"], 1)
+        self.assertEqual(lc.query_series_ratings(self.conn, "hotspot")["rating"], 1)
+        lc.record_series_rating(self.conn, "hotspot", 2)
+        self.assertEqual(lc.query_series_ratings(self.conn)["hotspot"]["rating"], 2)
+        # replayed review_id is a no-op — the 👍👍 stands
+        dup = lc.record_series_rating(self.conn, "hotspot", 1, review_id="rv1")
+        self.assertTrue(dup["duplicate"])
+        self.assertEqual(lc.query_series_ratings(self.conn, "hotspot")["rating"], 2)
+        lc.record_series_rating(self.conn, "hotspot", -2)
+        lc.record_series_rating(self.conn, "hotspot", None)
+        self.assertIsNone(lc.query_series_ratings(self.conn, "hotspot")["rating"])
+        self.assertIsNone(lc.query_series_ratings(self.conn, "other"))
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM series_taste").fetchone()[0], 4)
+
     def test_rerate_appends_batch_and_latest_wins(self):
         # Append-only: re-rating keeps history (drift), verdict takes the latest.
         self._episode()

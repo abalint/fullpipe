@@ -129,6 +129,19 @@ CREATE TABLE IF NOT EXISTS taste_events (
 );
 CREATE INDEX IF NOT EXISTS idx_taste_episode ON taste_events(episode_id);
 
+-- Series verdicts (2026-09-20): a box set (tools.series) is rated as a whole,
+-- not per episode — one thumbs verdict per series slug, append-only like
+-- taste_events (re-rating appends; the current verdict is the latest row).
+-- value: '-2' (double thumbs down) · '-1' · '1' · '2' (double thumbs up) · 'clear'.
+CREATE TABLE IF NOT EXISTS series_taste (
+    id        INTEGER PRIMARY KEY,
+    series    TEXT NOT NULL,      -- episodes.series slug
+    review_id TEXT NOT NULL,      -- client-minted for outbox replay dedupe
+    value     TEXT NOT NULL,
+    ts        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_series_taste ON series_taste(series);
+
 -- Per-presenter durable state (SURVEY.md §4). Channels were previously derived
 -- from episodes.channel_id with MAX(rating) as their only signal; this table
 -- gives them two things that don't belong on a video: a follow intent decoupled

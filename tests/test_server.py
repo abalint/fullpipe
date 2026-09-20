@@ -914,6 +914,37 @@ class TestRoutes(ServerTestBase):
             f"/episodes/{EP}/rating", json={"rating": 4, "follow": "subscribe"},
             headers=self.auth).status_code, 422)
 
+    def test_series_rating_roundtrip(self):
+        """Thumbs for a whole box set: POST /series/{slug}/rating appends to
+        series_taste and rides back as `series_rating` on the set's rows."""
+        self.stage_episode()
+        conn, job = self._enqueue_at("watched")
+        conn.execute("UPDATE jobs SET series = ?, ep_no = ? WHERE id = ?",
+                     ("hotspot", 1, job["id"]))
+        conn.commit()
+        conn.close()
+        lconn = lc.open_db(self.cfg["ledger_db"])
+        lc.update_episode_meta(lconn, EP, columns={"series": "hotspot", "ep_no": 1})
+        lconn.close()
+
+        self.assertIsNone(self.client.get(f"/jobs/{EP}", headers=self.auth).json()["series_rating"])
+        r = self.client.post("/series/hotspot/rating", json={"rating": 2, "review_id": "rv"},
+                             headers=self.auth)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["rating"], 2)
+        self.assertEqual(self.client.get(f"/jobs/{EP}", headers=self.auth).json()["series_rating"], 2)
+        self.assertEqual(self.client.get("/jobs", headers=self.auth).json()[0]["series_rating"], 2)
+        # replayed outbox review → duplicate, verdict unchanged
+        r = self.client.post("/series/hotspot/rating", json={"rating": -1, "review_id": "rv"},
+                             headers=self.auth)
+        self.assertTrue(r.json()["duplicate"])
+        self.assertEqual(self.client.get(f"/jobs/{EP}", headers=self.auth).json()["series_rating"], 2)
+        # out-of-range → 422, unknown series → 404
+        self.assertEqual(self.client.post("/series/hotspot/rating", json={"rating": 5},
+                                          headers=self.auth).status_code, 422)
+        self.assertEqual(self.client.post("/series/nope/rating", json={"rating": 1},
+                                          headers=self.auth).status_code, 404)
+
     def test_viewtime_roundtrip(self):
         """A phone-recorded session lands in view_sessions, replays dedupe on
         id, GET hands it back (filtered by device-day), and the episode does

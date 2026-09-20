@@ -316,8 +316,17 @@ def create_app(cfg, start_worker=True):
                 for r in ledger_conn().execute(
                     "SELECT id, genre, format, channel FROM episodes")}
 
-    def _annotate(job, verdict, meta=None):
+    def _series_verdicts():
+        """series slug → thumbs verdict (ledgerctl.query_series_ratings)."""
+        return lc.query_series_ratings(ledger_conn())
+
+    def _annotate(job, verdict, meta=None, series_verdicts=None):
+        # A box-set episode also carries its series' whole-set thumbs
+        # verdict (2026-09-20) so the phone's series header can show it,
+        # offline too, off the cached /jobs snapshot.
+        sv = (series_verdicts or {}).get(job.get("series")) if job.get("series") else None
         return {**job, **_taste(verdict),
+                "series_rating": sv["rating"] if sv else None,
                 "genre": (meta or {}).get("genre"),
                 "format": (meta or {}).get("format"),
                 "channel": (meta or {}).get("channel"),
@@ -328,14 +337,16 @@ def create_app(cfg, start_worker=True):
     def get_jobs():
         verdicts = _verdicts()
         meta = _meta()
-        return [_annotate(j, verdicts.get(j["episode_id"]), meta.get(j["episode_id"]))
+        sv = _series_verdicts()
+        return [_annotate(j, verdicts.get(j["episode_id"]), meta.get(j["episode_id"]), sv)
                 for j in q.list_jobs(queue_conn())]
 
     @app.get("/jobs/{id_}", dependencies=[Depends(auth)])
     def get_job(id_: str):
         job = get_job_or_404(id_)
         return _annotate(job, lc.query_enjoyment(ledger_conn(), job["episode_id"]),
-                         _meta().get(job["episode_id"]))
+                         _meta().get(job["episode_id"]),
+                         _series_verdicts() if job.get("series") else None)
 
     @app.post("/jobs/{id_}/curate", dependencies=[Depends(auth)])
     def post_curate(id_: str):
@@ -997,6 +1008,21 @@ def create_app(cfg, start_worker=True):
                                     review_id=body.get("review_id"),
                                     axes=body.get("axes"), follow=body.get("follow"),
                                     note=body.get("note"))
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+        except KeyError as e:
+            raise HTTPException(404, str(e))
+
+    @app.post("/series/{slug}/rating", dependencies=[Depends(auth)])
+    def post_series_rating(slug: str, body: dict):
+        """Thumbs verdict for a whole box set (2026-09-20): body
+        {"rating": -2|-1|1|2|null, "review_id"?}. Appended to the ledger's
+        series_taste log (re-POST appends; the latest row is the verdict);
+        a client review_id makes outbox replays idempotent. Rides back on
+        every episode of the series as `series_rating` (GET /jobs)."""
+        try:
+            return lc.record_series_rating(ledger_conn(), slug, body.get("rating"),
+                                           review_id=body.get("review_id"))
         except ValueError as e:
             raise HTTPException(422, str(e))
         except KeyError as e:

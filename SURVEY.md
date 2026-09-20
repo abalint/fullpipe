@@ -8,6 +8,12 @@
 > Covered by tests (test_ledger, test_tools `HarvestSeedTest`, test_server
 > `test_survey_roundtrip`; mobile smoke). This doc is the rationale of record.
 
+> **Scope (2026-09-20):** the survey is for standalone episodes (YouTube,
+> local files). Box sets ingested by `tools.series` are rated **as a whole**
+> with a four-step thumbs verdict (👎👎 · 👎 · 👍 · 👍👍, `POST
+> /series/{slug}/rating` → ledger `series_taste`); series episodes carry no
+> per-episode star, axes, chips, follow or note.
+
 Expansion of the taste-capture step (mobile Step 4: *mark watched → rate → tag*)
 from a single 1–5 star into a multi-axis survey, and the rules for converting
 those answers into signals the `/recommend` judge can use.

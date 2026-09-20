@@ -577,6 +577,57 @@ def record_rating(conn, episode_id, rating, tags=None, review_id=None,
             "axes": axes if rating is not None else {}, "follow": follow}
 
 
+SERIES_RATINGS = (-2, -1, 1, 2)   # 👎👎 · 👎 · 👍 · 👍👍
+
+
+def record_series_rating(conn, series, rating, review_id=None):
+    """Rate a box set as a whole (2026-09-20): one thumbs verdict per series
+    slug, appended to `series_taste` — the same append-only shape as
+    taste_events, so re-rating preserves drift and the current verdict is the
+    latest row (query_series_ratings).
+
+      rating    : one of SERIES_RATINGS (-2 👎👎 · -1 👎 · 1 👍 · 2 👍👍), or None
+                  to clear (appends a 'clear' row).
+      review_id : optional client id; a replayed review_id is a no-op so an
+                  offline outbox re-flush never double-appends.
+
+    The slug must belong to at least one ledger episode (episodes.series) —
+    a series the ledger has never seen can't be rated."""
+    if rating is not None and (isinstance(rating, bool) or rating not in SERIES_RATINGS):
+        raise ValueError(f"series rating must be one of {SERIES_RATINGS} or null, "
+                         f"got {rating!r}")
+    if not series or not conn.execute(
+            "SELECT 1 FROM episodes WHERE series = ? LIMIT 1", (series,)).fetchone():
+        raise KeyError(f"series not found in ledger: {series!r}")
+    if review_id and conn.execute(
+            "SELECT 1 FROM series_taste WHERE review_id = ?", (review_id,)).fetchone():
+        return {"series": series, "review_id": review_id, "rating": rating,
+                "duplicate": True}
+    ts = now_iso()
+    review_id = review_id or uuid.uuid4().hex
+    conn.execute(
+        "INSERT INTO series_taste (series, review_id, value, ts) VALUES (?, ?, ?, ?)",
+        (series, review_id, "clear" if rating is None else str(rating), ts))
+    conn.commit()
+    return {"series": series, "review_id": review_id, "rating": rating,
+            "rated_at": ts}
+
+
+def query_series_ratings(conn, series=None):
+    """Current thumbs verdict per series: {slug: {"rating": int|None,
+    "rated_at": ts}} from the latest series_taste row (a 'clear' reads as
+    None). One slug → its verdict dict, or None if never rated."""
+    rows = conn.execute(
+        "SELECT series, value, ts FROM series_taste ORDER BY id").fetchall()
+    out = {}
+    for r in rows:   # later rows overwrite: latest wins
+        out[r["series"]] = {"rating": None if r["value"] == "clear" else int(r["value"]),
+                            "rated_at": r["ts"]}
+    if series is not None:
+        return out.get(series)
+    return out
+
+
 def set_follow(conn, channel_id, channel, state, ts=None):
     """Upsert a channel's follow intent (SURVEY.md §4a). `block` is a hard veto
     the recommender drops from seeds; `more` keeps a channel a strong seed even
@@ -2882,6 +2933,11 @@ def main(argv=None):
     p.add_argument("--follow", choices=FOLLOW_STATES,
                    help="channel intent (decoupled from this video's score)")
     p.add_argument("--note", help="free-text reaction; the judge parses it")
+    p = sub.add_parser("rate-series", help="thumbs verdict for a whole box set (tools.series)")
+    p.add_argument("series", help="series slug (episodes.series)")
+    p.add_argument("rating", choices=["-2", "-1", "1", "2", "clear"],
+                   help="-2 👎👎 · -1 👎 · 1 👍 · 2 👍👍 · clear")
+    p = sub.add_parser("series-ratings", help="current thumbs verdict per series")
     p = sub.add_parser("set-follow", help="set a channel's follow intent directly")
     p.add_argument("channel_id")
     p.add_argument("state", choices=FOLLOW_STATES)
@@ -3016,6 +3072,11 @@ def main(argv=None):
                 if getattr(args, a) is not None}
         _json_out(record_rating(conn, args.episode_id, rating, args.tag,
                                 axes=axes, follow=args.follow, note=args.note))
+    elif args.verb == "rate-series":
+        rating = None if args.rating == "clear" else int(args.rating)
+        _json_out(record_series_rating(conn, args.series, rating))
+    elif args.verb == "series-ratings":
+        _json_out(query_series_ratings(conn))
     elif args.verb == "set-follow":
         _json_out(set_follow(conn, args.channel_id, args.channel, args.state))
     elif args.verb == "presenter-get":
