@@ -25,7 +25,9 @@ from pathlib import Path
 
 
 def episodes_root(cfg):
-    return Path(cfg["work_dir"]) / "episodes"
+    # expanduser defensively: a raw config.json (not lib_config.load_config)
+    # carries a literal "~", which would create ./~/immersion in the cwd
+    return Path(cfg["work_dir"]).expanduser() / "episodes"
 
 
 def episode_dir(cfg, episode_id, create=False):
@@ -36,7 +38,7 @@ def episode_dir(cfg, episode_id, create=False):
 
 
 def downloads_dir(cfg):
-    d = Path(cfg["work_dir"]) / "downloads"
+    d = Path(cfg["work_dir"]).expanduser() / "downloads"
     d.mkdir(parents=True, exist_ok=True)
     return d
 

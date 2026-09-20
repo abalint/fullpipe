@@ -257,7 +257,19 @@ class QueueAndLedgerTest(unittest.TestCase):
 
     @staticmethod
     def _fake_ffmpeg(argv):
-        Path(argv[-1]).write_bytes(b"v")  # the output is always last
+        out = Path(argv[-1])  # the output is always last
+        if out.suffix == ".srt":  # a subtitle extraction: real Japanese text
+            out.write_text("1\n00:00:01,000 --> 00:00:02,000\nこんにちは\n\n", encoding="utf-8")
+        else:
+            out.write_bytes(b"v")
+
+    @staticmethod
+    def _fake_ffmpeg_english_subs(argv):
+        out = Path(argv[-1])
+        if out.suffix == ".srt":  # a "jpn"-tagged track that is really English
+            out.write_text("1\n00:00:01,000 --> 00:00:02,000\nHello there\n\n", encoding="utf-8")
+        else:
+            out.write_bytes(b"v")
 
     def test_materialize_transcodes_then_parks_a_stage_copy(self):
         lib_dir, stage = self._library()
@@ -314,6 +326,25 @@ class QueueAndLedgerTest(unittest.TestCase):
         self.assertIn("0:a:1", calls[0])  # jpn is the second audio stream
         self.assertEqual(calls[1][calls[1].index("-map") + 1], "0:3")
         self.assertEqual(S.load_manifest(self.cfg, "hotspot")["episodes"][0]["subs"], "embedded")
+
+    def test_materialize_rejects_embedded_track_mislabeled_jpn(self):
+        # dual-audio BD rips tag the English-for-Japanese-audio track "jpn":
+        # the extracted text must be checked, and a non-Japanese track dropped
+        lib_dir, stage = self._library()
+        self.cfg["library"]["stage_dir"] = ""
+        man = S.load_manifest(self.cfg, "hotspot")
+        man["episodes"][0]["remote_subs"] = None
+        S.save_manifest(self.cfg, man)
+        probe = {"streams": [{"index": 0, "codec_type": "video", "codec_name": "hevc", "height": 720},
+                             {"index": 1, "codec_type": "audio", "tags": {"language": "jpn"}},
+                             {"index": 2, "codec_type": "subtitle", "codec_name": "ass",
+                              "tags": {"language": "jpn"}}],
+                 "format": {"duration": "10"}}
+        with unittest.mock.patch.object(S, "probe", return_value=probe), \
+                unittest.mock.patch.object(S, "_ffmpeg", side_effect=self._fake_ffmpeg_english_subs):
+            S.materialize(self.cfg, "hotspot", 1, log=lambda m: None)
+        self.assertIsNone(S.load_manifest(self.cfg, "hotspot")["episodes"][0]["subs"])
+        self.assertFalse(S.local_subs_path(self.cfg, "hotspot", 1).exists())
         self.assertFalse((self.work / "t7").exists())
 
 

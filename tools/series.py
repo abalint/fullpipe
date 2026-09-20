@@ -373,6 +373,20 @@ def ep_label_of(slug, ep_no):
     return f"{slug} e{int(ep_no):02d}"
 
 
+def _looks_japanese(srt_path, min_ratio=0.2):
+    """True when a fair share of the file's text lines carry kana/kanji."""
+    try:
+        text = Path(srt_path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    lines = [ln for ln in text.splitlines()
+             if ln.strip() and not ln.strip().isdigit() and "-->" not in ln]
+    if not lines:
+        return False
+    jp = sum(1 for ln in lines if any("\u3040" <= ch <= "\u30ff" or "\u4e00" <= ch <= "\u9fff" for ch in ln))
+    return jp / len(lines) >= min_ratio
+
+
 def prepare_episode(cfg, man, ep, log=print):
     """The Mac's 480p copy of an original on the library share (skipped if
     video.mp4 is already there) and its Japanese .srt beside the manifest —
@@ -422,7 +436,13 @@ def prepare_episode(cfg, man, ep, log=print):
         log(f"  {ep['label']}: extracting embedded Japanese subtitle track {sub_idx}…")
         _ffmpeg(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", src,
                  "-map", f"0:{sub_idx}", "-c:s", "srt", str(subs)])
-        result["subs"] = "embedded"
+        if _looks_japanese(subs):
+            result["subs"] = "embedded"
+        else:
+            # Dual-audio rips often tag the English-for-Japanese-audio track
+            # "jpn" (Bubblegum Crisis BDs) — trust the text, not the tag.
+            subs.unlink(missing_ok=True)
+            log(f"  {ep['label']}: embedded track {sub_idx} is tagged jpn but is not Japanese text — Stage 1 will ASR it")
     else:
         log(f"  {ep['label']}: no Japanese subtitles — Stage 1 will ASR it")
     stage_copies(cfg, slug, ep_no, dest, subs, log=log, label=ep["label"])
