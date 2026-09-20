@@ -328,8 +328,13 @@ if best-in-class furigana/tap typography is worth a separate codebase.
   popup, page reader — starts a short debounce, then the episode's whole mark set is frozen into
   one batch and the outbox flushes; no submit button. Because every batch is the full set, the
   server dedupes tap evidence per (word, source, episode) so re-sent snapshots never stack weight.
-- Offline cache of pulled prep docs + videos; background sync via **WorkManager** constrained to
-  *unmetered network + charging*.
+- Offline cache of pulled prep docs + videos. Video downloads are manual-tap but run in a
+  **native foreground service** (`VideoDownloadService`, `dataSync` type, progress notification,
+  wake lock): they keep going when you switch tabs or leave the app, results wait natively until
+  the webview has written its record (reconcile on every foreground return), and every ⬇ button
+  paints its own episode from one shared state (`downloads.ts`) — two downloads at once no longer
+  show each other's numbers. (2026-09-20; before this the webview pulled the file itself and died
+  with backgrounding.) A WorkManager *unmetered + charging* auto-pull is still not built.
 - In-app learning player: WebView `<video>` over the downloaded local file
   under a subtitle overlay built from the tokenized transcript —
   watch-time word taps land in the same tap store/outbox as prep-doc taps.
@@ -411,8 +416,9 @@ reimplement them.*
    queue-aware: reviews the queue (`server.jobqueue` CLI), asks what to curate, skips
    acquire/coverage when Stage-1 artifacts exist, and closes jobs to `staged` itself.
 3. ~~Scaffold the Capacitor client~~ **Done 2026-07-05 → `anki/mobile/`.** Remaining from this
-   item: WorkManager background video pull (downloads are manual-tap for now)
-   and the retention/pin/storage-cap controls.
+   item: WorkManager *automatic* video pull (downloads are manual-tap, but since 2026-09-20 they
+   run in a native foreground service and survive backgrounding) and the
+   retention/pin/storage-cap controls.
 4. ~~Wire the Android share-sheet enqueue target.~~ **Done** (ShareTargetPlugin → queue screen).
 5. Prove the overnight flow end-to-end on one batch: queue at night → videos local by morning →
    curate → cards + prep sync in seconds.
