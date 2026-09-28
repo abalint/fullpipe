@@ -1,6 +1,6 @@
 ---
 name: series
-description: Ingest an already-downloaded TV/anime box set from the media server's library (the Raspberry Pi's `library` share, mounted at /Volumes/library/Japanese/...) into the fullPipe Immersion Workstation as a series playlist. `/series ingest <folder>` transcodes 480p copies on the Mac (VideoToolbox, originals never touched), parks a stage copy on the server's `t7` share, pairs each episode with its Japanese subtitles, enqueues the episodes with series/episode-order identity, and runs Stage 1 — the phone then shows the series grouped in playlist order with autoplay-next; curation stays in `/immerse`. Also `/series list | status <slug> | fetch <slug> | evict <slug> | remove <slug>` for the video retention tiers (phone ⇄ Mac ⇄ media server). Use for "/series", "ingest this series", "add the drama folder on the media server / the Pi", "set up a playlist for <show>", "free up disk from a watched series", "bring back the videos for <show>".
+description: Ingest an already-downloaded TV/anime box set from the media server's library (the Raspberry Pi's `library` share, mounted at /Volumes/library/Japanese/...) into the fullPipe Immersion Workstation as a series playlist. `/series ingest <folder>` transcodes 480p copies on the Mac (VideoToolbox, originals never touched), parks a stage copy on the server's `t7` share, pairs each episode with its Japanese subtitles, enqueues the episodes with series/episode-order identity, and runs Stage 1 — the phone then shows the series grouped in playlist order with autoplay-next; curation stays in `/immerse`. Also `/series list | status <slug> | archive <slug>|--all | fetch <slug> | restore <slug> | evict <slug> [--artifacts] | remove <slug>` for the retention tiers (phone ⇄ Mac ⇄ media server): `archive` mirrors a series' curation artifacts (and 480p copies) onto the media server so the Mac is never the only holder, `evict --artifacts` then frees the Mac, and a phone ⬇ / `fetch` brings everything back. Use for "/series", "ingest this series", "add the drama folder on the media server / the Pi", "set up a playlist for <show>", "free up disk from a watched series", "move <show> onto the media server", "bring back the videos for <show>".
 ---
 
 # /series — box sets from the media server
@@ -26,7 +26,9 @@ box for ASR and manga boxing. This skill drives `tools/series.py`, which:
 3. **parks a copy** of the mp4 + srt in the stage dir on the server's
    writable `t7` share (`/Volumes/t7/fullpipe_stage/<slug>/`) so a later
    `fetch` after an `evict` is a copy, not a transcode. Best-effort: if t7
-   is unreachable the ingest still completes;
+   is unreachable the ingest still completes. The curation artifacts get
+   their own tier next door (`/Volumes/t7/fullpipe_archive/<slug>/`) —
+   see *Archive tier* below;
 4. **enqueues** `series://<slug>/<n>` → job/episode id `ser_<slug>_eNN` with
    `series`, `series_title`, `ep_no` on the row, and lets the worker run
    Stage 1 (the running server's worker picks it up; `--no-drain` off = drain
@@ -57,9 +59,11 @@ $PY -m tools.series scan   "drama/hotspot"                               # dry l
 $PY -m tools.series ingest "drama/hotspot" --slug hotspot --title "Hot Spot" [--episodes 1,3-5] [--dry-run] [--no-drain]
 $PY -m tools.series list
 $PY -m tools.series status hotspot                                       # per-episode state / video on Mac?
-$PY -m tools.series fetch  hotspot [--episodes 2-4]                      # re-materialize evicted videos (stage copy, else re-transcode)
-$PY -m tools.series evict  hotspot [--episodes ...] [--all]              # drop Mac video.mp4 (+mp3); watched only unless --all
-$PY -m tools.series remove hotspot [--remote]                            # full delete on the Mac (+ stage copies on t7); never the originals
+$PY -m tools.series archive hotspot | --all [--episodes ...]            # mirror artifacts (+ park 480p copies) onto the media server; never deletes
+$PY -m tools.series fetch  hotspot [--episodes 2-4]                      # re-materialize evicted artifacts + videos (archive / stage copy / else re-transcode)
+$PY -m tools.series restore hotspot [--episodes ...] [--overwrite]       # artifacts + queue rows back from the archive, no video
+$PY -m tools.series evict  hotspot [--episodes ...] [--all] [--artifacts]   # drop Mac video.mp4 (+mp3); watched only unless --all; --artifacts = derived files too, only where the archive is current
+$PY -m tools.series remove hotspot [--remote]                            # full delete on the Mac (+ stage copies and archive on t7); never the originals
 ```
 
 Ingest is idempotent: re-running skips local videos, stage copies and queue
@@ -93,14 +97,48 @@ on the Pi.
 
 | where | what | reclaim | restore |
 |---|---|---|---|
-| phone | 480p video + sidecars | swipe-delete a series row = **phone-local only** (server untouched; taps/prep cache kept) | ⬇ on the row / series header |
-| Mac | `episodes/<id>/video.mp4` (+ `downloads/<id>.mp3`) | `evict` (watched by default) | `fetch`, or automatically when the phone asks `GET /video` (503 "restoring", retry) |
-| media server `t7` | stage copies `/Volumes/t7/fullpipe_stage/<slug>/` | `remove --remote` | re-transcoded from the original on demand |
+| phone | 480p video + sidecars | swipe-delete a series row = **phone-local only** (server untouched; taps/prep cache kept) | ⬇ on the row / series header — the button reads "restoring…" while the Mac pulls an evicted episode back from the media server, then downloads |
+| Mac | `episodes/<id>/video.mp4` (+ `downloads/<id>.mp3`) | `evict` (watched by default) | `fetch`, or automatically when the phone asks `GET /video` (503 + Retry-After, the phone polls) |
+| Mac | the derived files: `episodes/<id>/*` (transcript, coverage, curate, prep, picks, clips…), `downloads/<id>.ja.*` | `evict --artifacts` — per episode, **only once the archive is verified current** | `fetch` / `restore`, or automatically when the phone asks for the video, prep, subs or definitions (503, restore, retry) |
+| media server `t7` | stage copies `/Volumes/t7/fullpipe_stage/<slug>/` + the artifact archive `/Volumes/t7/fullpipe_archive/<slug>/` | `remove --remote` | videos re-transcoded from the original on demand; the archive is the only other copy of the artifacts — keep it |
 | media server `library` | originals under `/Volumes/library/Japanese` | **never** | — |
 
-Derived data (transcript, coverage, curate, prep, picks, clips, ledger
-evidence, cards) is never tied to the video's presence. `DELETE /jobs/{id}`
+Derived data is never tied to the video's presence. `DELETE /jobs/{id}`
 refuses series rows without `?force=true`; the real removal is `remove`.
+The ledger (exposure evidence, marks, ratings) is one SQLite file for
+everything, not per series — its off-site copy is the daily ledger backup.
+
+## Archive tier (2026-09-20)
+
+`archive <slug>` mirrors onto the media server everything the Mac derived
+for a series: each `episodes/<id>/` minus `video.mp4`, the
+`downloads/<id>.ja.srt|.ja.words.json` sidecars, the manifest and srt
+beside it, and a `series/queue.json` snapshot of the queue rows (state,
+watched, passive) so a restore onto a fresh Mac keeps its progress. It is
+a **mirror, never a move**: a re-run copies only files whose size/mtime
+changed (re-curation) and deletes nothing. It also **backfills the stage
+tier** — a 480p copy on the Mac with no stage copy is parked — which is
+what the desktop-era series (hotspot, dorohedoro, edgerunners) needed.
+
+It runs by itself in three places, so the server stays current without
+anyone remembering: the sync server archives an episode in the background
+the moment it flips to watched (that is when its artifacts are final and
+the phone is about to free its copy), `tools/backup_ledger.sh` runs
+`archive --all` nightly, and `/immerse` may call it after curating a
+series batch. Run it by hand after a big curation pass if you want the
+server current now.
+
+`status <slug>` shows the tiers per episode: `video_local` /
+`artifacts_local` (Mac) and `staged` / `archived` (media server). The
+"move it off the Mac" flow for a finished show is
+
+```sh
+$PY -m tools.series archive <slug>              # mirror (idempotent)
+$PY -m tools.series evict <slug> --artifacts    # Mac frees video + derived files; unarchived episodes are kept and named
+```
+
+and a rewatch later is the phone's ⬇ (or `fetch`): the server restores
+artifacts first, then the video, answering 503 + Retry-After meanwhile.
 
 ## Phone side (MOBILE.md — Series)
 

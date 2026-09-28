@@ -22,6 +22,8 @@ from tools import series as S
 from tools._staging import episode_dir
 
 
+JA_SRT = "1\n00:00:01,000 --> 00:00:02,000\nこんにちは\n\n".encode("utf-8")
+
 class IdentityTest(unittest.TestCase):
     def test_source_roundtrip(self):
         self.assertEqual(S.parse_series_source("series://hotspot/3"), ("hotspot", 3))
@@ -243,7 +245,7 @@ class QueueAndLedgerTest(unittest.TestCase):
         lib_dir, stage = self.work / "library" / "drama" / "hotspot", self.work / "t7" / "stage"
         lib_dir.mkdir(parents=True)
         (lib_dir / "Hot.Spot.EP01.1080p.mkv").write_bytes(b"ORIGINAL")
-        (lib_dir / "Hot.Spot.EP01.Jpn.srt").write_bytes(b"1\n")
+        (lib_dir / "Hot.Spot.EP01.Jpn.srt").write_bytes(JA_SRT)
         self.cfg["library"] = {"mounts": {}, "series_root": str(self.work / "library"),
                                "stage_dir": str(stage),
                                "legacy_roots": {"E:/Japanese": str(self.work / "library")}}
@@ -283,7 +285,7 @@ class QueueAndLedgerTest(unittest.TestCase):
         argv = ff.call_args_list[0].args[0]
         self.assertIn("h264_videotoolbox", argv)
         self.assertEqual(argv[argv.index("-i") + 1], str(lib_dir / "Hot.Spot.EP01.1080p.mkv"))
-        self.assertEqual(S.local_subs_path(self.cfg, "hotspot", 1).read_bytes(), b"1\n")
+        self.assertEqual(S.local_subs_path(self.cfg, "hotspot", 1).read_bytes(), JA_SRT)
         # stage tier: the copy + srt are parked on the (fake) t7 share
         self.assertEqual((stage / "hotspot" / "hotspot-e01.mp4").read_bytes(), b"v")
         self.assertTrue((stage / "hotspot" / "hotspot-e01.ja.srt").exists())
@@ -327,6 +329,36 @@ class QueueAndLedgerTest(unittest.TestCase):
         self.assertEqual(calls[1][calls[1].index("-map") + 1], "0:3")
         self.assertEqual(S.load_manifest(self.cfg, "hotspot")["episodes"][0]["subs"], "embedded")
 
+    def test_materialize_skips_english_sidecar_for_embedded_jpn_track(self):
+        # fan-sub box sets (Terrace House NF rips): an untagged English .ass
+        # beside the mkv pairs as "the" subtitle; the jpn track inside wins
+        lib_dir, stage = self._library()
+        self.cfg["library"]["stage_dir"] = ""
+        (lib_dir / "Hot.Spot.EP01.ass").write_text("[Script Info]\n", encoding="utf-8")
+        man = S.load_manifest(self.cfg, "hotspot")
+        man["episodes"][0]["remote_subs"] = r"E:\Japanese\drama\hotspot\Hot.Spot.EP01.ass"
+        S.save_manifest(self.cfg, man)
+        probe = {"streams": [{"index": 0, "codec_type": "video", "codec_name": "h264", "height": 1080},
+                             {"index": 1, "codec_type": "audio", "tags": {"language": "jpn"}},
+                             {"index": 2, "codec_type": "subtitle", "codec_name": "subrip",
+                              "tags": {"language": "jpn"}}],
+                 "format": {"duration": "10"}}
+
+        def ffmpeg(argv):
+            out = Path(argv[-1])
+            if out.suffix != ".srt":
+                out.write_bytes(b"v")
+            elif "-map" in argv:  # the embedded jpn track
+                out.write_text("1\n00:00:01,000 --> 00:00:02,000\nこんにちは\n\n", encoding="utf-8")
+            else:  # the English fan-sub sidecar
+                out.write_text("1\n00:00:01,000 --> 00:00:02,000\nHello there\n\n", encoding="utf-8")
+
+        with unittest.mock.patch.object(S, "probe", return_value=probe), \
+                unittest.mock.patch.object(S, "_ffmpeg", side_effect=ffmpeg):
+            S.materialize(self.cfg, "hotspot", 1, log=lambda m: None)
+        self.assertIn("こんにちは", S.local_subs_path(self.cfg, "hotspot", 1).read_text(encoding="utf-8"))
+        self.assertEqual(S.load_manifest(self.cfg, "hotspot")["episodes"][0]["subs"], "embedded")
+
     def test_materialize_rejects_embedded_track_mislabeled_jpn(self):
         # dual-audio BD rips tag the English-for-Japanese-audio track "jpn":
         # the extracted text must be checked, and a non-Japanese track dropped
@@ -346,6 +378,155 @@ class QueueAndLedgerTest(unittest.TestCase):
         self.assertIsNone(S.load_manifest(self.cfg, "hotspot")["episodes"][0]["subs"])
         self.assertFalse(S.local_subs_path(self.cfg, "hotspot", 1).exists())
         self.assertFalse((self.work / "t7").exists())
+
+
+class ArchiveTierTest(unittest.TestCase):
+    """The curation artifacts' tier on the media server (a temp dir stands
+    in for the t7 share): archive mirrors, evict --artifacts is gated on it,
+    materialize / restore bring everything back."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.work = Path(self.tmp.name)
+        self.archive = self.work / "t7" / "archive"
+        self.stage = self.work / "t7" / "stage"
+        self.cfg = {"work_dir": str(self.work), "ledger_db": str(self.work / "ledger.db"),
+                    "library": {"mounts": {}, "series_root": str(self.work / "library"),
+                                "stage_dir": str(self.stage), "archive_dir": str(self.archive),
+                                "legacy_roots": {}}}
+        S.save_manifest(self.cfg, {
+            "slug": "hotspot", "title": "Hot Spot", "remote_dir": "drama/hotspot", "cap": 480,
+            "episodes": [{"ep_no": 1, "label": "EP01", "id": "ser_hotspot_e01",
+                          "title": "Hot Spot EP01", "remote_video": "x/EP01.mkv"},
+                         {"ep_no": 2, "label": "EP02", "id": "ser_hotspot_e02",
+                          "title": "Hot Spot EP02", "remote_video": "x/EP02.mkv"}]})
+        S.local_subs_path(self.cfg, "hotspot", 1).write_text("1\n", encoding="utf-8")
+        self.conn = q.open_queue(self.work / "queue.db")
+        for n in (1, 2):
+            q.enqueue(self.conn, f"series://hotspot/{n}", title=f"Hot Spot EP0{n}",
+                      series="hotspot", series_title="Hot Spot", ep_no=n)
+            q.set_state(self.conn, f"ser_hotspot_e0{n}", "watched", episode_id=f"ser_hotspot_e0{n}")
+        self._stage_local("ser_hotspot_e01")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _stage_local(self, ep):
+        d = episode_dir(self.cfg, ep, create=True)
+        for name, body in (("transcript.json", '{"sentences": []}'), ("coverage.json", "{}"),
+                           ("curate.json", '{"synopsis": "x"}'), ("sentences.srt", "1\n")):
+            (d / name).write_text(body, encoding="utf-8")
+        (d / "video.mp4").write_bytes(b"VIDEO")
+        (d / "video.mp4.part.mp4").write_bytes(b"junk")
+        (d / "clips").mkdir(exist_ok=True)
+        (d / "clips" / "c1.mp3").write_bytes(b"clip")
+        dl = self.work / "downloads"
+        dl.mkdir(exist_ok=True)
+        (dl / f"{ep}.ja.srt").write_text("1\n", encoding="utf-8")
+        (dl / f"{ep}.ja.words.json").write_text("[]", encoding="utf-8")
+        (dl / f"{ep}.mp3").write_bytes(b"audio")
+        return d
+
+    def test_archive_mirrors_artifacts_not_video_and_backfills_stage(self):
+        res = S.archive(self.cfg, "hotspot", log=lambda m: None)
+        root = self.archive / "hotspot"
+        ep = root / "episodes" / "ser_hotspot_e01"
+        self.assertTrue((ep / "transcript.json").exists())
+        self.assertTrue((ep / "curate.json").exists())
+        self.assertTrue((ep / "clips" / "c1.mp3").exists())
+        self.assertFalse((ep / "video.mp4").exists())            # video is the stage tier's
+        self.assertFalse((ep / "video.mp4.part.mp4").exists())   # in-flight junk skipped
+        self.assertTrue((root / "downloads" / "ser_hotspot_e01.ja.srt").exists())
+        self.assertTrue((root / "downloads" / "ser_hotspot_e01.ja.words.json").exists())
+        self.assertFalse((root / "downloads" / "ser_hotspot_e01.mp3").exists())
+        self.assertTrue((root / "series" / "series.json").exists())
+        self.assertTrue((root / "series" / "hotspot-e01.ja.srt").exists())
+        self.assertTrue((root / "README.txt").exists())
+        snap = S.read_json(root / "series" / "queue.json")
+        self.assertEqual({j["id"]: j["state"] for j in snap["jobs"]},
+                         {"ser_hotspot_e01": "watched", "ser_hotspot_e02": "watched"})
+        # the Mac's 480p copy had no stage copy yet → parked (desktop-era backfill)
+        self.assertEqual((self.stage / "hotspot" / "hotspot-e01.mp4").read_bytes(), b"VIDEO")
+        self.assertEqual(res["staged"], ["EP01"])
+        self.assertEqual(res["copied"], 9)
+        # a second pass copies nothing (size + mtime match), never deletes
+        res2 = S.archive(self.cfg, "hotspot", log=lambda m: None)
+        self.assertEqual((res2["copied"], res2["skipped"]), (0, 9))
+        self.assertTrue(S.archive_status(self.cfg, "hotspot", "ser_hotspot_e01")["current"])
+        # re-curation changes a file → only that file goes again
+        import os, time
+        cur = episode_dir(self.cfg, "ser_hotspot_e01") / "curate.json"
+        cur.write_text('{"synopsis": "longer text"}', encoding="utf-8")
+        os.utime(cur, (time.time() + 10, time.time() + 10))
+        st = S.archive_status(self.cfg, "hotspot", "ser_hotspot_e01")
+        self.assertEqual((st["archived"], st["current"], st["missing"]),
+                         (True, False, ["episodes/ser_hotspot_e01/curate.json"]))
+        res3 = S.archive(self.cfg, "hotspot", log=lambda m: None)
+        self.assertEqual(res3["copied"], 1)
+        self.assertIn("longer", (ep / "curate.json").read_text(encoding="utf-8"))
+
+    def test_evict_artifacts_is_gated_on_a_current_archive(self):
+        d = episode_dir(self.cfg, "ser_hotspot_e01")
+        res = S.evict(self.cfg, "hotspot", artifacts=True, log=lambda m: None)
+        self.assertEqual(res["evicted"], ["EP02"])  # nothing local for EP02: nothing to lose
+        self.assertEqual(len(res["kept"]), 1)
+        self.assertTrue(res["kept"][0].startswith("EP01 (not archived: episodes/ser_hotspot_e01/"), res["kept"])
+        self.assertTrue((d / "transcript.json").exists())
+        S.archive(self.cfg, "hotspot", log=lambda m: None)
+        res = S.evict(self.cfg, "hotspot", artifacts=True, log=lambda m: None)
+        self.assertEqual(res["evicted"], ["EP01", "EP02"])
+        self.assertFalse(d.exists())
+        self.assertEqual(list((self.work / "downloads").glob("ser_hotspot_e01.*")), [])
+        # the manifest + subs beside it stay on the Mac (tiny; the phone's rows still resolve)
+        self.assertTrue(S.manifest_path(self.cfg, "hotspot").exists())
+        # status reads the server-side tiers
+        st = S.status(self.cfg, "hotspot")["episodes"][0]
+        self.assertEqual((st["video_local"], st["artifacts_local"], st["staged"], st["archived"]),
+                         (False, False, True, True))
+
+    def test_materialize_restores_artifacts_before_the_video(self):
+        S.archive(self.cfg, "hotspot", log=lambda m: None)
+        S.evict(self.cfg, "hotspot", artifacts=True, log=lambda m: None)
+        d = episode_dir(self.cfg, "ser_hotspot_e01")
+        self.assertFalse(d.exists())
+        S.materialize(self.cfg, "hotspot", 1, log=lambda m: None)
+        self.assertEqual((d / "video.mp4").read_bytes(), b"VIDEO")            # stage copy
+        self.assertTrue((d / "transcript.json").exists())                     # archive
+        self.assertTrue((d / "clips" / "c1.mp3").exists())
+        self.assertTrue((self.work / "downloads" / "ser_hotspot_e01.ja.words.json").exists())
+        self.assertFalse((self.work / "downloads" / "ser_hotspot_e01.mp3").exists())  # nothing reads it
+
+    def test_restore_brings_back_files_and_queue_rows(self):
+        S.archive(self.cfg, "hotspot", log=lambda m: None)
+        S.evict(self.cfg, "hotspot", artifacts=True, log=lambda m: None)
+        # a fresh Mac: no manifest, no queue rows
+        import shutil
+        shutil.rmtree(S.series_dir(self.cfg, "hotspot"))
+        q.delete_job(self.conn, "ser_hotspot_e01")
+        q.delete_job(self.conn, "ser_hotspot_e02")
+        res = S.restore(self.cfg, "hotspot", log=lambda m: None)
+        self.assertTrue(S.manifest_path(self.cfg, "hotspot").exists())
+        self.assertTrue(S.local_subs_path(self.cfg, "hotspot", 1).exists())
+        self.assertTrue((episode_dir(self.cfg, "ser_hotspot_e01") / "curate.json").exists())
+        self.assertFalse((episode_dir(self.cfg, "ser_hotspot_e01") / "video.mp4").exists())
+        self.assertEqual(sorted(res["queue_rows"]), ["ser_hotspot_e01", "ser_hotspot_e02"])
+        job = q.get_job(self.conn, "ser_hotspot_e01")
+        self.assertEqual((job["state"], job["series"], job["ep_no"]), ("watched", "hotspot", 1))
+
+    def test_remove_remote_drops_stage_and_archive(self):
+        S.archive(self.cfg, "hotspot", log=lambda m: None)
+        self.cfg["ledger_db"] = str(self.work / "ledger.db")
+        S.remove(self.cfg, "hotspot", remote_too=True, log=lambda m: None)
+        self.assertFalse((self.archive / "hotspot").exists())
+        self.assertFalse((self.stage / "hotspot").exists())
+
+    def test_no_archive_tier_is_quiet(self):
+        self.cfg["library"]["archive_dir"] = ""
+        self.assertEqual(S.restore_artifacts(self.cfg, "hotspot", "ser_hotspot_e01"), 0)
+        self.assertEqual(S.archive_status(self.cfg, "hotspot", "ser_hotspot_e01"),
+                         {"archived": False, "current": False, "missing": None})
+        with self.assertRaises(RuntimeError):
+            S.archive(self.cfg, "hotspot", log=lambda m: None)
 
 
 class ServerRoutesTest(unittest.TestCase):
@@ -400,6 +581,69 @@ class ServerRoutesTest(unittest.TestCase):
         self.assertEqual(calls, [("hotspot", 1)])
         r = self.client.get("/video/ser_hotspot_e01?t=t")
         self.assertEqual(r.status_code, 200)
+
+    def test_restore_503_carries_retry_after(self):
+        with unittest.mock.patch.object(S, "materialize", lambda *a, **k: None):
+            r = self.client.get("/video/ser_hotspot_e01?t=t")
+        self.assertEqual(r.status_code, 503)
+        self.assertEqual(r.headers.get("retry-after"), "10")
+
+    def test_missing_series_artifacts_restore_instead_of_404(self):
+        """The phone pulls prep/subs after the video: an episode whose
+        derived files were evicted to the media server answers 503 (restore
+        kicked off) rather than 404, then serves once the files are back."""
+        calls = []
+
+        def fake_restore(cfg, slug, ep_id, log=None, overwrite=False):
+            calls.append((slug, ep_id))
+            d = episode_dir(cfg, ep_id, create=True)
+            (d / "sentences.srt").write_text("1\n00:00:01,000 --> 00:00:02,000\nx\n",
+                                             encoding="utf-8")
+            (d / "transcript.json").write_text('{"sentences": []}', encoding="utf-8")
+            (d / "coverage.json").write_text('{"sentences": []}', encoding="utf-8")
+            return 1
+        with unittest.mock.patch.object(S, "restore_artifacts", fake_restore):
+            r = self.client.get("/video/ser_hotspot_e01/subs?t=t")
+            self.assertEqual(r.status_code, 503)
+            self.assertEqual(r.headers.get("retry-after"), "10")
+        import time
+        for _ in range(50):
+            if (episode_dir(self.cfg, "ser_hotspot_e01") / "sentences.srt").exists():
+                break
+            time.sleep(0.05)
+        self.assertEqual(calls, [("hotspot", "ser_hotspot_e01")])
+        self.assertEqual(self.client.get("/video/ser_hotspot_e01/subs?t=t").status_code, 200)
+        # a plain (non-series) episode is still a 404
+        self.assertEqual(self.client.get("/prep/yt_nothing", headers=self.auth).status_code, 404)
+        # nothing archived → the next request says so (404) instead of polling forever
+        (episode_dir(self.cfg, "ser_hotspot_e01") / "sentences.srt").unlink()
+        with unittest.mock.patch.object(S, "restore_artifacts", lambda *a, **k: 0):
+            self.assertEqual(self.client.get("/video/ser_hotspot_e01/subs?t=t").status_code, 503)
+            for _ in range(50):
+                if not any(th.name == "restore-ser_hotspot_e01" and th.is_alive()
+                           for th in __import__("threading").enumerate()):
+                    break
+                time.sleep(0.05)
+            r = self.client.get("/video/ser_hotspot_e01/subs?t=t")
+        self.assertEqual(r.status_code, 404)
+        self.assertIn("nothing archived", r.json()["detail"])
+
+    def test_watched_series_episode_is_archived_in_the_background(self):
+        calls = []
+
+        def fake_archive(cfg, slug, ep_nos=None, log=None):
+            calls.append((slug, ep_nos))
+            return {}
+        self.cfg["library"] = {"archive_dir": str(Path(self.tmp.name) / "t7" / "archive")}
+        job = q.get_job(q.open_queue(Path(self.tmp.name) / "queue.db"), "ser_hotspot_e01")
+        with unittest.mock.patch.object(S, "archive", fake_archive):
+            t = self.app.state.archive_series_episode(job)
+            t.join(5)
+        self.assertEqual(calls, [("hotspot", {1})])
+        # nothing for a non-series job, or without an archive tier
+        self.assertIsNone(self.app.state.archive_series_episode({"source": "https://youtu.be/x"}))
+        self.cfg["library"]["archive_dir"] = ""
+        self.assertIsNone(self.app.state.archive_series_episode(job))
 
     def test_missing_plain_video_is_404(self):
         conn = q.open_queue(Path(self.cfg["work_dir"]) / "queue.db")

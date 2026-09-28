@@ -80,6 +80,7 @@
     "series_root": "/Volumes/library/Japanese",
     "manga_root": "/Volumes/library/Japanese/manga",
     "stage_dir": "/Volumes/t7/fullpipe_stage",
+    "archive_dir": "/Volumes/t7/fullpipe_archive",
     "legacy_roots": {
       "E:/Japanese": "/Volumes/library/Japanese",
       "H:/manga": "/Volumes/library/Japanese/manga"

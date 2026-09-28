@@ -84,7 +84,10 @@ box-set episodes: curate them like any episode, in `ep_no` order when several
 are ready. Their subs are broadcast/streaming files with **no sentence
 punctuation** — the punctuation gate (Step 2.5) is not optional for them —
 and the `channel` on the ledger row is the series title (that is the taste
-grouping for a show).
+grouping for a show). When a series batch is curated, mirror the results
+onto the media server — `$PY -m tools.series archive <slug>` (idempotent;
+the server also does it per episode on watched, and nightly) — so the Mac
+is never the only holder of the curation.
 
 **Ask, don't assume** (AskUserQuestion when interactive):
 

@@ -73,6 +73,20 @@ cp "$SNAP_GZ" "$LOCAL_DIR/$NAME.gz"
 find "$LOCAL_DIR" -name 'ledger-*.db.gz' -type f -mtime +"$KEEP_DAYS" -delete
 log "Local copy in $LOCAL_DIR (pruned > ${KEEP_DAYS}d)"
 
+# --- Series artifacts → media server -----------------------------------------
+# The daily "maintain" pass for the box-set tiers (tools/series.py — archive):
+# every series' curation artifacts are mirrored onto the media server's t7
+# share and any 480p copy without a stage copy is parked there, so the phone
+# can drop an episode and re-pull it later without the Mac being the only
+# holder of anything. Best-effort: an unmounted share just logs.
+if [[ -x "$REPO_DIR/.venv/bin/python" ]]; then
+  if (cd "$REPO_DIR" && "$REPO_DIR/.venv/bin/python" -m tools.series archive --all >/dev/null 2>"$STAGE/series-archive.log"); then
+    log "Series artifacts mirrored to the media server."
+  else
+    log "WARNING: series archive --all failed (media server off?): $(tail -1 "$STAGE/series-archive.log" 2>/dev/null)"
+  fi
+fi
+
 # --- Off-site upload + prune --------------------------------------------------
 if [[ -x "$RCLONE" ]] && "$RCLONE" listremotes 2>/dev/null | grep -q "^${REMOTE_NAME}:"; then
   DEST="${REMOTE_NAME}:${REMOTE_PATH}"

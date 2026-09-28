@@ -33,6 +33,7 @@ from lib_config import load_config  # noqa: E402
 from server import jobqueue as q  # noqa: E402
 from server.worker import Worker  # noqa: E402
 from tools import jmdict  # noqa: E402
+from tools import library as lib  # noqa: E402
 from tools import series as series_tool
 from tools import manga as manga_tool  # noqa: E402
 from tools._staging import (  # noqa: E402
@@ -440,7 +441,7 @@ def create_app(cfg, start_worker=True):
             transcript = load_transcript(cfg, episode_id)
             coverage = load_coverage(cfg, episode_id)
         except FileNotFoundError as e:
-            raise HTTPException(404, str(e))
+            raise _artifacts_missing(episode_id, e)
         curate_path = episode_dir(cfg, episode_id) / "curate.json"
         curate = read_json(curate_path) if curate_path.exists() else None
         return build_prep_data(transcript, coverage, curate)
@@ -558,7 +559,7 @@ def create_app(cfg, start_worker=True):
         try:
             coverage = load_coverage(cfg, episode_id)
         except FileNotFoundError as e:
-            raise HTTPException(404, str(e))
+            raise _artifacts_missing(episode_id, e)
         curate_path = episode_dir(cfg, episode_id) / "curate.json"
         curate = read_json(curate_path) if curate_path.exists() else {}
         notes_at: dict[int, list] = {}
@@ -675,7 +676,7 @@ def create_app(cfg, start_worker=True):
         try:
             coverage = load_coverage(cfg, episode_id)
         except FileNotFoundError as e:
-            raise HTTPException(404, str(e))
+            raise _artifacts_missing(episode_id, e)
         here = {t.get("l") for s in coverage["sentences"] for t in s["tokens"]} - {None}
         curate_path = episode_dir(cfg, episode_id) / "curate.json"
         curate = read_json(curate_path) if curate_path.exists() else {}
@@ -726,7 +727,7 @@ def create_app(cfg, start_worker=True):
         try:
             coverage = load_coverage(cfg, episode_id)
         except FileNotFoundError as e:
-            raise HTTPException(404, str(e))
+            raise _artifacts_missing(episode_id, e)
         curate_path = episode_dir(cfg, episode_id) / "curate.json"
         curate = read_json(curate_path) if curate_path.exists() else {}
         repair_path = episode_dir(cfg, episode_id) / "repair.json"
@@ -767,11 +768,16 @@ def create_app(cfg, start_worker=True):
         raise HTTPException(401, "bad or missing token")
 
     manga_lib = {"at": 0.0, "items": []}  # GET /manga/library cache
-    restores = {}  # episode_id → thread re-pulling an evicted series video
+    restores = {}  # episode_id → thread re-pulling an evicted series episode
+    RESTORE_RETRY_AFTER = "10"  # seconds; the phone's downloader polls on it
 
-    def _restore_series_video(job):
-        """An evicted series episode (tools.series evict) is re-materialized
-        from the PC in the background; the phone retries its download."""
+    def _restore_series(job, video=True):
+        """An evicted series episode (tools.series evict [--artifacts]) comes
+        back from the media server in the background — the archived
+        artifacts, and with `video` the 480p stage copy too (tools.series
+        materialize does both, artifacts first). The phone retries on the
+        503 + Retry-After it got meanwhile; a failure surfaces on its next
+        request as a 404 and is then forgotten so a later tap tries again."""
         ep = job["episode_id"]
         t = restores.get(ep)
         if t and t.is_alive():
@@ -780,13 +786,73 @@ def create_app(cfg, start_worker=True):
 
         def run():
             try:
-                series_tool.materialize(cfg, slug, ep_no, log=lambda m: None)
-                durations.pop(ep, None)
+                if video:
+                    series_tool.materialize(cfg, slug, ep_no, log=lambda m: None)
+                    durations.pop(ep, None)
+                elif not series_tool.restore_artifacts(cfg, slug, ep, log=lambda m: None):
+                    raise FileNotFoundError("nothing archived for this episode")
+                if restores.get(ep) is t:
+                    restores.pop(ep, None)  # done; a later eviction starts afresh
             except Exception as e:  # surfaced on the next GET as a 404
                 restores[ep] = e
         t = threading.Thread(target=run, daemon=True, name=f"restore-{ep}")
         restores[ep] = t
         t.start()
+
+    def _restoring(job, what, video):
+        """503 (+ Retry-After) while the episode is pulled back, 404 with the
+        reason when the last attempt failed."""
+        ep = job["episode_id"]
+        prev = restores.get(ep)
+        if isinstance(prev, Exception):
+            restores.pop(ep, None)
+            return HTTPException(404, f"restoring {what} from the media server failed: {prev}")
+        _restore_series(job, video=video)
+        return HTTPException(503, f"{what} is being restored from the media server — retry shortly",
+                             headers={"Retry-After": RESTORE_RETRY_AFTER})
+
+    def _artifacts_missing(episode_id, err):
+        """A derived file is gone: for a series episode whose artifacts were
+        evicted to the archive that means 'restoring' (503), not 'no such
+        episode' (404)."""
+        job = q.get_job(queue_conn(), episode_id)
+        if job and job.get("series"):
+            return _restoring(job, "the episode's prep", video=False)
+        return HTTPException(404, str(err))
+
+    archive_locks = {}  # series slug → Lock: one archive pass per series at a time
+
+    def _archive_series_episode(job):
+        """Mirror a series episode's artifacts (and park its stage copy) on
+        the media server in the background — run when it flips to watched,
+        the moment its derived files are final and the phone is about to
+        free its copy. Best-effort; the daily backup's `archive --all`
+        catches anything this misses."""
+        if not job or not job.get("series") or not lib.archive_dir(cfg):
+            return None
+        parsed = series_tool.parse_series_source(job["source"])
+        if not parsed:
+            return None
+        slug, ep_no = parsed
+        lock = archive_locks.setdefault(slug, threading.Lock())
+
+        def run():
+            with lock:
+                try:
+                    series_tool.archive(cfg, slug, ep_nos={ep_no}, log=lambda m: None)
+                except Exception as e:  # the share is off, the disk is full …
+                    print(f"series archive {slug} e{ep_no} failed: {str(e)[:200]}", file=sys.stderr)
+        t = threading.Thread(target=run, daemon=True, name=f"archive-{slug}-{ep_no}")
+        t.start()
+        return t
+
+    app.state.archive_threads = []  # tests join these
+    app.state.archive_series_episode = _archive_series_episode
+
+    def _archive_after_watch(job):
+        t = _archive_series_episode(job)
+        if t:
+            app.state.archive_threads.append(t)
 
     @app.get("/video/{episode_id}")
     def get_video(episode_id: str, request: Request, t: str | None = None):
@@ -795,13 +861,7 @@ def create_app(cfg, start_worker=True):
         if not path.exists():
             job = q.get_job(queue_conn(), episode_id)
             if job and job.get("series"):
-                prev = restores.get(episode_id)
-                if isinstance(prev, Exception):
-                    restores.pop(episode_id, None)
-                    raise HTTPException(404, f"restoring from the PC failed: {prev}")
-                _restore_series_video(job)
-                raise HTTPException(
-                    503, "video is being restored from the PC — retry in a minute")
+                raise _restoring(job, "the video", video=True)
             raise HTTPException(404, f"no staged video for {episode_id}")
         return FileResponse(path, media_type="video/mp4")  # starlette serves ranges
 
@@ -810,7 +870,7 @@ def create_app(cfg, start_worker=True):
         media_auth(request, t)
         path = episode_dir(cfg, episode_id) / "sentences.srt"
         if not path.exists():
-            raise HTTPException(404, f"no subs for {episode_id}")
+            raise _artifacts_missing(episode_id, f"no subs for {episode_id}")
         return FileResponse(path, media_type="text/plain; charset=utf-8")
 
     # --- taps / watched (the reconcile round-trip) --------------------------------
@@ -931,6 +991,7 @@ def create_app(cfg, start_worker=True):
             q.set_state(qconn, job["id"], "watched",
                         episode_id=job["episode_id"], title=job.get("title"),
                         error=error)
+            _archive_after_watch(job)
 
     closeouts = {}  # episode_id → Thread; lets tests (and debuggers) join
     app.state.closeouts = closeouts
@@ -1063,6 +1124,7 @@ def create_app(cfg, start_worker=True):
                     q.set_state(qconn, job["id"], "watched",
                                 episode_id=job["episode_id"], title=job.get("title"))
                     result["job_watched"] = True
+                    _archive_after_watch(job)
         return result
 
     @app.delete("/viewtime/{sid}", dependencies=[Depends(auth)])

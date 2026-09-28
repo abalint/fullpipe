@@ -16,6 +16,19 @@ the Mac can `evict` a watched episode's video to reclaim disk, and either is
 re-materialized from the stage copy (or re-transcoded from the original)
 on demand.
 
+The curation artifacts have their own tier on the same share (2026-09-20):
+`archive` mirrors everything derived for a series — the episode dirs minus
+the video, the downloads/ subtitle + word-timing sidecars, the manifest and
+srt beside it, a snapshot of the queue rows — into <archive_dir>/<slug>/,
+and backfills the stage copies for series ingested before the stage tier
+existed. It is a mirror, never a move: a re-run copies only what changed
+and deletes nothing. `evict --artifacts` then drops the Mac's derived files
+too (refused unless the archive is verified current), and `materialize`
+(so `fetch`, and the server's GET /video for the phone's ⬇) restores the
+artifacts before the video, so a rewatch after a full evict is one tap.
+The server also archives an episode as soon as it flips to watched, and
+the daily backup runs `archive --all`.
+
 Identity: source `series://<slug>/<ep_no>` → episode id `ser_<slug>_e<nn>`,
 stable across evict/fetch cycles (unlike local_<hash>, which bakes in mtime).
 
@@ -29,8 +42,12 @@ CLI:
                                            [--dry-run] [--no-drain]
     python -m tools.series list
     python -m tools.series status <slug>
-    python -m tools.series fetch  <slug> [--episodes ...]      # re-materialize video.mp4
-    python -m tools.series evict  <slug> [--episodes ...] [--all]   # drop video.mp4 (watched only unless --all)
+    python -m tools.series fetch  <slug> [--episodes ...]      # re-materialize artifacts + video.mp4
+    python -m tools.series evict  <slug> [--episodes ...] [--all] [--artifacts]
+                                           # drop video.mp4 (watched only unless --all);
+                                           # --artifacts: the derived files too (archived first)
+    python -m tools.series archive <slug>|--all [--episodes ...]  # mirror artifacts (+ stage copies) to the media server
+    python -m tools.series restore <slug> [--episodes ...]     # artifacts + queue rows back from the archive (no video)
     python -m tools.series remove <slug> [--remote]            # full delete (jobs, artifacts, ledger footprint)
 """
 
@@ -373,6 +390,24 @@ def ep_label_of(slug, ep_no):
     return f"{slug} e{int(ep_no):02d}"
 
 
+def _take_sidecar(cfg, ep, subs, log=print):
+    """Copy/convert the paired sidecar to `subs`; True when it holds Japanese
+    text. An untagged lone sidecar is assumed to match the audio, but fan-sub
+    box sets (the Terrace House NF rips) ship English .ass beside a jpn text
+    track inside the mkv — trust the text, not the pairing."""
+    sc = lib.resolve(cfg, ep["remote_subs"])
+    if lib.suffix_of(sc) == ".srt":
+        lib.copy_file(sc, subs)
+    else:  # .ass/.vtt → srt
+        _ffmpeg(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", sc,
+                 "-c:s", "srt", str(subs)])
+    if _looks_japanese(subs):
+        return True
+    subs.unlink(missing_ok=True)
+    log(f"  {ep['label']}: sidecar {lib.name_of(sc)} is not Japanese text — ignoring it")
+    return False
+
+
 def _looks_japanese(srt_path, min_ratio=0.2):
     """True when a fair share of the file's text lines carry kana/kanji."""
     try:
@@ -424,13 +459,7 @@ def prepare_episode(cfg, man, ep, log=print):
 
     if subs.exists():
         result["subs"] = ep.get("subs") or "sidecar"
-    elif ep.get("remote_subs"):
-        sc = lib.resolve(cfg, ep["remote_subs"])
-        if lib.suffix_of(sc) == ".srt":
-            lib.copy_file(sc, subs)
-        else:  # .ass/.vtt → srt
-            _ffmpeg(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", sc,
-                     "-c:s", "srt", str(subs)])
+    elif ep.get("remote_subs") and _take_sidecar(cfg, ep, subs, log):
         result["subs"] = "sidecar"
     elif sub_idx is not None:
         log(f"  {ep['label']}: extracting embedded Japanese subtitle track {sub_idx}…")
@@ -447,6 +476,235 @@ def prepare_episode(cfg, man, ep, log=print):
         log(f"  {ep['label']}: no Japanese subtitles — Stage 1 will ASR it")
     stage_copies(cfg, slug, ep_no, dest, subs, log=log, label=ep["label"])
     return result
+
+
+# --- archive tier: curation artifacts on the media server ---------------------------
+
+VIDEO_TIER = {"video.mp4"}  # lives in the stage tier; never archived
+
+
+def archive_dir_of(cfg, slug):
+    """<archive_dir>/<slug> on the t7 share; None when no archive tier."""
+    root = lib.archive_dir(cfg)
+    return f"{root}/{slug}" if root else None
+
+
+def _is_artifact(path):
+    name = path.name
+    return (path.is_file() and name not in VIDEO_TIER and ".part" not in name
+            and not name.startswith("."))
+
+
+def episode_artifacts(cfg, ep_id):
+    """[(local Path, archive-relative name)] for one episode: every file in
+    its episode dir except the video tier, plus the downloads/ sidecars
+    (subs, word timings — the acquire mp3 is video-tier: evict drops it and
+    nothing reads it after Stage 1)."""
+    out = []
+    d = episode_dir(cfg, ep_id)
+    if d.exists():
+        for p in sorted(d.rglob("*")):
+            if _is_artifact(p):
+                out.append((p, f"episodes/{ep_id}/{p.relative_to(d).as_posix()}"))
+    for p in sorted(downloads_dir(cfg).glob(f"{ep_id}.*")):
+        if p.suffix != ".mp3" and _is_artifact(p):
+            out.append((p, f"downloads/{p.name}"))
+    return out
+
+
+def series_artifacts(cfg, slug):
+    """The manifest and the subtitle sidecars beside it."""
+    d = series_dir(cfg, slug)
+    return [(p, f"series/{p.name}") for p in sorted(d.glob("*")) if _is_artifact(p)]
+
+
+def _archive_reachable(cfg, root):
+    """The archive tier is configured and its share is up. Never raises."""
+    if not root:
+        return False
+    try:
+        lib.ensure_mounted(cfg, root, log=lambda m: None)
+    except RuntimeError:
+        return False
+    return True
+
+
+def archive_status(cfg, slug, ep_id):
+    """One episode's standing in the archive: {"archived", "current", "missing"}
+    — archived = Stage 1's transcript + coverage are on the server, current =
+    every artifact the Mac holds is mirrored (size + mtime), missing = the
+    local files the archive lacks or has an older/other copy of."""
+    root = archive_dir_of(cfg, slug)
+    if not _archive_reachable(cfg, root):
+        return {"archived": False, "current": False, "missing": None}
+    base = f"{root}/episodes/{ep_id}"
+    archived = all(os.path.isfile(f"{base}/{f}") for f in ("transcript.json", "coverage.json"))
+    missing = [rel for local, rel in episode_artifacts(cfg, ep_id)
+               if not lib.same_file(local, f"{root}/{rel}")]
+    return {"archived": archived, "current": archived and not missing, "missing": missing}
+
+
+def _mirror(cfg, pairs, root, log):
+    copied, skipped, nbytes = 0, 0, 0
+    for local, rel in pairs:
+        dst = f"{root}/{rel}"
+        if lib.same_file(local, dst):
+            skipped += 1
+            continue
+        lib.copy_file(local, dst)
+        copied += 1
+        nbytes += local.stat().st_size
+    return copied, skipped, nbytes
+
+
+_README = """{title} — fullPipe series mirror (tools.series archive, last run {at})
+
+  episodes/<id>/   everything derived for an episode except the video
+                   (transcript, coverage, curate, picks, prep.html, presenter,
+                   repair, sentences.srt, words.json, clips, feedback …)
+  downloads/       the subtitle + word-timing sidecars Stage 1 produced
+  series/          series.json (the manifest), the <slug>-eNN.ja.srt subs,
+                   queue.json (a snapshot of the queue rows: state, watched)
+
+The 480p videos are the stage tier next door: {stage}/
+
+Restore from the Mac (each is idempotent):
+  python -m tools.series restore {slug}          # artifacts + queue rows, no video
+  python -m tools.series fetch   {slug}          # artifacts + videos (the phone's ⬇ does the same via the server)
+"""
+
+
+def archive(cfg, slug, ep_nos=None, log=print):
+    """Mirror the series onto the media server's t7 share: curation
+    artifacts → <archive_dir>/<slug>/, the Mac's 480p copies → the stage
+    dir (a backfill for series ingested before the stage tier), a snapshot
+    of the queue rows, a README. Never deletes anything anywhere; a re-run
+    copies only what changed (size + mtime)."""
+    from server import jobqueue as q
+    man = load_manifest(cfg, slug)
+    root = archive_dir_of(cfg, slug)
+    if not root:
+        raise RuntimeError("no archive tier configured (config.json → library.archive_dir)")
+    lib.ensure_mounted(cfg, root, log=log)
+    conn = q.open_queue(Path(cfg["work_dir"]).expanduser() / "queue.db")
+    summary = {"slug": slug, "copied": 0, "skipped": 0, "bytes": 0, "staged": [],
+               "episodes": []}
+    rows = []
+    for ep in man["episodes"]:
+        if ep_nos and ep["ep_no"] not in ep_nos:
+            continue
+        c, k, b = _mirror(cfg, episode_artifacts(cfg, ep["id"]), root, log)
+        summary["copied"] += c
+        summary["skipped"] += k
+        summary["bytes"] += b
+        v = video_path(cfg, slug, ep["ep_no"])
+        if v.exists() and v.stat().st_size > 0:
+            stage_mp4, _ = remote_stage_paths(series_cfg(cfg), slug, ep["ep_no"])
+            if stage_mp4 and not _stage_has(cfg, stage_mp4):
+                if stage_copies(cfg, slug, ep["ep_no"], v, local_subs_path(cfg, slug, ep["ep_no"]),
+                                log=log, label=ep["label"]):
+                    summary["staged"].append(ep["label"])
+        job = q.get_job(conn, ep["id"])
+        if job:
+            rows.append(job)
+        summary["episodes"].append(ep["label"])
+        if c:
+            log(f"  {ep['label']}: {c} file(s) mirrored")
+    c, k, b = _mirror(cfg, series_artifacts(cfg, slug), root, log)
+    summary["copied"] += c
+    summary["skipped"] += k
+    summary["bytes"] += b
+    # the queue rows (state, watched) — the Mac's queue.db is the only other copy
+    snap_path = f"{root}/series/queue.json"
+    snap = read_json(snap_path) if os.path.isfile(snap_path) else {"jobs": []}
+    by_id = {j["id"]: j for j in snap.get("jobs", [])}
+    by_id.update({j["id"]: j for j in rows})
+    write_json(snap_path, {"snapshot_at": now_iso(), "jobs": sorted(by_id.values(), key=lambda j: j["id"])})
+    Path(f"{root}/README.txt").write_text(_README.format(
+        title=man["title"], slug=slug, at=now_iso()[:10],
+        stage=f"{lib.stage_dir(cfg)}/{slug}" if lib.stage_dir(cfg) else "(no stage tier)"),
+        encoding="utf-8")
+    log(f"archived {slug}: {summary['copied']} file(s) copied ({summary['bytes'] / 1e6:.1f} MB), "
+        f"{summary['skipped']} already current"
+        + (f"; stage copies parked: {', '.join(summary['staged'])}" if summary["staged"] else ""))
+    return summary
+
+
+def restore_artifacts(cfg, slug, ep_id, log=print, overwrite=False):
+    """Copy one episode's archived artifacts back to the Mac — the files the
+    Mac lacks (or all of them with overwrite). Returns the number copied;
+    0 when there is no archive tier / nothing archived for the episode.
+    Quiet on an unreachable share: the archive is a backstop, not a gate."""
+    root = archive_dir_of(cfg, slug)
+    if not _archive_reachable(cfg, root):
+        return 0
+    n = 0
+    src_dir = f"{root}/episodes/{ep_id}"
+    pairs = []
+    if os.path.isdir(src_dir):
+        for src in lib.listing(src_dir):
+            rel = src[len(src_dir) + 1:]
+            pairs.append((src, episode_dir(cfg, ep_id) / rel))
+    dl_dir = f"{root}/downloads"
+    if os.path.isdir(dl_dir):
+        for src in lib.listing(dl_dir):
+            name = lib.name_of(src)
+            if name.startswith(ep_id + "."):
+                pairs.append((src, downloads_dir(cfg) / name))
+    for src, dst in pairs:
+        if overwrite or not dst.exists():
+            lib.copy_file(src, dst)
+            n += 1
+    if n:
+        log(f"  {ep_id}: {n} artifact file(s) restored from the media server")
+    return n
+
+
+def restore(cfg, slug, ep_nos=None, log=print, overwrite=False):
+    """Artifacts + queue rows of a series back from the archive (no video —
+    that is `fetch`). The manifest and srt sidecars beside it come back too
+    when the Mac has none; a missing queue row is re-created in the state
+    the snapshot recorded (a restore onto a fresh Mac keeps 'watched')."""
+    from server import jobqueue as q
+    root = archive_dir_of(cfg, slug)
+    if not root:
+        raise RuntimeError("no archive tier configured (config.json → library.archive_dir)")
+    lib.ensure_mounted(cfg, root, log=log)
+    if not os.path.isdir(root):
+        raise FileNotFoundError(f"nothing archived for '{slug}' under {lib.archive_dir(cfg)}")
+    # series-level first: the manifest may be the thing we are missing
+    series_src = f"{root}/series"
+    restored_series = 0
+    if os.path.isdir(series_src):
+        for src in lib.listing(series_src):
+            name = lib.name_of(src)
+            if name == "queue.json":
+                continue
+            dst = series_dir(cfg, slug, create=True) / name
+            if overwrite or not dst.exists():
+                lib.copy_file(src, dst)
+                restored_series += 1
+    man = load_manifest(cfg, slug)
+    conn = q.open_queue(Path(cfg["work_dir"]).expanduser() / "queue.db")
+    snap_path = f"{root}/series/queue.json"
+    snap = {j["id"]: j for j in (read_json(snap_path).get("jobs", []) if os.path.isfile(snap_path) else [])}
+    files, rows = 0, []
+    for ep in man["episodes"]:
+        if ep_nos and ep["ep_no"] not in ep_nos:
+            continue
+        files += restore_artifacts(cfg, slug, ep["id"], log=log, overwrite=overwrite)
+        if not q.get_job(conn, ep["id"]):
+            old = snap.get(ep["id"])
+            job, _ = q.enqueue(conn, series_source(slug, ep["ep_no"]), title=ep.get("title"),
+                               series=slug, series_title=man["title"], ep_no=ep["ep_no"])
+            if old and old.get("state") in q.STATES and old["state"] not in q.STAGE1_STATES:
+                q.set_state(conn, job["id"], old["state"], episode_id=ep["id"], title=ep.get("title"))
+            if old and old.get("passive"):
+                q.set_passive(conn, job["id"], True)
+            rows.append(ep["id"])
+    log(f"restored {slug}: {files} artifact file(s), {restored_series} series file(s), "
+        f"{len(rows)} queue row(s) re-created")
+    return {"slug": slug, "files": files, "series_files": restored_series, "queue_rows": rows}
 
 
 # --- materialize / evict on the Mac -------------------------------------------------
@@ -466,6 +724,13 @@ def materialize(cfg, slug, ep_no, log=print, remote=None):
     dest = video_path(cfg, slug, ep_no)
     subs = local_subs_path(cfg, slug, ep_no)
     stage_mp4, stage_srt = remote_stage_paths(series_cfg(cfg), slug, ep_no)
+    # derived files evicted to the archive come back before the video, so the
+    # phone's ⬇ (server GET /video) lands prep + subs + video in one restore
+    if not (episode_dir(cfg, ep["id"]) / "transcript.json").exists():
+        try:
+            restore_artifacts(cfg, slug, ep["id"], log=log)
+        except (OSError, RuntimeError) as ex:
+            log(f"  {ep['label']}: artifact restore skipped ({ex})")
     changed = False
     if not (dest.exists() and dest.stat().st_size > 0):
         if _stage_has(cfg, stage_mp4):
@@ -493,11 +758,13 @@ def materialize(cfg, slug, ep_no, log=print, remote=None):
     return dest
 
 
-def evict(cfg, slug, ep_nos=None, all_states=False, log=print):
+def evict(cfg, slug, ep_nos=None, all_states=False, artifacts=False, log=print):
     """Drop the Mac's video.mp4 (+ the acquire mp3) for a series' episodes to
-    reclaim disk. Everything derived stays; `fetch` (or the phone's download
-    button, via the server) brings the video back from the PC. Watched
-    episodes only unless all_states."""
+    reclaim disk; `fetch` (or the phone's download button, via the server)
+    brings it back from the media server. Watched episodes only unless
+    all_states. With `artifacts` the derived files go too (episode dir,
+    downloads/ sidecars) — per episode only after the archive on the media
+    server is verified current; an unarchived episode is kept and named."""
     from server import jobqueue as q
     man = load_manifest(cfg, slug)
     conn = q.open_queue(Path(cfg["work_dir"]).expanduser() / "queue.db")
@@ -510,14 +777,32 @@ def evict(cfg, slug, ep_nos=None, all_states=False, log=print):
         if not all_states and state not in ("watched", "pushing") and state is not None:
             kept.append(f"{ep['label']} ({state})")
             continue
+        if artifacts:
+            # gate: every derived file the Mac holds is mirrored (an episode
+            # with nothing local has nothing to lose)
+            st = archive_status(cfg, slug, ep["id"])
+            if st["missing"] is None or st["missing"]:
+                why = ("archive unreachable" if st["missing"] is None
+                       else f"not archived: {', '.join(st['missing'][:3])}")
+                kept.append(f"{ep['label']} ({why})")
+                continue
         for p in (video_path(cfg, slug, ep["ep_no"]),
                   downloads_dir(cfg) / f"{ep['id']}.mp3"):
             if p.exists():
                 freed += p.stat().st_size
                 p.unlink()
+        if artifacts:
+            d = episode_dir(cfg, ep["id"])
+            if d.exists():
+                freed += sum(p.stat().st_size for p in d.rglob("*") if p.is_file())
+                shutil.rmtree(d)
+            for p in downloads_dir(cfg).glob(f"{ep['id']}.*"):
+                freed += p.stat().st_size
+                p.unlink()
         evicted.append(ep["label"])
-    log(f"evicted {len(evicted)} video(s), {freed / 1e6:.0f} MB freed"
-        + (f"; kept unwatched: {', '.join(kept)}" if kept else ""))
+    log(f"evicted {len(evicted)} episode(s){' incl. artifacts' if artifacts else ''}, "
+        f"{freed / 1e6:.0f} MB freed"
+        + (f"; kept: {', '.join(kept)}" if kept else ""))
     return {"evicted": evicted, "kept": kept, "freed_bytes": freed}
 
 
@@ -620,11 +905,16 @@ def status(cfg, slug):
     for e in man["episodes"]:
         job = q.get_job(conn, e["id"])
         v = video_path(cfg, slug, e["ep_no"])
+        stage_mp4, _ = remote_stage_paths(series_cfg(cfg), slug, e["ep_no"])
         rows.append({"ep_no": e["ep_no"], "label": e["label"], "id": e["id"],
                      "state": job["state"] if job else None,
                      "video_local": v.exists(),
                      "video_mb": round(v.stat().st_size / 1e6) if v.exists() else None,
-                     "subs": e.get("subs")})
+                     "subs": e.get("subs"),
+                     "artifacts_local": (episode_dir(cfg, e["id"]) / "transcript.json").exists(),
+                     # the media server's tiers: 480p stage copy / artifact archive current
+                     "staged": _stage_has(cfg, stage_mp4),
+                     "archived": archive_status(cfg, slug, e["id"])["archived"]})
     return {"slug": slug, "title": man["title"], "remote_dir": man["remote_dir"],
             "episodes": rows}
 
@@ -633,8 +923,8 @@ def remove(cfg, slug, remote_too=False, log=print):
     """Full delete of a series on the Mac: queue rows, episode dirs, the
     ledger footprint of unwatched episodes (watched evidence is kept, as the
     server's DELETE does), the manifest — and with remote_too the stage
-    copies on the server's t7 share. The originals on the library share are
-    never touched."""
+    copies and the artifact archive on the server's t7 share. The originals
+    on the library share are never touched."""
     import shutil
 
     from ledger import ledgerctl as lc
@@ -653,10 +943,10 @@ def remove(cfg, slug, remote_too=False, log=print):
         q.delete_job(conn, e["id"])
         removed.append(e["id"])
     if remote_too:
-        sd = lib.stage_dir(cfg)
-        if sd:
-            lib.ensure_mounted(cfg, sd, log=log)
-            shutil.rmtree(f"{sd}/{slug}", ignore_errors=True)
+        for root in (lib.stage_dir(cfg), lib.archive_dir(cfg)):
+            if root:
+                lib.ensure_mounted(cfg, root, log=log)
+                shutil.rmtree(f"{root}/{slug}", ignore_errors=True)
     shutil.rmtree(series_dir(cfg, slug), ignore_errors=True)
     log(f"removed series {slug}: {len(removed)} episode(s)")
     return {"removed": removed, "remote_stage_removed": remote_too}
@@ -684,16 +974,27 @@ def main(argv=None):
     sub.add_parser("list", help="known series")
     p = sub.add_parser("status", help="per-episode state for one series")
     p.add_argument("slug")
-    p = sub.add_parser("fetch", help="re-materialize evicted videos (stage copy or re-transcode)")
+    p = sub.add_parser("fetch", help="re-materialize evicted artifacts + videos (archive / stage copy / re-transcode)")
     p.add_argument("slug")
     p.add_argument("--episodes")
     p = sub.add_parser("evict", help="drop local video.mp4 (watched only unless --all)")
     p.add_argument("slug")
     p.add_argument("--episodes")
     p.add_argument("--all", action="store_true")
+    p.add_argument("--artifacts", action="store_true",
+                   help="also drop the derived files — only episodes whose archive is current")
+    p = sub.add_parser("archive", help="mirror artifacts (+ stage copies) onto the media server")
+    p.add_argument("slug", nargs="?")
+    p.add_argument("--all", action="store_true", help="every known series")
+    p.add_argument("--episodes")
+    p = sub.add_parser("restore", help="artifacts + queue rows back from the media server (no video)")
+    p.add_argument("slug")
+    p.add_argument("--episodes")
+    p.add_argument("--overwrite", action="store_true", help="replace local files with the archived copies")
     p = sub.add_parser("remove", help="delete the series from the Mac (never the originals)")
     p.add_argument("slug")
-    p.add_argument("--remote", action="store_true", help="also drop the stage copies on the media server")
+    p.add_argument("--remote", action="store_true",
+                   help="also drop the stage copies and the artifact archive on the media server")
     args = ap.parse_args(argv)
 
     cfg = load_config(args.config)
@@ -725,7 +1026,23 @@ def main(argv=None):
         print(json.dumps(status(cfg, args.slug), ensure_ascii=False, indent=2))
     elif args.verb == "evict":
         print(json.dumps(evict(cfg, args.slug, parse_episode_spec(args.episodes),
-                               all_states=args.all, log=log), ensure_ascii=False, indent=2))
+                               all_states=args.all, artifacts=args.artifacts, log=log),
+                         ensure_ascii=False, indent=2))
+    elif args.verb == "archive":
+        if not args.slug and not args.all:
+            ap.error("archive needs a slug or --all")
+        slugs = [m["slug"] for m in list_series(cfg)] if args.all else [args.slug]
+        out = []
+        for slug in slugs:
+            try:
+                out.append(archive(cfg, slug, parse_episode_spec(args.episodes), log=log))
+            except Exception as ex:  # one series' trouble shouldn't stop the nightly pass
+                log(f"archive {slug} FAILED — {ex}")
+                out.append({"slug": slug, "error": str(ex)})
+        print(json.dumps(out if args.all else out[0], ensure_ascii=False, indent=2, default=str))
+    elif args.verb == "restore":
+        print(json.dumps(restore(cfg, args.slug, parse_episode_spec(args.episodes),
+                                 log=log, overwrite=args.overwrite), ensure_ascii=False, indent=2))
     elif args.verb == "remove":
         print(json.dumps(remove(cfg, args.slug, remote_too=args.remote, log=log),
                          ensure_ascii=False, indent=2))

@@ -6,7 +6,8 @@ library that used to live on the desktop's drives. It exports two SMB
 shares, which the Mac mounts as network drives under /Volumes:
 
     library   /Volumes/library   the media  (Japanese/{anime,drama,manga,…})
-    t7        /Volumes/t7        scratch + the 480p stage copies (writable)
+    t7        /Volumes/t7        scratch: the 480p stage copies + the
+                                 curation-artifact archive (writable)
 
 Everything under `library` is treated as irreplaceable user data: the tools
 only ever read it (CLAUDE.md). `t7` is ours to write.
@@ -18,7 +19,8 @@ only ever read it (CLAUDE.md). `t7` is ours to write.
       "mounts": {"library": "/Volumes/library", "t7": "/Volumes/t7"},
       "series_root": "/Volumes/library/Japanese",
       "manga_root":  "/Volumes/library/Japanese/manga",
-      "stage_dir":   "/Volumes/t7/fullpipe_stage"   # "" = no stage tier
+      "stage_dir":   "/Volumes/t7/fullpipe_stage",  # "" = no stage tier
+      "archive_dir": "/Volumes/t7/fullpipe_archive" # "" = no artifact archive
     }
 
 An SMB mount drops on sleep/reboot; `ensure_mounted(cfg, path)` re-mounts
@@ -40,6 +42,7 @@ DEFAULTS = {
     "series_root": "/Volumes/library/Japanese",
     "manga_root": "/Volumes/library/Japanese/manga",
     "stage_dir": "/Volumes/t7/fullpipe_stage",
+    "archive_dir": "/Volumes/t7/fullpipe_archive",
     # desktop-era prefixes (old manifests, muscle memory) → the mount
     "legacy_roots": {"E:/Japanese": "/Volumes/library/Japanese",
                      "H:/manga": "/Volumes/library/Japanese/manga"},
@@ -153,12 +156,30 @@ def stage_dir(cfg):
     return (library_cfg(cfg).get("stage_dir") or "").rstrip("/")
 
 
+def archive_dir(cfg):
+    """Where a series' curation artifacts are mirrored on the t7 share
+    (tools.series archive); "" = no archive tier."""
+    return (library_cfg(cfg).get("archive_dir") or "").rstrip("/")
+
+
 def copy_file(src, dst):
-    """Atomic-ish copy: write <dst>.part beside the target, then rename."""
+    """Atomic-ish copy: write <dst>.part beside the target, then rename.
+    The mtime rides along (copy2) so a mirror can tell an unchanged file
+    from a re-curated one by size + mtime instead of re-reading it."""
     import shutil
     dst = Path(dst)
     dst.parent.mkdir(parents=True, exist_ok=True)
     tmp = dst.with_name(dst.name + ".part")
-    shutil.copyfile(src, tmp)
+    shutil.copy2(src, tmp)
     tmp.replace(dst)
     return dst
+
+
+def same_file(a, b, slack=2.0):
+    """Both exist with the same size and (to `slack` seconds — SMB rounds)
+    the same mtime: the mirror is current, skip the copy."""
+    try:
+        sa, sb = os.stat(a), os.stat(b)
+    except OSError:
+        return False
+    return sa.st_size == sb.st_size and abs(sa.st_mtime - sb.st_mtime) <= slack

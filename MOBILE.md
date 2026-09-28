@@ -297,11 +297,22 @@ verdict for the whole set (`POST /series/{slug}/rating`, ledger
   a `⬇` for the same reason.
 - *Mac:* `tools.series evict <slug>` drops `video.mp4` (+ the acquire mp3) of
   watched episodes; `fetch` or the phone's next `GET /video` restores from the
-  media server (503 while the copy runs). Transcript, coverage, curate, prep,
-  picks, clips, ledger evidence and cards are untouched.
+  media server. Transcript, coverage, curate, prep, picks, clips, ledger
+  evidence and cards are untouched — unless `evict --artifacts`, which drops
+  the derived files too, per episode and only once the archive below is
+  verified current. While a restore runs the server answers **503 +
+  `Retry-After: 10`** on `/video`, `/video/{id}/subs`, `/prep`, `/transcript`,
+  `/definitions` and `/paint` for that episode (artifacts come back first,
+  then the video); the native downloader polls on it for up to 15 min with
+  the button reading `⬇ restoring…` instead of failing. A restore that finds
+  nothing archived answers 404 on the next request (no endless polling).
 - *Media server:* 480p stage copies under `/Volumes/t7/fullpipe_stage/<slug>/`
-  (a copy, not a transcode, on restore); the originals on the `library`
-  share are never modified or deleted.
+  (a copy, not a transcode, on restore) **and the artifact archive**
+  `/Volumes/t7/fullpipe_archive/<slug>/` (2026-09-20) — `tools.series archive`
+  mirrors every derived file, the manifest/srt and a queue-row snapshot there,
+  idempotently, never deleting; the server runs it for an episode as it flips
+  to watched and the nightly backup runs `archive --all`. The originals on
+  the `library` share are never modified or deleted.
 
 **Playlist on the phone:** every series lives under one collapsible **Series**
 section on the queue (2026-09-20), split into two collapsible shelves — **On
