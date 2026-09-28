@@ -46,15 +46,22 @@ Rules:
 - Stutters and elongations as lettered (ヤ…ヤムチャ, ふ〜ん); dialect and
   rough speech as lettered (オラ, ねえ, だべ) — never "correct" the
   Japanese.
-- `gloss`: one plain-English line saying what the speaker is saying or
-  doing in this bubble, for any bubble a learner with ~4000 known words
-  might not fully get — slang, contractions, dropped particles, ellipsis,
-  dialect, wordplay, a sound word carrying the meaning, or simply a long
-  sentence. Read the page as a whole so the gloss reflects who is talking
-  to whom; mention a pun or a cultural reference briefly when it is the
-  point. `null` for a bubble that needs nothing (a lone はい, ん？, a
-  name). No grammar jargon, ever ("what the speaker is doing", not
-  "causative-passive").
+- `gloss`: a **translation of the bubble** — the line as the character
+  says it, in natural English, the way the licensed English edition would
+  letter it: first/second person kept (あんたのそういうとこマジウザイ →
+  "That's what's so damn annoying about you."), never reported speech or
+  narration ("She finds his attitude annoying." / "He apologizes." are
+  wrong). Keep the tone — rude stays rude, stiff stays stiff. Give one
+  for any bubble a learner with ~4000 known words might not fully get —
+  slang, contractions, dropped particles, ellipsis, dialect, wordplay, a
+  sound word carrying the meaning, or simply a long sentence. Read the
+  page as a whole so pronouns and "you" land on the right person. Only
+  after the translation, and only when it is the point, add a short
+  parenthetical note (a pun, a cultural reference, what a slang word
+  literally is): "Seriously annoying. (マジ = seriously; ウザい =
+  irritating)". A sound effect, sign, chapter title or credit may be
+  given in brackets instead ("[door slams]", "[Chapter 3: …]"). `null` for a bubble that needs
+  nothing (a lone はい, ん？, a name). No grammar jargon, ever.
 - `missed`: lettered dialogue on the page that has **no box at all**
   (rare) — list the text so it can be reported; it can't be laid out.
 - If the image is unreadable for a box, transcribe what you can and note

@@ -422,9 +422,10 @@ def line_box(poly):
 
 
 def rebuild(cfg, episode_id, log=print):
-    """Re-emit manga.json + transcript.json from the OCR + read already on
-    disk, without touching coverage — for a structure change (new block
-    fields) on a volume already read and covered. Refuses if the sentence
+    """Re-emit manga.json (+ read/lines.json, the bubble glosses) from the
+    OCR + read already on disk, without touching coverage — for a
+    structure change (new block fields) or a gloss-only re-read on a volume
+    already read and covered. Refuses if the sentence
     track would differ from the one coverage.json indexes: the reader
     joins the two by idx."""
     ep_dir = episode_dir(cfg, episode_id)
@@ -446,6 +447,10 @@ def rebuild(cfg, episode_id, log=print):
     doc["page_count"] = len(pages)
     doc["built_at"] = now_iso()
     write_json(ep_dir / "manga.json", doc)
+    if glosses:  # a gloss-only re-read lands here too
+        write_json(ep_dir / "read" / "lines.json",
+                   {"episode_id": episode_id, "lines": [
+                       {"idx": i, "gloss": g} for i, g in sorted(glosses.items())]})
     lined = sum(1 for pg in pages for b in pg["blocks"] if b.get("line_boxes"))
     n_blocks = sum(len(pg["blocks"]) for pg in pages)
     log(f"rebuilt {len(pages)} pages / {n_blocks} bubbles ({lined} with line boxes) → {ep_dir}")
@@ -874,7 +879,7 @@ def main(argv=None):
     p.add_argument("episode_id")
     p = sub.add_parser("read-apply", help="rebuild from the agents' reads + re-run coverage")
     p.add_argument("episode_id")
-    p = sub.add_parser("rebuild", help="re-emit manga.json from ocr/ + read/ (structure only, no coverage)")
+    p = sub.add_parser("rebuild", help="re-emit manga.json + bubble glosses from ocr/ + read/ (no coverage)")
     p.add_argument("episode_id")
     args = ap.parse_args(argv)
     cfg = load_config(args.config)
