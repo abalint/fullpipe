@@ -183,6 +183,17 @@ clean-turn-taking variant; never drop the cluster.
 - **ゲーム実況（ソロ）** — one person playing + narrating; continuous natural
   speech, emotion vocabulary. Horror 実況 = maximum reaction language.
   `ゲーム実況 ホラー` · `ゲーム実況 名作` — fun. Solo only; group = crosstalk.
+- **ゲーム語りポッドキャスト** — games discussed, not played: the media-outlet
+  panel (IGN Japan しゃべりすぎGAMER, 3-4 voices, weekly since 2016) and the
+  two-friend audio podcast mirrored to YouTube (ゲームなんとか, こへい×HD, Spotify-
+  native so view counts read tiny). `しゃべりすぎGAMER` · `ゲーム ポッドキャスト` ·
+  `ゲーム 語る Podcast` — hybrid. Risk: the panel overlaps at hot takes; the duo
+  is clean. First offered 2026-09-24 (user asked for "game discussions").
+- **ゲームクリエイター本人の語り** — the designer talking about making games:
+  小島秀夫's TBS Podcast「Brain Structure」(ep.N「小島秀夫流…」, JP version has a
+  JP title), 桜井政博「ゲーム作るには」(2-3 min solo lessons, まとめ動画 for 30 min),
+  and comedian-dev 野田クリスタル hosting 吉田直樹. `小島秀夫 ポッドキャスト` ·
+  `ゲーム開発者 対談` · `桜井政博 ゲーム作るには` — hybrid. First offered 2026-09-24.
 - **将棋・囲碁の対局解説** — a professional narrating a real game move by move:
   棋士's own channels (中村太地, 山口恵梨子), 大盤解説会 archives, 囲碁将棋TV.
   `将棋 解説 対局` · `大盤解説 名人戦` · `囲碁 解説` — hybrid. One or two clear
@@ -416,3 +427,77 @@ the rated veins. Speaker shapes are mostly solo-to-camera or one projected voice
 - near-box, for the exploit lane: **舞台演劇 全編公開 / NHK人形劇** — scripted
   ensemble fiction on a stage (範宙遊泳, アフリカ座, 西野『プペル』; 人形劇 平家物語 /
   三国志) is the audio-drama vein with pictures. Fine picks, do not count.
+
+---
+
+## Criticism, teaching & the practitioner's trade (first mapped 2026-09-21, autopilot top-up)
+
+By 2026-09-21 the three sections above were all sampled or offered, so this
+section maps a fourth region: **someone who knows one thing explaining or
+judging it out loud** — critics talking about art and films, teachers of a
+manual skill, and licensed practitioners describing their own trade. Almost all
+of it is solo-to-camera or a host plus one expert, which is the speaker shape
+the record rates highest; none of it sits near a rated vein.
+
+- **美術・教養解説（山田五郎 shape）** — a critic or editor talking through one
+  painting or one movement, usually with an interviewer feeding questions
+  (山田五郎 オトナの教養講座, こやぎ先生の美術ちゃんねる). `美術 解説 絵画 教養` ·
+  `西洋美術史 解説 講座` — hybrid. Duo with clean turn-taking, 20-40 min, huge
+  reach (1-2 M/upload). Risk: painting names and 美術用語 sit on top of otherwise
+  ordinary speech. First offered 2026-09-21.
+- **学芸員の展示解説** — a museum curator walking their own galleries and saying
+  why each object is there (東京国立近代美術館 via よそ見トラベル, 竹中大工道具館,
+  県立博物館 channels). `学芸員 展示 解説 博物館` — edu. Not the walking vein: a
+  collection being explained, not a place being felt. Risk: most institutional
+  uploads are under 10 min. First offered 2026-09-21.
+- **映画評論・考察** — one reviewer arguing about a film they just saw
+  (たてはま / CGBeginner, おまけの夜, カラクリシネマ). `映画 評論 解説 考察` ·
+  `ネタバレ 感想 レビュー 映画` — hybrid. Dense opinion language. Risk: the
+  「図解」/まとめ tier includes unbranded TTS narration — ear-check. First offered
+  2026-09-21.
+- **アニメ・作品考察（岡田斗司夫 shape）** — a critic doing a long monologue about
+  one work and what it means (岡田斗司夫ゼミ, 山田玲司のヤングサンデー).
+  `アニメ 考察 解説 ゼミ` — hybrid. Solo, unhurried, ~50 min. Risk: the 反応集 /
+  切り抜き tier around it is comment-reading, not talking. First offered 2026-09-21.
+- **書評・文学トーク** — a book YouTuber or a 書評家 introducing what they read
+  (文学YouTuberベル, けんご📚小説紹介, 三宅書店). `書評 本 紹介 小説 おすすめ` —
+  hybrid. Solo or a structured two-person 激論; concrete, everyday register about
+  abstract things. First offered 2026-09-21.
+- **麻雀 対局解説** — a pro or a teacher narrating a real hand tile by tile
+  (発男道場, クリアレインのアトリエ). `麻雀 対局 解説` · `麻雀 実戦解説` — hybrid.
+  Continuous "why I did that" speech over a static board for 60-80 min. Risk:
+  the 牌効率 jargon shell; distinct from 将棋・囲碁 only in subject, so do not
+  count both in one pass. First offered 2026-09-21.
+- **プラモデル・模型 製作講座** — a professional modeler teaching one technique
+  (TAMIYAINC 基礎からのプラモデル講座, モデロチャンネル). `プラモデル 製作 解説` —
+  hybrid. Studio audio, hands-on demonstration scaffolding the talk, 70 tokens/min
+  measured. Risk: the 無言作業 build-along tier is silent. First offered 2026-09-21.
+- **楽器レッスン・演奏解説** — a working teacher explaining how to play
+  (大賀ギタースクール, Mami Hatanaka, 小暮浩史). `ギター 講座 解説 弾き方` ·
+  `ピアノ 解説 演奏法` — edu. Calm solo instruction. Risk: long playing stretches
+  drop the density — take the talk-heavy lesson, not the 演奏 upload. First
+  offered 2026-09-21.
+- **元自衛官・制服組が語る** — a retired officer describing the institution from
+  inside, solo or as a media guest (PIVOT, トッカグンの東京サバイバル,
+  自衛隊セカンドキャリア). `元自衛官 語る 自衛隊` — hybrid. Risk: the disaster-
+  prediction tier next to it is clickbait. First offered 2026-09-21.
+- **パイロット・航空解説** — a current or former captain explaining aircraft and
+  the job (脱サラ元機長の雲さんテレビ, Threefall Japan Aviation, JAL sub-channel).
+  `パイロット 解説 飛行機 操縦` — hybrid. Not 搭乗記 (that's a passenger review) —
+  this is the practitioner. First offered 2026-09-21.
+- **自動車整備士の解説** — a mechanic diagnosing a real fault and narrating it
+  (ガレドリ改, GT-studio, 自動車整備士の学校). `自動車 整備士 解説 故障` — hybrid.
+  Very dense (69 tokens/min measured). Risk: shop noise. First offered 2026-09-21.
+- **獣医の病気解説** — a practising vet explaining one illness to owners
+  (家庭の獣医師ゆう, ベッツアイチャンネル). `獣医 解説 犬 猫 病気` — edu. Solo,
+  clean, deliberately plain register. Risk: small channels, modest view counts.
+  First offered 2026-09-21.
+- **看護師・介護職が語る現場** — `看護師 解説 仕事` · `介護 現場 密着 語る` —
+  hybrid. Offered-adjacent: the talking-head variant is the low-stakes 雑談 shape;
+  prefer the 密着 or the lecture. Shortlisted 2026-09-21, not taken.
+- **アナウンサーの話し方講座** — `アナウンサー 話し方 講座` — edu. Mapped, not yet
+  offered: the uploads are nearly all under 14 min.
+- near-box, for the exploit lane: **鉄道の中の人（運転士・車掌）の解説** and
+  **古着屋巡り・ファッション** — both measured near 26 tokens/min on their
+  highest-view uploads (BGM-over-footage), so gate on density before spending a
+  pick. Dismissed 2026-09-21 on that mechanism, not on taste.
