@@ -260,6 +260,15 @@ class TestMangaStage1(ServerTestBase):
         self.assertEqual(texts[0], "犬が走る。")
         self.assertEqual(len(coverage["sentences"]), len(texts))
         self.assertEqual(doc["page_count"], 3)
+        # the coverage pass stamps per-page word / char counts on the ledger
+        # row — the reading-speed numerator (ledgerctl.query_reading)
+        lconn = lc.open_db(self.cfg["ledger_db"])
+        pw = json.loads(lconn.execute(
+            "SELECT page_words FROM episodes WHERE id = ?", (VOL_EP,)).fetchone()[0])
+        self.assertEqual(pw["secs"], 30.0)
+        self.assertEqual(len(pw["words"]), len(pw["chars"]))
+        self.assertGreater(pw["words"][0], 0)  # 犬が走る。 is on page 0
+        lconn.close()
         self.assertEqual([p["file"] for p in doc["pages"]], ["001.jpg", "002.jpg", "003.jpg"])
         self.assertEqual(doc["pages"][2]["blocks"], [])  # an empty page stays a page
         self.assertEqual(doc["pages"][0]["blocks"][0]["sents"], [0, 1])

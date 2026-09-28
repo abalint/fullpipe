@@ -28,7 +28,7 @@ import json
 import re
 import sys
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -237,6 +237,7 @@ def _migrate(conn):
         ("known_set_size", "known_set_size INTEGER"),
         ("metadata", "metadata TEXT"),
         ("series", "series TEXT"), ("ep_no", "ep_no INTEGER"),
+        ("page_words", "page_words TEXT"),
     ):
         if col not in have:
             conn.execute(f"ALTER TABLE episodes ADD COLUMN {decl}")
@@ -255,6 +256,12 @@ def _migrate(conn):
         conn.execute("ALTER TABLE lemmas ADD COLUMN confirm_score REAL")
     if "seen_by_mode" not in lemma_cols:
         conn.execute("ALTER TABLE lemmas ADD COLUMN seen_by_mode TEXT")
+    if "seen_read" not in lemma_cols:
+        conn.execute("ALTER TABLE lemmas ADD COLUMN seen_read INTEGER NOT NULL DEFAULT 0")
+    if "lookups_by_mode" not in lemma_cols:
+        conn.execute("ALTER TABLE lemmas ADD COLUMN lookups_by_mode TEXT")
+    if "first_medium" not in lemma_cols:
+        conn.execute("ALTER TABLE lemmas ADD COLUMN first_medium TEXT")
     vs_cols = {r["name"] for r in conn.execute("PRAGMA table_info(view_sessions)")}
     if vs_cols and "source" not in vs_cols:
         conn.execute("ALTER TABLE view_sessions ADD COLUMN source TEXT NOT NULL DEFAULT 'app'")
@@ -794,6 +801,114 @@ SUB_MODES = ("on", "kw", "off", "audio")
 # context.mode): a player state, the Listen tab, a 5ch page, the prep doc,
 # a manga page in the reader.
 ENCOUNTER_MODES = SUB_MODES + ("listen", "page", "prep", "manga")
+# The three media a word is met in (2026-09-22 — per-medium stats): watching
+# (the player in any subtitle state, the 🎧 handoff, the prep doc), reading
+# (the manga reader, 5ch pages) and listening (the Listen tab). A sitting
+# carries it as its kind; an encounter mode maps onto it; an episode with no
+# sitting on record takes its kind's medium (manga / page rows are read).
+MEDIA = ("watch", "read", "listen")
+MEDIUM_OF_MODE = {"on": "watch", "kw": "watch", "off": "watch", "audio": "watch",
+                  "prep": "watch", "unknown": "watch",
+                  "listen": "listen", "manga": "read", "page": "read", "read": "read"}
+READ_EPISODE_KINDS = ("manga", "page")
+# Marks made outside any medium: a list review (POST /lists/mark), the
+# confirm queue, a bulk import. They show up beside the media in query_media.
+OFF_MEDIUM_CHANNELS = ("list", "confirm", "import")
+
+
+def episode_medium(kind):
+    """The medium an episode's exposures are met in when no sitting says
+    otherwise: manga volumes and 5ch pages are read, everything else watched."""
+    return "read" if kind in READ_EPISODE_KINDS else "watch"
+
+
+def _evidence_medium(e, ep_kinds):
+    """Where one evidence row was made: the mode it recorded (a mark's
+    `context.mode`, a lookup's dominant `context.modes` key) mapped onto
+    MEDIA; else the episode's kind; else the off-medium channel (a list
+    review, the confirm queue, an import)."""
+    ctx = _ctx(e)
+    mode = ctx.get("mode")
+    if mode in MEDIUM_OF_MODE:
+        return MEDIUM_OF_MODE[mode]
+    modes = ctx.get("modes")
+    if isinstance(modes, dict) and modes:
+        top = max(modes, key=lambda k: modes[k])
+        if top in MEDIUM_OF_MODE:
+            return MEDIUM_OF_MODE[top]
+    source = e["source"]
+    if source in ("confirm_known", "confirm_defer"):
+        return "confirm"
+    if source == "import":
+        return "import"
+    ep = e["episode_id"]
+    if not ep:
+        return "list"
+    return episode_medium((ep_kinds or {}).get(ep))
+
+
+# --- reading speed: words per page --------------------------------------------
+
+_CONTENT_CHAR_RE = re.compile(r"[぀-ヿ㐀-鿿０-９Ａ-Ｚａ-ｚ0-9A-Za-z々〆ヵヶ]")
+
+
+def page_words_from_sentences(sentences, page_secs):
+    """{"secs": page_secs, "words": [...], "chars": [...]} — per page (index =
+    pseudo-time // page_secs), the tokens carrying at least one kana / kanji /
+    alphanumeric char (punctuation-only tokens are not words) and the count of
+    such chars. `sentences` are coverage.json's (start + tokens[{s}]) — a
+    transcript's sentences (text, no tokens) fall back to chars only, words
+    = None. Reading speed (query_reading) divides these by the sitting's
+    wall-clock minutes; chars/min is the usual measure for Japanese, words/min
+    rides beside it."""
+    words, chars = [], []
+    have_tokens = False
+    for sent in sentences:
+        page = int(float(sent.get("start", 0.0)) // page_secs)
+        while len(words) <= page:
+            words.append(0)
+            chars.append(0)
+        toks = sent.get("tokens")
+        if toks is not None:
+            have_tokens = True
+            words[page] += sum(1 for t in toks if _CONTENT_CHAR_RE.search(t.get("s") or ""))
+        chars[page] += len(_CONTENT_CHAR_RE.findall(sent.get("text") or "".join(
+            t.get("s", "") for t in (toks or []))))
+    return {"secs": float(page_secs), "words": words if have_tokens else None, "chars": chars}
+
+
+def set_page_words(conn, episode_id, page_words):
+    """Stamp a read episode's per-page word / char counts (page_words_from_sentences)
+    onto its ledger row — what query_reading turns sittings into a speed with."""
+    if not conn.execute("SELECT 1 FROM episodes WHERE id = ?", (episode_id,)).fetchone():
+        raise KeyError(episode_id)
+    conn.execute("UPDATE episodes SET page_words = ? WHERE id = ?",
+                 (json.dumps(page_words), episode_id))
+    conn.commit()
+
+
+def backfill_page_words(conn, episodes_root):
+    """Stamp page_words onto every read episode (manga / page kinds) whose
+    coverage.json is still on disk; manga.json supplies the page length."""
+    root = Path(episodes_root)
+    done, missing = 0, []
+    for r in conn.execute("SELECT id FROM episodes WHERE kind IN ('manga', 'page')"):
+        ep = r["id"]
+        cov_path = root / ep / "coverage.json"
+        doc_path = root / ep / "manga.json"
+        if not cov_path.exists():
+            missing.append(ep)
+            continue
+        page_secs = 30.0
+        if doc_path.exists():
+            try:
+                page_secs = float(json.loads(doc_path.read_text(encoding="utf-8")).get("page_secs") or 30.0)
+            except (ValueError, OSError):
+                pass
+        cov = json.loads(cov_path.read_text(encoding="utf-8"))
+        set_page_words(conn, ep, page_words_from_sentences(cov.get("sentences", []), page_secs))
+        done += 1
+    return {"stamped": done, "no_coverage": missing}
 
 
 def record_view_session(conn, session):
@@ -935,7 +1050,7 @@ def load_coverage(conn):
         "SELECT id, duration FROM episodes WHERE duration IS NOT NULL").fetchall())
     out = {}
     for r in conn.execute(
-            "SELECT episode_id, secs, reached, duration, modes, played FROM view_sessions "
+            "SELECT episode_id, kind, secs, reached, duration, modes, played FROM view_sessions "
             "WHERE source = 'app' AND kind IN ('watch', 'read')"):
         ep = r["episode_id"]
         c = out.setdefault(ep, {"ranges": [], "plays": 0.0, "modes": {}, "_uniform": 0.0})
@@ -961,7 +1076,11 @@ def load_coverage(conn):
                 modes = json.loads(r["modes"])
             except ValueError:
                 modes = None
-        if modes:
+        if r["kind"] == "read":
+            # the reader has no subtitle state: its seconds are "read", so a
+            # word's sightings in a manga volume tally apart from the player's
+            c["modes"]["read"] = c["modes"].get("read", 0.0) + float(r["secs"])
+        elif modes:
             for m, secs in modes.items():
                 if m in SUB_MODES and isinstance(secs, (int, float)):
                     c["modes"][m] = c["modes"].get(m, 0.0) + secs
@@ -1547,6 +1666,27 @@ def _lookup_totals(evs):
     return total, listed
 
 
+def _lookup_by_mode(evs):
+    """{encounter mode: popup opens} over an item's lookup rows — the opens a
+    row split by where the word was met, the rest (old rows, no split) as
+    "unknown"."""
+    out = {}
+    for e in evs:
+        if e["source"] != "lookup":
+            continue
+        ctx = _ctx(e)
+        n = int(ctx.get("n", 0))
+        modes = ctx.get("modes") or {}
+        split = 0
+        for m, v in modes.items():
+            if m in ENCOUNTER_MODES and isinstance(v, (int, float)) and v > 0:
+                out[m] = out.get(m, 0) + int(v)
+                split += int(v)
+        if n > split:
+            out["unknown"] = out.get("unknown", 0) + (n - split)
+    return out
+
+
 def _record_confirm(conn, key, source, kind="word"):
     """Append one confirm_known / confirm_defer evidence row for an item the
     exposure heuristic surfaced. The key is the word lemma, phrase headword,
@@ -1757,7 +1897,17 @@ def _maybe_refit(conn):
     return model
 
 
+def _first_mode(cov, e, ep_kinds):
+    """The state an exposure's episode was met in: "read" when its sittings
+    were the reader's (or, with no sittings, when the episode is a manga /
+    page row), else the player's."""
+    if cov and cov.get("modes"):
+        return "read" if set(cov["modes"]) == {"read"} else "on"
+    return "read" if episode_medium((ep_kinds or {}).get(e["episode_id"])) == "read" else "on"
+
+
 def _judge(evs, theta, spread_needed, in_anki_known=False, plays=None, pos=None,
+           ep_kinds=None,
            model=None, freq_rank=None, lemma="", coverage=None):
     """Apply promote's rule order to one item's evidence rows (any kind —
     word, phrase, or grammar; sources an item never receives simply yield
@@ -1811,8 +1961,20 @@ def _judge(evs, theta, spread_needed, in_anki_known=False, plays=None, pos=None,
         if total > 0:
             for m, secs in modes.items():
                 by_mode[m] = by_mode.get(m, 0.0) + credit * secs / total
+        elif episode_medium((ep_kinds or {}).get(e["episode_id"])) == "read":
+            # a manga volume / page with no sitting on record (the legacy
+            # finished-flag path): still read, never "unknown" player state
+            by_mode["read"] = by_mode.get("read", 0.0) + credit
         else:
             by_mode["unknown"] = by_mode.get("unknown", 0.0) + credit
+    seen_read = by_mode.get("read", 0.0)
+    # where the word was first met with credit: the earliest played
+    # exposure's medium (evs arrive in ts order); passive-only → listen
+    first_medium = None
+    for e in active_exposures:
+        first_medium = "read" if MEDIUM_OF_MODE.get(
+            _first_mode((coverage or {}).get(e["episode_id"]), e, ep_kinds)) == "read" else "watch"
+        break
     seen_passive = 0.0
     for e in evs:
         if e["source"] != "exposure":
@@ -1821,8 +1983,11 @@ def _judge(evs, theta, spread_needed, in_anki_known=False, plays=None, pos=None,
         seen_passive += n
         if n:
             by_mode["listen"] = by_mode.get("listen", 0.0) + n
+    if first_medium is None and seen_passive > 0:
+        first_medium = "listen"
     by_mode = {m: int(round(n)) for m, n in by_mode.items() if round(n) >= 1}
     lookups, lookups_listed = _lookup_totals(evs)
+    lookups_by_mode = _lookup_by_mode(evs)
     q_count = len(qualifying)
     q_spread = len({e["episode_id"] for e in qualifying})
 
@@ -1903,6 +2068,9 @@ def _judge(evs, theta, spread_needed, in_anki_known=False, plays=None, pos=None,
         "lookups_listed": lookups_listed,
         "confirm_score": confirm_score,
         "seen_by_mode": json.dumps(by_mode) if by_mode else None,
+        "seen_read": int(round(seen_read)),
+        "lookups_by_mode": json.dumps(lookups_by_mode) if lookups_by_mode else None,
+        "first_medium": first_medium,
         "first_seen": min(e["ts"] for e in evs),
         "last_seen": max(e["ts"] for e in evs),
     }
@@ -1954,7 +2122,15 @@ def promote(conn, anki_known=None):
     ).fetchall()
 
     freq = dict(conn.execute("SELECT lemma, rank FROM freq").fetchall())
-    pos_by_lemma = dict(conn.execute("SELECT lemma, pos FROM lemmas").fetchall())
+    pos_by_lemma = {}
+    prev_status = {}  # what the projection said before this pass (status_log)
+    for r in conn.execute("SELECT lemma, pos, status FROM lemmas"):
+        pos_by_lemma[r["lemma"]] = r["pos"]
+        prev_status[("word", r["lemma"])] = r["status"]
+        prev_status[("phrase", r["lemma"])] = r["status"]
+    for r in conn.execute("SELECT pattern, status FROM grammar_points"):
+        prev_status[("grammar", r["pattern"])] = r["status"]
+    ep_kinds = dict(conn.execute("SELECT id, kind FROM episodes").fetchall())
     grammar_prior = {r[0]: (r[1], r[2]) for r in conn.execute(
         "SELECT pattern, level, corpus_per_10k FROM grammar_points")}
 
@@ -1966,10 +2142,13 @@ def promote(conn, anki_known=None):
 
     ts_now = now_iso()
     grammar_seen = 0
+    transitions = 0
     for (kind, lemma), evs in by_key.items():
         if kind == "grammar":
             theta, spread_needed = grammar_theta_for(*grammar_prior.get(lemma, (None, None)))
-            v = _judge(evs, theta, spread_needed, coverage=coverage)
+            v = _judge(evs, theta, spread_needed, coverage=coverage, ep_kinds=ep_kinds)
+            transitions += _log_status(conn, kind, lemma, prev_status, v["status"],
+                                       evs, ep_kinds, ts_now)
             conn.execute(
                 """INSERT INTO grammar_points (pattern, status, confidence,
                        exposure_count, episode_spread, needs_review,
@@ -1998,14 +2177,17 @@ def promote(conn, anki_known=None):
         v = _judge(evs, theta, spread_needed, in_anki_known=lemma in anki_known,
                    plays=plays, pos=pos_by_lemma.get(lemma),
                    model=model if kind == "word" else None, freq_rank=freq_rank,
-                   lemma=lemma, coverage=coverage)
+                   lemma=lemma, coverage=coverage, ep_kinds=ep_kinds)
+        transitions += _log_status(conn, kind, lemma, prev_status, v["status"],
+                                   evs, ep_kinds, ts_now)
         conn.execute(
             """INSERT INTO lemmas (lemma, kind, freq_rank, status, confidence,
                                    exposure_count, episode_spread, seen_active,
                                    seen_passive, lookups, lookups_listed, confirm_score,
                                    seen_by_mode, needs_review, confirm_candidate,
-                                   first_seen, last_seen, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                   first_seen, last_seen, updated_at,
+                                   seen_read, lookups_by_mode, first_medium)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(lemma) DO UPDATE SET
                    freq_rank = excluded.freq_rank,
                    status = excluded.status,
@@ -2022,13 +2204,17 @@ def promote(conn, anki_known=None):
                    confirm_candidate = excluded.confirm_candidate,
                    first_seen = COALESCE(lemmas.first_seen, excluded.first_seen),
                    last_seen = excluded.last_seen,
-                   updated_at = excluded.updated_at
+                   updated_at = excluded.updated_at,
+                   seen_read = excluded.seen_read,
+                   lookups_by_mode = excluded.lookups_by_mode,
+                   first_medium = excluded.first_medium
                """,
             (lemma, kind, freq_rank, v["status"], v["confidence"],
              v["exposure_count"], v["episode_spread"], v["seen_active"],
              v["seen_passive"], v["lookups"], v["lookups_listed"], v["confirm_score"],
              v["seen_by_mode"], v["needs_review"], v["confirm_candidate"],
-             v["first_seen"], v["last_seen"], ts_now),
+             v["first_seen"], v["last_seen"], ts_now,
+             v["seen_read"], v["lookups_by_mode"], v["first_medium"]),
         )
 
     # Heal grammar rows whose evidence vanished (episode purge): back to the
@@ -2050,7 +2236,37 @@ def promote(conn, anki_known=None):
         "SELECT status, COUNT(*) FROM lemmas GROUP BY status").fetchall())
     return {"lemmas_recomputed": len(by_key) - grammar_seen,
             "grammar_recomputed": grammar_seen,
+            "status_transitions": transitions,
             "status_counts": counts}
+
+
+_PASSIVE_SOURCES = frozenset(("exposure", "lookup", "tap_interest"))
+
+
+def _log_status(conn, kind, lemma, prev_status, status, evs, ep_kinds, ts):
+    """Append a status_log row when a projection pass moves an item's status
+    (the ledger's "when did this word become known / fall back to learning"
+    — the evidence log says what happened, this says what it *changed*).
+    The cause is the newest evidence row: its source and the medium it was
+    made in (_evidence_medium). An item the projection has never held is
+    'unknown' before its first pass. Returns 1 when a row was written."""
+    before = prev_status.get((kind, lemma), "unknown")
+    if before == status:
+        return 0
+    # newest row wins; on a same-second tie a deliberate claim (mark, confirm,
+    # import, lapse) outranks the exposure / lookup rows landed beside it,
+    # then the later insert
+    cause = max(evs, key=lambda e: (e["ts"], e["source"] not in _PASSIVE_SOURCES, e["id"])) \
+        if evs else None
+    conn.execute(
+        """INSERT INTO status_log (lemma, kind, from_status, to_status, cause_source,
+                                   cause_episode, cause_medium, ts)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (lemma, kind, before, status,
+         cause["source"] if cause else None,
+         cause["episode_id"] if cause else None,
+         _evidence_medium(cause, ep_kinds) if cause else None, ts))
+    return 1
 
 
 def episode_plays(conn):
@@ -2454,6 +2670,12 @@ def query_summary(conn):
         "SELECT status, COUNT(*) FROM grammar_points GROUP BY status").fetchall())
     evidence_counts = dict(conn.execute(
         "SELECT source, COUNT(*) FROM evidence GROUP BY source").fetchall())
+    # the same, split by item kind (the CLI's summary; the phone shows the
+    # per-medium table instead)
+    evidence_by_kind = {}
+    for r in conn.execute(
+            "SELECT source, kind, COUNT(*) AS n FROM evidence GROUP BY source, kind"):
+        evidence_by_kind.setdefault(r["source"], {})[r["kind"]] = r["n"]
     episodes = conn.execute(
         "SELECT COUNT(*), SUM(watched) FROM episodes").fetchone()
     needs_review = conn.execute(
@@ -2473,6 +2695,7 @@ def query_summary(conn):
                     "proposed": conn.execute(
                         "SELECT COUNT(*) FROM grammar_proposed").fetchone()[0]},
         "evidence_by_source": evidence_counts,
+        "evidence_by_source_kind": evidence_by_kind,
         "episodes": {"total": episodes[0] or 0, "watched": episodes[1] or 0},
         "needs_review": needs_review,
         "confirm_candidates": cc_lemmas.get("word", 0) + cc_lemmas.get("phrase", 0)
@@ -2606,10 +2829,274 @@ def query_why(conn, lemma):
                   COALESCE(ep.watched, 0) AS watched, ep.title
            FROM evidence e LEFT JOIN episodes ep ON ep.id = e.episode_id
            WHERE e.lemma = ? ORDER BY e.ts""", (lemma,)).fetchall()
+    log = conn.execute(
+        "SELECT from_status, to_status, cause_source, cause_episode, cause_medium, ts "
+        "FROM status_log WHERE lemma = ? ORDER BY ts", (lemma,)).fetchall()
     return {
         "lemma": dict(lrow) if lrow else None,
         "evidence": [dict(r) for r in evs],
+        "status_log": [dict(r) for r in log],
     }
+
+
+def query_status_log(conn, lemma=None, since=None, limit=500):
+    """The projection's status changes, newest first (status_log): when an
+    item became known / learning / unknown, the evidence that tipped it and
+    the medium that evidence was made in."""
+    where, args = [], []
+    if lemma:
+        where.append("lemma = ?")
+        args.append(lemma)
+    if since:
+        where.append("ts >= ?")
+        args.append(since)
+    sql = "SELECT lemma, kind, from_status, to_status, cause_source, cause_episode, " \
+          "cause_medium, ts FROM status_log"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY ts DESC, id DESC LIMIT ?"
+    args.append(int(limit))
+    return [dict(r) for r in conn.execute(sql, args)]
+
+
+def _sitting_pages(r, page_secs):
+    """The distinct page indices one read sitting showed (its played spans
+    are page spans in pseudo-seconds; a rewound page counts once per
+    sitting). Sittings from before spans were recorded fall back to the
+    span their reached / secs imply."""
+    ranges = []
+    if r["played"]:
+        try:
+            ranges = [(float(a), float(b)) for a, b in json.loads(r["played"])]
+        except (ValueError, TypeError):
+            ranges = []
+    if not ranges and r["reached"] is not None and r["reached"] > 0:
+        ranges = [(max(0.0, float(r["reached"]) - float(r["secs"])), float(r["reached"]))]
+    pages = set()
+    for a, b in ranges:
+        first = int(a // page_secs)
+        last = int(max(a, b - 0.001) // page_secs)
+        pages.update(range(first, last + 1))
+    return pages
+
+
+def query_reading(conn):
+    """Reading speed over time (2026-09-22). Every read sitting the app
+    recorded is turned into pages shown (its played spans), words and chars
+    on those pages (episodes.page_words — a volume not yet stamped
+    contributes pages and minutes but no words, and stays out of the speed),
+    and wall-clock minutes. Rolled up per day, per volume and all-time:
+
+    days:    [{day, sittings, pages, words, chars, minutes, minutes_measured,
+               wpm, cpm}] oldest first — pages = distinct pages shown that day;
+              wpm / cpm over the minutes whose pages had counts.
+    volumes: [{episode_id, title, sittings, pages_read, page_count, words,
+               chars, minutes, wpm, cpm}] — pages_read = distinct pages ever
+              shown; page_count from the stamped counts.
+    total:   {sittings, pages_read, pages_turned, words, chars, minutes,
+              minutes_measured, wpm, cpm} — pages_turned counts a page once
+              per sitting it was shown in, pages_read once ever."""
+    stamped = {}
+    titles = {}
+    for r in conn.execute(
+            "SELECT id, title, page_words FROM episodes WHERE kind IN ('manga', 'page')"):
+        titles[r["id"]] = r["title"]
+        if r["page_words"]:
+            try:
+                stamped[r["id"]] = json.loads(r["page_words"])
+            except ValueError:
+                pass
+    days, volumes = {}, {}
+    total = {"sittings": 0, "pages_read": 0, "pages_turned": 0, "words": 0, "chars": 0,
+             "minutes": 0.0, "minutes_measured": 0.0}
+    day_pages, vol_pages = {}, {}
+    for r in conn.execute(
+            "SELECT episode_id, title, day, secs, reached, duration, played FROM view_sessions "
+            "WHERE kind = 'read' AND source = 'app' ORDER BY start"):
+        ep = r["episode_id"]
+        pw = stamped.get(ep)
+        page_secs = float((pw or {}).get("secs") or 30.0)
+        pages = _sitting_pages(r, page_secs)
+        words = chars = 0
+        measured = False
+        if pw and pw.get("chars"):
+            measured = True
+            for i in pages:
+                if i < len(pw["chars"]):
+                    chars += pw["chars"][i]
+                    if pw.get("words"):
+                        words += pw["words"][i]
+        minutes = float(r["secs"]) / 60.0
+        d = days.setdefault(r["day"], {"day": r["day"], "sittings": 0, "pages": 0, "words": 0,
+                                       "chars": 0, "minutes": 0.0, "minutes_measured": 0.0})
+        v = volumes.setdefault(ep, {"episode_id": ep, "title": titles.get(ep) or r["title"],
+                                    "sittings": 0, "pages_read": 0,
+                                    "page_count": len((pw or {}).get("chars") or []) or None,
+                                    "words": 0, "chars": 0, "minutes": 0.0,
+                                    "minutes_measured": 0.0})
+        for agg in (d, v, total):
+            agg["sittings"] += 1
+            agg["minutes"] += minutes
+            if measured:
+                agg["words"] += words
+                agg["chars"] += chars
+                agg["minutes_measured"] += minutes
+        day_pages.setdefault(r["day"], set()).update(pages)
+        vol_pages.setdefault(ep, set()).update(pages)
+        total["pages_turned"] += len(pages)
+
+    def _speed(agg):
+        m = agg["minutes_measured"]
+        agg["wpm"] = round(agg["words"] / m, 1) if m > 0 and agg["words"] else None
+        agg["cpm"] = round(agg["chars"] / m, 1) if m > 0 and agg["chars"] else None
+        agg["minutes"] = round(agg["minutes"], 1)
+        agg["minutes_measured"] = round(agg["minutes_measured"], 1)
+        return agg
+
+    for day, d in days.items():
+        d["pages"] = len(day_pages[day])
+        _speed(d)
+    for ep, v in volumes.items():
+        v["pages_read"] = len(vol_pages[ep])
+        _speed(v)
+    total["pages_read"] = sum(len(p) for p in vol_pages.values())
+    _speed(total)
+    return {"days": sorted(days.values(), key=lambda d: d["day"]),
+            "volumes": sorted(volumes.values(), key=lambda v: -v["minutes"]),
+            "total": total}
+
+
+def _empty_medium():
+    return {"sittings": 0, "hours": 0.0, "app_hours": 0.0, "words_per_hour": None, "episodes": 0,
+            "words_seen": 0, "unique_words": 0, "only_here": 0, "unique_known": 0,
+            "first_met": 0, "first_met_known": 0,
+            "lookups": 0, "unique_looked_up": 0,
+            "marked_known": 0, "marked_unknown": 0, "marked_interest": 0,
+            "became_known": 0, "became_learning": 0, "became_known_30d": 0}
+
+
+def query_media(conn, since_days=30):
+    """Immersion by medium — watching / reading / listening side by side
+    (2026-09-22), words only. Per medium:
+
+    sittings, hours, episodes — the time log (every source; `episodes` =
+      distinct episodes the app recorded a sitting on).
+    words_seen — token sightings credited to the medium (watch = seen_active
+      minus the reader's share, read = seen_read, listen = seen_passive).
+    unique_words / only_here / unique_known — distinct words met there; met
+      there and nowhere else; met there and now known.
+    first_met / first_met_known — words whose first credited sighting was in
+      this medium, and how many of those are known now (what each medium
+      *taught*, by the ledger's lights).
+    app_hours / words_per_hour — the app's own sittings and the sightings
+      they credited per hour (density: how much language an hour of each
+      medium carries).
+    read only: pages_read (distinct pages ever shown), pages_turned (once per
+      sitting), words_read / chars_read (on the pages each sitting showed —
+      episodes.page_words), words_per_minute / chars_per_minute. The
+      per-day / per-volume series behind them rides as `reading`
+      (query_reading).
+    lookups / unique_looked_up — popup opens made there (the lookup rows'
+      per-mode split; opens with no split fall under watch).
+    marked_known / marked_unknown / marked_interest — ✓ / ✗ / ★ marks made there.
+    became_known / became_learning — status_log transitions whose tipping
+      evidence was made there; became_known_30d = the last since_days days.
+
+    `elsewhere` carries the same mark / transition counts for the off-medium
+    channels: a list review, the confirm queue, an import."""
+    media = {m: _empty_medium() for m in MEDIA}
+    elsewhere = {c: {"marked_known": 0, "marked_unknown": 0, "marked_interest": 0,
+                     "became_known": 0, "became_learning": 0, "became_known_30d": 0}
+                 for c in OFF_MEDIUM_CHANNELS}
+    # the confirm queue's own answers ("do you know this?" yes / not yet)
+    elsewhere["confirm"]["confirmed"] = 0
+    elsewhere["confirm"]["deferred"] = 0
+    for r in conn.execute(
+            "SELECT source, COUNT(*) AS n FROM evidence WHERE kind = 'word' "
+            "AND source IN ('confirm_known', 'confirm_defer') GROUP BY source"):
+        elsewhere["confirm"]["confirmed" if r["source"] == "confirm_known" else "deferred"] = r["n"]
+
+    for r in conn.execute(
+            "SELECT kind, source, COUNT(*) AS n, SUM(secs) AS secs, "
+            "COUNT(DISTINCT episode_id) AS eps FROM view_sessions GROUP BY kind, source"):
+        m = media.get(r["kind"])
+        if m is None:
+            continue
+        m["sittings"] += r["n"]
+        m["hours"] += (r["secs"] or 0.0) / 3600.0
+        if r["source"] == "app":
+            m["episodes"] += r["eps"]
+            m["app_hours"] += (r["secs"] or 0.0) / 3600.0
+    for m in media.values():
+        m["hours"] = round(m["hours"], 1)
+
+    looked_up = {m: set() for m in MEDIA}
+    for r in conn.execute(
+            "SELECT lemma, status, seen_active, seen_read, seen_passive, lookups_by_mode, "
+            "first_medium FROM lemmas WHERE kind = 'word'"):
+        seen = {"watch": max(0, (r["seen_active"] or 0) - (r["seen_read"] or 0)),
+                "read": r["seen_read"] or 0, "listen": r["seen_passive"] or 0}
+        met_in = [m for m in MEDIA if seen[m] > 0]
+        for m in met_in:
+            media[m]["words_seen"] += seen[m]
+            media[m]["unique_words"] += 1
+            if r["status"] == "known":
+                media[m]["unique_known"] += 1
+            if len(met_in) == 1:
+                media[m]["only_here"] += 1
+        if r["first_medium"] in media:
+            media[r["first_medium"]]["first_met"] += 1
+            if r["status"] == "known":
+                media[r["first_medium"]]["first_met_known"] += 1
+        if r["lookups_by_mode"]:
+            try:
+                by_mode = json.loads(r["lookups_by_mode"])
+            except ValueError:
+                by_mode = {}
+            for mode, n in by_mode.items():
+                m = MEDIUM_OF_MODE.get(mode)
+                if m and n:
+                    media[m]["lookups"] += int(n)
+                    looked_up[m].add(r["lemma"])
+    for m in MEDIA:
+        media[m]["unique_looked_up"] = len(looked_up[m])
+        # density: credited sightings per hour of the app's own sittings (the
+        # only ones that credit words — typed-in / imported time is excluded)
+        media[m]["words_per_hour"] = (round(media[m]["words_seen"] / media[m]["app_hours"])
+                                      if media[m]["app_hours"] > 0 else None)
+        media[m]["app_hours"] = round(media[m]["app_hours"], 1)
+    reading = query_reading(conn)
+    t = reading["total"]
+    media["read"].update({"pages_read": t["pages_read"], "pages_turned": t["pages_turned"],
+                          "words_read": t["words"], "chars_read": t["chars"],
+                          "words_per_minute": t["wpm"], "chars_per_minute": t["cpm"]})
+
+    ep_kinds = dict(conn.execute("SELECT id, kind FROM episodes").fetchall())
+    key_of = {"tap_known": "marked_known", "tap_unknown": "marked_unknown",
+              "tap_interest": "marked_interest"}
+    for e in conn.execute(
+            "SELECT source, episode_id, context FROM evidence "
+            "WHERE kind = 'word' AND source IN ('tap_known', 'tap_unknown', 'tap_interest')"):
+        bucket = _evidence_medium(e, ep_kinds)
+        target = media.get(bucket) or elsewhere.get(bucket)
+        if target is not None:
+            target[key_of[e["source"]]] += 1
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=since_days)).isoformat()
+    for r in conn.execute(
+            "SELECT cause_medium, to_status, ts FROM status_log WHERE kind = 'word'"):
+        target = media.get(r["cause_medium"]) or elsewhere.get(r["cause_medium"])
+        if target is None:
+            continue
+        if r["to_status"] == "known":
+            target["became_known"] += 1
+            if r["ts"] >= cutoff:
+                target["became_known_30d"] += 1
+        elif r["to_status"] == "learning":
+            target["became_learning"] += 1
+
+    return {"media": media, "elsewhere": elsewhere, "since_days": since_days,
+            "reading": reading}
 
 
 def query_calibration(conn, target=0.6):
@@ -2968,12 +3455,17 @@ def main(argv=None):
                        help="stamp per-episode occurrence counts onto exposure rows "
                             "from the coverage.json files still on disk")
     p.add_argument("--episodes", help="episodes root (default: <work_dir>/episodes)")
+    p = sub.add_parser("backfill-page-words",
+                       help="stamp per-page word / char counts onto read episodes (manga, "
+                            "pages) from the coverage.json files still on disk")
+    p.add_argument("--episodes", help="episodes root (default: <work_dir>/episodes)")
     p = sub.add_parser("query", help="read the ledger")
     p.add_argument("what", choices=["summary", "needs-review", "confirm-queue",
                                     "why", "unwatched", "ratings", "channels",
                                     "grammar-proposed", "non-vocab", "viewtime",
-                                    "calibration"])
+                                    "calibration", "media", "status-log", "reading"])
     p.add_argument("lemma", nargs="?")
+    p.add_argument("--since", help="status-log: only changes at or after this ISO timestamp")
     p.add_argument("--target", type=float, default=0.6,
                    help="calibration: yes-rate a θ bucket must reach (default 0.6)")
 
@@ -3037,6 +3529,12 @@ def main(argv=None):
         result = backfill_occurrences(conn, root)
         result["promote"] = promote(conn)
         _json_out(result)
+    elif args.verb == "backfill-page-words":
+        root = args.episodes or ((cfg or {}).get("work_dir") and
+                                 str(Path(cfg["work_dir"]) / "episodes"))
+        if not root:
+            ap.error("backfill-page-words needs --episodes or a config with work_dir")
+        _json_out(backfill_page_words(conn, root))
     elif args.verb == "confirm":
         confirm_known_lemma(conn, args.lemma, kind=args.kind)
         _json_out({"lemma": args.lemma, "kind": args.kind, "confirmed": True,
@@ -3134,6 +3632,12 @@ def main(argv=None):
                 "ORDER BY ts DESC, key")])
         elif args.what == "viewtime":
             _json_out(query_view_totals(conn))
+        elif args.what == "media":
+            _json_out(query_media(conn))
+        elif args.what == "reading":
+            _json_out(query_reading(conn))
+        elif args.what == "status-log":
+            _json_out(query_status_log(conn, lemma=args.lemma, since=args.since))
         elif args.what == "calibration":
             _json_out(query_calibration(conn, target=args.target))
 

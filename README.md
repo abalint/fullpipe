@@ -106,6 +106,9 @@ them when PRIME mode is built.
 | `backfill-snapshots` | stamp claim snapshots onto historical ✓/✗/yes/not-yet rows (one-off; new claims snapshot as they land) |
 | `fit-confirm-model [--target 0.8]` | fit the adaptive think-you-know scorer on the claim snapshots (+ promote); `promote` also refits on its own every 25 new labeled claims |
 | `query summary\|needs-review\|confirm-queue\|why LEMMA\|unwatched\|calibration` | read the ledger |
+| `backfill-page-words [--episodes DIR]` | stamp per-page word / char counts onto read episodes (manga volumes, 5ch pages) from the coverage.json files on disk — the reading-speed numerator; Stage 1 does it for new ones |
+| `query reading` | reading speed: pages, words, chars, minutes and words/min · chars/min per day, per volume and all-time |
+| `query media` · `query status-log [LEMMA] [--since ISO]` | watching / reading / listening side by side (time, words seen, unique words, lookups, marks, what each tipped into known) · when the projection changed its mind about an item and what evidence tipped it |
 
 **Times seen (2026-09-07).** Every exposure row carries how often the word
 occurred in that episode (`occ`, plus `occ_clean` / `occ_near` = occurrences
@@ -117,7 +120,16 @@ not the episode was ever watched with subtitles). Passive exposure counts, but
 counts apart — it never feeds θ. Each sitting also reports its seconds per
 subtitle state (on / keyword-only / off / 🎧 audio), so `lemmas.seen_by_mode`
 says how many of a word's sightings had subtitles under them; lookups and
-marks record the state they were made in (`context.mode`). A player sitting past 80 % of an episode
+marks record the state they were made in (`context.mode`). **By medium
+(2026-09-22):** a `read` sitting (the manga reader) tallies under its own
+state, so `lemmas.seen_read` is the reader's share of `seen_active`;
+`lemmas.lookups_by_mode` splits popup opens the same way and
+`lemmas.first_medium` says whether a word was first met watching, reading or
+listening. `promote` also appends to `status_log` whenever an item's status
+moves (unknown / learning / known), with the evidence row that tipped it and
+the medium it was made in — `query media` rolls all of it up per medium
+(the phone's Progress tab shows the same table), `query status-log` lists
+the changes. A player sitting past 80 % of an episode
 activates its exposures like a close-out would (subtitles off, no taps, still
 watched). `query calibration` reports the think-you-know bar against the
 ledger's own confirm answers (yes-rate by band × qualifying / episodes /

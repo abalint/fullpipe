@@ -284,6 +284,169 @@ class LedgerTest(unittest.TestCase):
                 "start": "2026-09-08T13:00:00Z", "secs": 1.0, "modes": {"subs": 1.0}})
         self.assertEqual(lc.query_confirm_queue(self.conn), [])  # shape check only
 
+    def test_reading_tallies_apart_from_watching(self):
+        # A manga volume read in the reader: its sittings are kind=read, so
+        # the word's sightings there land in seen_read / seen_by_mode["read"]
+        # (never the player's "unknown" state), first_medium says where the
+        # word was first met, and lookups keep their per-mode split.
+        ep, exp = _exposure_payload("manga_x_v01", ["猫", "犬"])
+        ep["kind"] = "manga"
+        exp["猫"].update({"occ": 3, "at": [10.0, 20.0, 30.0], "t": 10.0})
+        exp["犬"].update({"occ": 1, "at": [40.0], "t": 40.0})
+        lc.record_exposure(self.conn, ep, exp)
+        lc.record_view_session(self.conn, {
+            "id": "r1", "episode_id": "manga_x_v01", "kind": "read", "day": "2026-09-22",
+            "start": "2026-09-22T10:00:00Z", "secs": 300.0, "duration": 100.0,
+            "played": [[0.0, 35.0]]})
+        # the same word later watched in the player, subtitles on
+        ep2, exp2 = _exposure_payload("e2", ["猫"])
+        exp2["猫"].update({"occ": 2, "at": [5.0, 50.0], "t": 5.0})
+        lc.record_exposure(self.conn, ep2, exp2)
+        lc.record_view_session(self.conn, {
+            "id": "w1", "episode_id": "e2", "kind": "watch", "day": "2026-09-23",
+            "start": "2026-09-23T10:00:00Z", "secs": 100.0, "duration": 100.0,
+            "modes": {"on": 100.0}, "played": [[0.0, 100.0]]})
+        lc.apply_taps(self.conn, {"episode_id": "manga_x_v01", "batch_id": "b1",
+                                  "taps": [["犬", "k", "", "none", "manga"]],
+                                  "lookups": [["猫", 3, {"none": 3}, "word", {"manga": 2, "on": 1}]]})
+        r = lc.promote(self.conn)
+        self.assertEqual(r["status_transitions"], 1)  # 犬 → known
+        rows = {r["lemma"]: dict(r) for r in self.conn.execute("SELECT * FROM lemmas")}
+        cat = rows["猫"]
+        self.assertEqual((cat["seen_active"], cat["seen_read"]), (5, 3))
+        self.assertEqual(json.loads(cat["seen_by_mode"]), {"read": 3, "on": 2})
+        self.assertEqual(json.loads(cat["lookups_by_mode"]), {"manga": 2, "on": 1})
+        self.assertEqual(cat["first_medium"], "read")
+        self.assertEqual(rows["犬"]["first_medium"], None)  # its page never played
+        self.assertEqual(rows["犬"]["status"], "known")
+
+        media = lc.query_media(self.conn)["media"]
+        self.assertEqual((media["read"]["sittings"], media["watch"]["sittings"]), (1, 1))
+        self.assertEqual(media["read"]["words_seen"], 3)
+        self.assertEqual(media["watch"]["words_seen"], 2)
+        self.assertEqual(media["read"]["unique_words"], 1)
+        self.assertEqual(media["read"]["only_here"], 0)  # 猫 was watched too
+        self.assertEqual(media["read"]["first_met"], 1)
+        self.assertEqual((media["read"]["lookups"], media["watch"]["lookups"]), (2, 1))
+        self.assertEqual(media["read"]["unique_looked_up"], 1)
+        self.assertEqual(media["read"]["marked_known"], 1)
+        self.assertEqual(media["read"]["became_known"], 1)
+        self.assertEqual(media["read"]["became_known_30d"], 1)
+        self.assertEqual(media["listen"]["words_seen"], 0)
+
+        # the status log: 犬 unknown → known, tipped by a mark made in the reader
+        log = lc.query_status_log(self.conn)
+        self.assertEqual(len(log), 1)
+        self.assertEqual((log[0]["lemma"], log[0]["from_status"], log[0]["to_status"],
+                          log[0]["cause_source"], log[0]["cause_medium"]),
+                         ("犬", "unknown", "known", "tap_known", "read"))
+        self.assertEqual(lc.query_why(self.conn, "犬")["status_log"][0]["to_status"], "known")
+        # a re-promote with nothing new writes nothing
+        self.assertEqual(lc.promote(self.conn)["status_transitions"], 0)
+        # ✗ from a list review (no episode): learning, logged under "list"
+        lc.apply_taps(self.conn, {"batch_id": "b2", "taps": [["犬", "u"]]}, watched=False)
+        lc.promote(self.conn)
+        log = lc.query_status_log(self.conn, lemma="犬")
+        self.assertEqual((log[0]["to_status"], log[0]["cause_medium"]), ("learning", "list"))
+        self.assertEqual(lc.query_media(self.conn)["elsewhere"]["list"]["became_learning"], 1)
+
+    def test_reading_speed_from_page_words(self):
+        # coverage's sentences → per-page word / char counts; a reader
+        # sitting's page spans × those counts ÷ its minutes = a speed, rolled
+        # up per day, per volume and all-time
+        sentences = [
+            {"start": 0.0, "text": "犬が走る。", "tokens": [{"s": "犬"}, {"s": "が"}, {"s": "走る"}, {"s": "。"}]},
+            {"start": 0.1, "text": "はい！", "tokens": [{"s": "はい"}, {"s": "！"}]},
+            {"start": 30.0, "text": "猫だ", "tokens": [{"s": "猫"}, {"s": "だ"}]},
+            {"start": 90.0, "text": "…", "tokens": [{"s": "…"}]},
+        ]
+        pw = lc.page_words_from_sentences(sentences, 30.0)
+        self.assertEqual(pw, {"secs": 30.0, "words": [4, 2, 0, 0], "chars": [6, 2, 0, 0]})
+        ep, exp = _exposure_payload("manga_z_v01", ["猫"])
+        ep["kind"] = "manga"
+        ep["title"] = "Z vol 1"
+        lc.record_exposure(self.conn, ep, exp)
+        lc.set_page_words(self.conn, "manga_z_v01", pw)
+        with self.assertRaises(KeyError):
+            lc.set_page_words(self.conn, "nope", pw)
+        # pages 0-1 in 60 s, then page 1 again + page 2 in 30 s the next day;
+        # a hand-typed reading entry has no pages and stays out of the speed
+        lc.record_view_session(self.conn, {
+            "id": "r1", "episode_id": "manga_z_v01", "kind": "read", "day": "2026-09-22",
+            "start": "2026-09-22T10:00:00Z", "secs": 60.0, "duration": 120.0,
+            "played": [[0.0, 30.0], [30.0, 60.0], [0.0, 30.0]]})
+        lc.record_view_session(self.conn, {
+            "id": "r2", "episode_id": "manga_z_v01", "kind": "read", "day": "2026-09-23",
+            "start": "2026-09-23T10:00:00Z", "secs": 30.0, "duration": 120.0,
+            "played": [[30.0, 90.0]]})
+        lc.record_view_session(self.conn, {
+            "id": "m1", "episode_id": "manual", "kind": "read", "day": "2026-09-23",
+            "start": "2026-09-23T12:00:00Z", "secs": 600.0, "source": "manual"})
+        rd = lc.query_reading(self.conn)
+        d1, d2 = rd["days"]
+        self.assertEqual((d1["day"], d1["pages"], d1["words"], d1["chars"], d1["minutes"]),
+                         ("2026-09-22", 2, 6, 8, 1.0))
+        self.assertEqual((d1["wpm"], d1["cpm"]), (6.0, 8.0))
+        self.assertEqual((d2["pages"], d2["words"], d2["wpm"]), (2, 2, 4.0))
+        v = rd["volumes"][0]
+        self.assertEqual((v["title"], v["pages_read"], v["page_count"], v["sittings"]),
+                         ("Z vol 1", 3, 4, 2))
+        t = rd["total"]
+        self.assertEqual((t["pages_read"], t["pages_turned"], t["words"], t["minutes"]),
+                         (3, 4, 8, 1.5))
+        self.assertEqual(t["wpm"], round(8 / 1.5, 1))
+        media = lc.query_media(self.conn)
+        r = media["media"]["read"]
+        self.assertEqual((r["pages_read"], r["words_read"], r["words_per_minute"]),
+                         (3, 8, round(8 / 1.5, 1)))
+        self.assertEqual(r["app_hours"], round(1.5 / 60, 1))
+        self.assertEqual(len(media["reading"]["days"]), 2)
+        # an unstamped volume: pages and minutes count, no speed
+        ep2, exp2 = _exposure_payload("manga_q_v01", ["犬"])
+        ep2["kind"] = "manga"
+        lc.record_exposure(self.conn, ep2, exp2)
+        lc.record_view_session(self.conn, {
+            "id": "r3", "episode_id": "manga_q_v01", "kind": "read", "day": "2026-09-24",
+            "start": "2026-09-24T10:00:00Z", "secs": 120.0, "played": [[0.0, 60.0]]})
+        rd = lc.query_reading(self.conn)
+        d3 = rd["days"][-1]
+        self.assertEqual((d3["pages"], d3["words"], d3["wpm"], d3["minutes"], d3["minutes_measured"]),
+                         (2, 0, None, 2.0, 0.0))
+        self.assertEqual(rd["total"]["wpm"], round(8 / 1.5, 1))  # unchanged
+
+    def test_words_per_hour_density(self):
+        ep, exp = _exposure_payload("e1", ["猫"])
+        exp["猫"].update({"occ": 30, "at": [float(i) for i in range(30)], "t": 0.0})
+        lc.record_exposure(self.conn, ep, exp)
+        lc.record_view_session(self.conn, {
+            "id": "w1", "episode_id": "e1", "kind": "watch", "day": "2026-09-22",
+            "start": "2026-09-22T10:00:00Z", "secs": 1800.0, "duration": 1800.0,
+            "played": [[0.0, 1800.0]]})
+        lc.record_view_session(self.conn, {
+            "id": "m1", "episode_id": "typed", "kind": "watch", "day": "2026-09-22",
+            "start": "2026-09-22T12:00:00Z", "secs": 3600.0, "source": "manual"})
+        lc.promote(self.conn)
+        w = lc.query_media(self.conn)["media"]["watch"]
+        self.assertEqual((w["hours"], w["app_hours"]), (1.5, 0.5))
+        self.assertEqual(w["words_per_hour"], 60)  # 30 sightings over the app's half hour
+        self.assertIsNone(lc.query_media(self.conn)["media"]["listen"]["words_per_hour"])
+
+    def test_manga_without_sittings_still_reads(self):
+        # legacy path: a finished manga row with no sitting on record credits
+        # one play of everything, and that play is reading, not "unknown"
+        ep, exp = _exposure_payload("manga_y_v01", ["猫"])
+        ep["kind"] = "manga"
+        exp["猫"]["occ"] = 4
+        lc.record_exposure(self.conn, ep, exp)
+        lc.mark_watched(self.conn, "manga_y_v01")
+        lc.promote(self.conn)
+        row = self.conn.execute(
+            "SELECT seen_active, seen_read, seen_by_mode, first_medium FROM lemmas "
+            "WHERE lemma='猫'").fetchone()
+        self.assertEqual((row["seen_active"], row["seen_read"], row["first_medium"]),
+                         (4, 4, "read"))
+        self.assertEqual(json.loads(row["seen_by_mode"]), {"read": 4})
+
     def test_claims_and_lookups_record_where_the_word_was_met(self):
         lc.apply_taps(self.conn, {"episode_id": "ep0", "batch_id": "m1",
                                   "taps": [["窓", "k", "", "confirm", "off"],

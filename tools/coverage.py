@@ -269,6 +269,14 @@ def run_coverage(cfg, episode_id, record=True, conn=None):
             "iplus1_count": s["i_plus_1"],
             "known_set_size": s["known_set_size"],
         })
+        # read episodes (manga volumes, 5ch pages): per-page word / char
+        # counts, so a reader sitting's page spans become a reading speed
+        # (ledgerctl.query_reading). manga.json knows the page length.
+        if transcript["episode"].get("kind") in lc.READ_EPISODE_KINDS:
+            doc_path = episode_dir(cfg, episode_id) / "manga.json"
+            page_secs = (read_json(doc_path).get("page_secs") if doc_path.exists() else None) or 30.0
+            lc.set_page_words(conn, episode_id,
+                              lc.page_words_from_sentences(cov["sentences"], page_secs))
     else:
         cov["recorded"] = None
 

@@ -1135,6 +1135,9 @@ def create_app(cfg, start_worker=True):
             "grammar_learning": grammar["by_status"].get("learning", 0),
             "grammar_confirm_candidates": grammar["confirm_candidates"],
             "grammar_proposed": grammar["proposed"],
+            # watching / reading / listening side by side (2026-09-22):
+            # time, words seen, unique words, lookups, marks, status changes
+            "media": lc.query_media(conn),
         }
 
     def _with_senses(rows):

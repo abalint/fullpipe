@@ -1372,6 +1372,12 @@ class TestRoutes(ServerTestBase):
         self.assertEqual(band2000["known"], 2)  # 境界 (rank 1000) joins here
         for b in body["freq_bands"]:
             self.assertLessEqual(b["known"], b["total"])
+        # the per-medium block (2026-09-22): watching / reading / listening
+        media = body["media"]["media"]
+        self.assertEqual(set(media), {"watch", "read", "listen"})
+        self.assertEqual(media["read"]["sittings"], 0)
+        self.assertIn("became_known", media["watch"])
+        self.assertIn("list", body["media"]["elsewhere"])
 
 
 class TestRequestConnections(ServerTestBase):

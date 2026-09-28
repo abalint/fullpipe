@@ -27,7 +27,10 @@ CREATE TABLE IF NOT EXISTS lemmas (
     lookups        INTEGER NOT NULL DEFAULT 0,         -- popup opens with no mark (source='lookup' rows, Σ n)
     lookups_listed INTEGER NOT NULL DEFAULT 0,         -- …of which while the word sat on a list (blue / ★ / green)
     confirm_score  REAL,                               -- adaptive model's P(known) once it is fitted (words only)
-    seen_by_mode   TEXT,                               -- JSON {on, kw, off, audio, listen, unknown}: times seen split by subtitle state
+    seen_by_mode   TEXT,                               -- JSON {on, kw, off, audio, read, listen, unknown}: times seen split by subtitle state (read = the manga reader)
+    seen_read      INTEGER NOT NULL DEFAULT 0,         -- …of seen_active, the sightings made in the reader (manga / pages)
+    lookups_by_mode TEXT,                              -- JSON {on, kw, off, audio, manga, page, listen, prep, unknown}: popup opens by where the word was met
+    first_medium   TEXT,                               -- watch|read|listen: the medium of the first credited sighting
     needs_review   INTEGER NOT NULL DEFAULT 0,         -- conflict → /reconcile queue
     confirm_candidate INTEGER NOT NULL DEFAULT 0,      -- exposures crossed θ → ask the user (not auto-known)
     first_seen TEXT, last_seen TEXT, updated_at TEXT NOT NULL
@@ -109,6 +112,7 @@ CREATE TABLE IF NOT EXISTS episodes (
     iplus1_count INTEGER, known_set_size INTEGER,
     metadata TEXT,                              -- JSON: description, tags[], topics[], view_count
     series TEXT, ep_no INTEGER,                 -- tools.series: series slug + episode order (local box sets)
+    page_words TEXT,                            -- read episodes (manga / page): JSON {secs, words[], chars[]} per page — reading speed (query_reading)
     processed_at TEXT
 );
 
@@ -226,7 +230,7 @@ CREATE TABLE IF NOT EXISTS view_sessions (
     id          TEXT PRIMARY KEY,   -- client-minted (replay dedup)
     episode_id  TEXT NOT NULL,
     title       TEXT,               -- snapshot: survives episode deletion
-    kind        TEXT NOT NULL,      -- watch (in-app player) | listen (passive service)
+    kind        TEXT NOT NULL,      -- watch (in-app player) | listen (passive service) | read (manga reader)
     day         TEXT NOT NULL,      -- device-local YYYY-MM-DD
     start       TEXT NOT NULL,      -- ISO wall-clock start of the session
     secs        REAL NOT NULL,      -- wall-clock seconds spent playing
@@ -238,3 +242,22 @@ CREATE TABLE IF NOT EXISTS view_sessions (
     received_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_view_sessions_day ON view_sessions(day);
+
+-- The projection's status changes (2026-09-22): one row each time `promote`
+-- moves an item between unknown / learning / known, with the evidence row
+-- that tipped it and the medium that evidence was made in (watch / read /
+-- listen, or an off-medium channel: list / confirm / import). The evidence
+-- log says what happened; this says when the ledger changed its mind.
+CREATE TABLE IF NOT EXISTS status_log (
+    id            INTEGER PRIMARY KEY,
+    lemma         TEXT NOT NULL,
+    kind          TEXT NOT NULL DEFAULT 'word',
+    from_status   TEXT,
+    to_status     TEXT NOT NULL,
+    cause_source  TEXT,
+    cause_episode TEXT,
+    cause_medium  TEXT,
+    ts            TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_status_log_lemma ON status_log(lemma);
+CREATE INDEX IF NOT EXISTS idx_status_log_ts    ON status_log(ts);
