@@ -654,3 +654,22 @@ class ServerRoutesTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_group_sequential_numbers_by_date_and_keeps_known():
+    d = "/Volumes/library/Japanese/baseball/2026/"
+    paths = [d + "【公式】B VS C(2026年3月27日)｜試合速報｜パ・リーグ.com.ts",
+             d + "【公式】A VS D(2026年4月1日)｜試合速報.ts",
+             d + "【公式】A VS B(2026年3月27日)｜試合速報.ts",
+             d + "【公式】A VS B(2026年3月27日)｜試合速報.ja.srt"]
+    eps, unparsed = S.group_sequential(paths)
+    assert unparsed == []
+    assert [e["name"] for e in eps] == ["A VS B(2026年3月27日)", "B VS C(2026年3月27日)",
+                                        "A VS D(2026年4月1日)"]
+    assert [e["ep_no"] for e in eps] == [1, 2, 3]
+    assert eps[0]["remote_subs"].endswith(".ja.srt") and eps[1]["remote_subs"] is None
+    # a re-ingest keeps assigned numbers; a new earlier-dated file appends
+    known = {e["remote_video"]: e["ep_no"] for e in eps}
+    eps2, _ = S.group_sequential(paths + [d + "【公式】X VS Y(2026年3月20日).ts"], known)
+    assert {e["name"]: e["ep_no"] for e in eps2}["X VS Y(2026年3月20日)"] == 4
+    assert {e["name"]: e["ep_no"] for e in eps2}["A VS B(2026年3月27日)"] == 1

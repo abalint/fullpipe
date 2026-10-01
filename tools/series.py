@@ -281,11 +281,58 @@ def group_files(paths):
     return episodes, unparsed
 
 
-def scan(cfg, remote_dir, log=print):
+_DATE_RE = re.compile(r"(20\d{2})\s?[年./-]\s?(\d{1,2})\s?[月./-]\s?(\d{1,2})")
+
+
+def _date_key(name):
+    m = _DATE_RE.search(name)
+    return tuple(int(g) for g in m.groups()) if m else (9999, 0, 0)
+
+
+def _display_name(name):
+    """A per-episode name for sequential sets (sports games, one-offs):
+    the stem minus 【…】 tags and the ｜site｜suffix tail."""
+    stem = _wname(name).rsplit(".", 1)[0]
+    stem = re.sub(r"【[^】]*】", "", stem)
+    return re.split(r"[｜|]", stem)[0].strip() or stem
+
+
+def group_sequential(paths, known=None):
+    """Episodes numbered 1..N by (date in the name, file name) — for folders
+    whose names carry no episode number (a season of baseball games, all
+    dated). `known` maps remote_video → ep_no from an existing manifest so a
+    re-ingest keeps the numbers and new files append after the highest.
+    Subtitles pair by identical stem."""
+    known = dict(known or {})
+    vids = sorted((p for p in paths if _wsuffix(p) in VIDEO_EXTS),
+                  key=lambda p: (_date_key(_wname(p)), _wname(p)))
+    subs = [p for p in paths if _wsuffix(p) in SUB_EXTS]
+    nxt = max(known.values(), default=0)
+    episodes = []
+    for v in vids:
+        if v not in known:
+            nxt += 1
+            known[v] = nxt
+        n = known[v]
+        vstem = _wname(v).rsplit(".", 1)[0]
+        cands = sorted((s for s in subs if _wname(s).startswith(vstem)),
+                       key=lambda s: (not _is_ja_sub(s), _wsuffix(s) != ".srt", s))
+        episodes.append({
+            "season": None, "ep": n, "ep_no": n, "label": ep_label(None, n),
+            "name": _display_name(v),
+            "remote_video": v, "remote_subs": cands[0] if cands else None,
+            "duplicates": [],
+        })
+    episodes.sort(key=lambda e: e["ep_no"])
+    return episodes, []
+
+
+def scan(cfg, remote_dir, log=print, sequential=False, known=None):
     remote_dir = lib.resolve(cfg, remote_dir)
     lib.ensure_mounted(cfg, remote_dir, log=log)
     paths = lib.listing(remote_dir)
-    episodes, unparsed = group_files(paths)
+    episodes, unparsed = (group_sequential(paths, known) if sequential
+                          else group_files(paths))
     log(f"{len(paths)} files under {remote_dir}: {len(episodes)} episode(s)")
     return episodes, unparsed
 
@@ -826,14 +873,22 @@ def parse_episode_spec(spec):
 
 
 def ingest(cfg, remote_dir, slug=None, title=None, episodes=None, dry_run=False,
-           log=print):
+           log=print, sequential=False):
     """Scan → manifest → per episode: transcode (or stage copy) + subs →
     enqueue. Idempotent: a re-run skips local videos, stage copies and queue
     rows that already exist, so an interrupted ingest just resumes."""
     remote_dir = lib.resolve(cfg, remote_dir)
     title = title or _wname(remote_dir.rstrip("/\\"))
     slug = slug or slugify(title)
-    found, unparsed = scan(cfg, remote_dir, log=log)
+    try:
+        prior = load_manifest(cfg, slug)
+    except FileNotFoundError:
+        prior = None
+    # a series first ingested --sequential stays sequential, numbers kept
+    sequential = sequential or bool(prior and prior.get("order") == "sequential")
+    known = ({e["remote_video"]: e["ep_no"] for e in prior["episodes"]}
+             if sequential and prior else None)
+    found, unparsed = scan(cfg, remote_dir, log=log, sequential=sequential, known=known)
     if not found:
         raise RuntimeError(f"no episodes with parseable numbers under {remote_dir}"
                            + (f" (unparsed: {unparsed[:5]})" if unparsed else ""))
@@ -844,7 +899,7 @@ def ingest(cfg, remote_dir, slug=None, title=None, episodes=None, dry_run=False,
     picked = [e for e in found if wanted is None or e["ep_no"] in wanted
               or (plain_ok and e["ep"] in wanted)]
     for e in picked:
-        log(f"  {e['label']:>6}  {_wname(e['remote_video'])}"
+        log(f"  {e['label']:>6}  {e.get('name') or _wname(e['remote_video'])}"
             f"  subs={'✓ ' + _wname(e['remote_subs']) if e['remote_subs'] else '— (probe)'}"
             + (f"  ⚠ duplicates: {len(e['duplicates'])}" if e["duplicates"] else ""))
     if unparsed:
@@ -853,18 +908,18 @@ def ingest(cfg, remote_dir, slug=None, title=None, episodes=None, dry_run=False,
         return {"slug": slug, "title": title, "episodes": picked, "unparsed": unparsed}
 
     # manifest: merge with an existing one (re-ingest adds episodes, keeps timestamps)
-    try:
-        man = load_manifest(cfg, slug)
-    except FileNotFoundError:
-        man = {"slug": slug, "title": title, "remote_dir": remote_dir,
-               "cap": 480, "created_at": now_iso(), "episodes": []}
+    man = prior or {"slug": slug, "title": title, "remote_dir": remote_dir,
+                    "cap": 480, "created_at": now_iso(), "episodes": []}
+    if sequential:
+        man["order"] = "sequential"
     by_no = {e["ep_no"]: e for e in man["episodes"]}
     for e in picked:
         row = by_no.setdefault(e["ep_no"], {})
         row.update({
             "ep_no": e["ep_no"], "label": e["label"], "season": e["season"], "ep": e["ep"],
             "id": episode_id_for(slug, e["ep_no"]),
-            "title": f"{man['title']} {e['label']}",
+            "title": f"{man['title']} {e['label']}"
+                     + (f" {e['name']}" if e.get("name") else ""),
             "remote_video": e["remote_video"], "remote_subs": e["remote_subs"],
         })
         row.pop("remote_stage", None)  # desktop-era field; the stage path is config now
@@ -961,14 +1016,18 @@ def main(argv=None):
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--config")
     sub = ap.add_subparsers(dest="verb", required=True)
+    seq_help = ("number videos 1..N by the date in the name, then file name "
+                "(sports games, dated one-offs) instead of parsing episode numbers")
     p = sub.add_parser("scan", help="list the episodes a library folder would ingest")
     p.add_argument("remote_dir")
+    p.add_argument("--sequential", action="store_true", help=seq_help)
     p = sub.add_parser("ingest", help="transcode on the Mac, enqueue")
     p.add_argument("remote_dir")
     p.add_argument("--slug")
     p.add_argument("--title")
     p.add_argument("--episodes", help="e.g. 1,3-5 (default: all)")
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--sequential", action="store_true", help=seq_help)
     p.add_argument("--no-drain", action="store_true",
                    help="only enqueue; leave Stage 1 to the server's worker")
     sub.add_parser("list", help="known series")
@@ -1000,11 +1059,12 @@ def main(argv=None):
     cfg = load_config(args.config)
     log = lambda m: print(m, file=sys.stderr)  # noqa: E731
     if args.verb == "scan":
-        eps, unparsed = scan(cfg, args.remote_dir, log=log)
+        eps, unparsed = scan(cfg, args.remote_dir, log=log, sequential=args.sequential)
         print(json.dumps({"episodes": eps, "unparsed": unparsed}, ensure_ascii=False, indent=2))
     elif args.verb == "ingest":
         summary = ingest(cfg, args.remote_dir, slug=args.slug, title=args.title,
-                         episodes=args.episodes, dry_run=args.dry_run, log=log)
+                         episodes=args.episodes, dry_run=args.dry_run, log=log,
+                         sequential=args.sequential)
         if not args.dry_run and not args.no_drain and summary["enqueued"]:
             from server import jobqueue as q
             from server.worker import drain

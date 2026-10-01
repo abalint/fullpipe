@@ -57,6 +57,7 @@ in the old desktop form — all three resolve to the mount:
 PY=.venv/bin/python
 $PY -m tools.series scan   "drama/hotspot"                               # dry look: episodes + subs pairing
 $PY -m tools.series ingest "drama/hotspot" --slug hotspot --title "Hot Spot" [--episodes 1,3-5] [--dry-run] [--no-drain]
+$PY -m tools.series ingest "baseball/2026" --sequential --slug pl2026 --title "パ・リーグ 2026"   # no episode numbers in the names (dated games/one-offs): 1..N by date, then name; numbers kept on re-ingest, new files append
 $PY -m tools.series list
 $PY -m tools.series status hotspot                                       # per-episode state / video on Mac?
 $PY -m tools.series archive hotspot | --all [--episodes ...]            # mirror artifacts (+ park 480p copies) onto the media server; never deletes

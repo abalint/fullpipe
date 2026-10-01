@@ -7,6 +7,8 @@ Supports:
 """
 
 import json
+import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Callable, Optional
@@ -706,6 +708,12 @@ class GpuTranscriber:
     TIMEOUT = 900  # 15 min — covers cold model load + long videos
     MAX_RETRIES = 2
     RETRY_DELAYS = [2, 5]
+    # faster-whisper computes the whole file's features in one array on the
+    # service host: a 3h16m baseball broadcast needed a 2.44 GiB allocation
+    # and 500'd. Longer audio goes up in pieces and the timestamps are shifted
+    # back onto the full timeline.
+    CHUNK_OVER_SEC = 3600
+    CHUNK_SEC = 2400
 
     def __init__(self, base_url: str, token: Optional[str] = None):
         if not base_url:
@@ -729,6 +737,49 @@ class GpuTranscriber:
         if not audio_path.exists():
             raise TranscriptionError(f"Audio file not found: {audio_path}")
 
+        duration = _audio_duration(audio_path)
+        if duration and duration > self.CHUNK_OVER_SEC:
+            return self._transcribe_chunked(audio_path, duration, language_code,
+                                            progress_callback)
+        return self._transcribe_one(audio_path, language_code, progress_callback)
+
+    def _transcribe_chunked(self, audio_path, duration, language_code,
+                            progress_callback=None):
+        starts = list(range(0, int(duration) + 1, self.CHUNK_SEC))
+        if duration - starts[-1] < 1:
+            starts.pop()
+        words = []
+        with tempfile.TemporaryDirectory(prefix="gpu_chunks_") as tmp:
+            for i, start in enumerate(starts):
+                part = Path(tmp) / f"part{i:03d}{audio_path.suffix or '.mp3'}"
+                r = subprocess.run(
+                    ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                     "-ss", str(start), "-t", str(self.CHUNK_SEC),
+                     "-i", str(audio_path), "-c", "copy", str(part)],
+                    capture_output=True, text=True)
+                if r.returncode != 0:
+                    raise TranscriptionError(f"ffmpeg chunk split failed: {r.stderr[-300:]}")
+                if progress_callback:
+                    progress_callback(f"Transcribing on GPU service — part {i + 1}/{len(starts)}...")
+                try:
+                    part_words = self._transcribe_one(part, language_code)
+                except TranscriptionError as ex:
+                    if "returned no words" in str(ex):
+                        continue  # a silent stretch is not a failure
+                    raise
+                for w in part_words:
+                    w = dict(w)
+                    for k in ("start", "end"):
+                        if isinstance(w.get(k), (int, float)):
+                            w[k] = w[k] + start
+                    words.append(w)
+        if not words:
+            raise TranscriptionError("GPU service returned no words")
+        if progress_callback:
+            progress_callback("GPU transcription successful")
+        return words
+
+    def _transcribe_one(self, audio_path, language_code="ja", progress_callback=None):
         url = f"{self.base_url}/transcribe"
         headers = {}
         if self.token:
@@ -794,6 +845,16 @@ class GpuTranscriber:
         except Exception:  # noqa: BLE001
             message = response.text or f"HTTP {response.status_code}"
         return f"GPU service error (HTTP {response.status_code}): {message}"
+
+
+def _audio_duration(path: Path) -> Optional[float]:
+    try:
+        r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                            "-of", "csv=p=0", str(path)],
+                           capture_output=True, text=True, timeout=60)
+        return float(r.stdout.strip())
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
 
 
 def gpu_transcribe_to_srt(
