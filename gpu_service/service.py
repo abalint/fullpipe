@@ -11,8 +11,8 @@ shape engine.transcriber.words_to_srt() consumes:
 
 Backend is faster-whisper (CTranslate2) on CUDA, defaulting to the
 Japanese-tuned Kotoba-Whisper v2.0. The model is chosen via the FULLPIPE_ASR_MODEL
-env var so it can be swapped (large-v3, a Qwen3-ASR CT2 build, …) without code
-changes.
+env var so it can be swapped to any CT2 Whisper-family model (large-v3, …)
+without code changes; non-Whisper models need a new backend (ASR_MODELS.md).
 
 Run:
     set FULLPIPE_GPU_TOKEN=<shared-secret>   # optional but recommended

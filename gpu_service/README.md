@@ -53,7 +53,7 @@ transcription engine selected via `asr.gpu_url` in `config.json`.
 
 | Var | Default | Notes |
 |-----|---------|-------|
-| `FULLPIPE_ASR_MODEL` | `kotoba-tech/kotoba-whisper-v2.0-faster` | swap to `large-v3`, a Qwen3-ASR CT2 build, etc. |
+| `FULLPIPE_ASR_MODEL` | `kotoba-tech/kotoba-whisper-v2.0-faster` | any faster-whisper (CT2) model, e.g. `large-v3`; production runs large-v3-turbo. Non-Whisper models (Qwen3-ASR etc.) need a new backend — see ASR_MODELS.md |
 | `FULLPIPE_ASR_DEVICE` | `cuda` | `cpu` to test without a GPU |
 | `FULLPIPE_ASR_COMPUTE` | `float16` | `int8_float16` / `int8` to cut VRAM |
 | `FULLPIPE_ASR_VAD` | `1` | Silero VAD filtering |
