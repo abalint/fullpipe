@@ -1486,16 +1486,12 @@ class TestTypedConfirm(ServerTestBase):
         self.seed_typed_candidates()
         cands = self.client.get("/confirm", headers=self.auth).json()["candidates"]
         by_kind = {c["kind"]: c for c in cands}
-        self.assertEqual(set(by_kind), {"phrase", "grammar"})
+        # grammar is never a think-you-know candidate (2026-10-03)
+        self.assertEqual(set(by_kind), {"phrase"})
         # phrase card: JMdict senses attach exactly like a word's
         ph = by_kind["phrase"]
         self.assertEqual(ph["lemma"], "気を付ける")
         self.assertEqual(ph["senses"][0]["s"][0]["g"], ["to be careful"])
-        # grammar card: taxonomy fields, no senses
-        g = by_kind["grammar"]
-        self.assertEqual((g["pattern"], g["level"], g["gloss"]),
-                         ("〜てしまう", 5, "completion/regret"))
-        self.assertNotIn("senses", g)
 
         # typed answers hit the right projection
         r = self.client.post("/confirm", headers=self.auth,

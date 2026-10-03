@@ -518,8 +518,16 @@ tap is markable independently.
 ## Consequences to expect
 
 Dense exposure means the N5/N4 inventory crosses θ almost at once
-(N5/N4: 2 exposures in 2 watched episodes). The one-time cost is a large
-think-you-know queue for grammar right after the backfill — the same
-one-time burst the word ledger had when it was seeded — and blue paint
-on those attachments until each gets its yes/no (or a ✓ in the popup).
-Nothing is auto-known; a ✓ or a "yes" is still the only way in.
+(N5/N4: 2 exposures in 2 watched episodes). That was the plan; it did not
+survive contact (2026-10-03): θ alone put 157 of 190 learning patterns on
+the think-you-know list — 〜という, 〜たら, 〜てくる, 〜ようだ, 〜なら, 〜のに …
+each met in 100–166 episodes and still not known — and grammar has no "no"
+channel to fit a scorer on, because the popup stacks a pattern's layer under
+*any* word tapped inside it, so an open says nothing about the pattern (148
+grammar labels, 20 "no"s, all from the retired July prompt). **Grammar is
+never blue** (`promote` zeroes `confirm_candidate` for grammar; the θ table
+still drives exposure_count / spread). A pattern becomes known by ✓ in the
+popup or on the Progress tab, nothing else. To give grammar an honest
+negative channel the app would need a *deliberate* look at a pattern — e.g.
+the grammar layer collapsed by default, its expansion recorded as a lookup
+— after which a grammar scorer can be fit on the same code path as words.

@@ -307,11 +307,29 @@ common unknowns are known" with a **per-lemma exposure threshold** scaled by `fr
    on a blue word — the population the list scores); the cutoff is the smallest score
    whose out-of-fold precision reaches the target (0.8); `promote` refits automatically
    every 25 new labeled claims and stores `lemmas.confirm_score`. When the cutoff exists
-   it replaces the known-ratio gate; when the data can't reach the target the hand gate
-   stays. First fit: 246 rows, AUC .70, 80 % precision at 55 % recall; the learned
-   weights say verbs and prior not-yets against, understood context, only-gap sightings
-   and occurrences for. Words known before this system show up as ✓ at first sight
-   (`first_sight`) and are a feature, not noise. `query calibration` → `model`.
+   it replaces the known-ratio gate. First fit: 246 rows, AUC .70, 80 % precision at
+   55 % recall; the learned weights say verbs and prior not-yets against, understood
+   context, only-gap sightings and occurrences for. Words known before this system show
+   up as ✓ at first sight (`first_sight`) and are a feature, not noise. `query
+   calibration` → `model`.
+   **The "no" side (2026-10-03).** When the exposure prompt's button went away
+   (2026-09-04) the label set lost its "no" side — September: 55 yes / 2 no — and the
+   refits, fed only ✓s, kept an 80 % precision that was measured on self-selected labels
+   while the list grew to 363 words the user mostly did not know. The user's rule, made
+   when the button was removed and restated: *opening the popup on a blue word and not
+   ✓-ing it is "not yet".* So every lookup on a think-you-know word with no mark in its
+   batch lands a `confirm_defer` (one per word per episode, snapshot aboard,
+   `context.from = "lookup"`); a ✓ in that episode retracts it, ★ on a blue word is a
+   defer too, and `backfill-lookup-defers` stamped the 104 historical ones. Target
+   precision is 0.9; when the data can't reach the target the strictest cutoff it
+   supports is stored (`target_met: false`) — the list may shrink, it never falls back to
+   the looser hand gate. The refit on 382 labels (184 yes / 198 no) read AUC .80, and out
+   of fold on the post-2026-09-08 rows alone precision 1.0 at recall .47; the list went
+   363 → 37 words. Weights now say lookups (any list) and prior not-yets against,
+   understood context for. Laughter / filler / fragments (`_NOT_VOCAB_*`, the should-know
+   window's rule) are never blue. **No demotion mechanisms** — no silence-expiry, no
+   rotation: labels in, a high bar, the model decides; nothing becomes known without a ✓.
+   Grammar patterns are never blue (GRAMMAR.md).
    θ counts *episodes*, not occurrences: the lemma row also carries `seen_active`
    / `seen_passive` (occurrences × plays, README — Times seen) for the day the
    calibration has enough occurrence-stamped rows to move θ onto them.

@@ -738,6 +738,46 @@ class LedgerTest(unittest.TestCase):
         self.assertEqual(row["status"], "learning")   # tie goes to the negative
         self.assertEqual(row["needs_review"], 0)      # import ≠ deliberate tap
 
+    def test_exposure_after_tap_unknown_never_reinstates_known(self):
+        # No exposure auto-movement: a ✗ holds until the next deliberate
+        # positive. A curated exposure landing after the tap is a sighting,
+        # not a verdict, so an older import/tap must not come back as known.
+        lc.import_known(self.conn, ["諦める"])
+        lc.apply_taps(self.conn, {"episode_id": None, "batch_id": "b1",
+                                  "taps": [["諦める", "u"]]})
+        time.sleep(1.1)
+        self._expose_watched("諦める", 3)
+        lc.promote(self.conn)
+        self.assertEqual(self.conn.execute(
+            "SELECT status FROM lemmas WHERE lemma='諦める'").fetchone()["status"], "learning")
+        # the next ✓ does reinstate it
+        time.sleep(1.1)
+        lc.apply_taps(self.conn, {"episode_id": None, "batch_id": "b2",
+                                  "taps": [["諦める", "k"]]})
+        lc.promote(self.conn)
+        self.assertEqual(self.conn.execute(
+            "SELECT status FROM lemmas WHERE lemma='諦める'").fetchone()["status"], "known")
+
+    def test_word_and_phrase_evidence_share_one_verdict(self):
+        # An imported word whose sightings were recorded as a phrase headword
+        # is one lemmas row: judged once, known, and logged once — not
+        # flipped by whichever evidence group promote wrote last.
+        lc.import_known(self.conn, ["役に立つ"])
+        self.conn.execute(
+            "INSERT INTO episodes (id, title, source, kind, watched) VALUES ('ep1', 't', 's', 'youtube', 1)")
+        self.conn.execute(
+            "INSERT INTO evidence (lemma, kind, source, polarity, weight, episode_id, context, ts) "
+            "VALUES ('役に立つ', 'phrase', 'exposure', 1, 1.0, 'ep1', "
+            "'{\"sentence_idx\": 0, \"classification\": \"comprehensible\"}', '2099-01-01T00:00:00+00:00')")
+        self.conn.commit()
+        lc.promote(self.conn)
+        lc.promote(self.conn)
+        row = self.conn.execute(
+            "SELECT kind, status, exposure_count FROM lemmas WHERE lemma='役に立つ'").fetchone()
+        self.assertEqual((row["kind"], row["status"], row["exposure_count"]), ("word", "known", 1))
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM status_log WHERE lemma='役に立つ'").fetchone()[0], 1)
+
     def test_materialize_is_ledger_only_no_anki(self):
         # Retired Anki: the known set must come from the ledger alone — no
         # AnkiConnect call, no cache, works with no known_words config at all.
@@ -809,47 +849,135 @@ class LedgerTest(unittest.TestCase):
         self.assertEqual(self.conn.execute(
             "SELECT COUNT(*) FROM evidence").fetchone()[0], 1)
 
-    def test_lookups_are_counted_never_judged(self):
-        # A popup open with no mark: one zero-weight row per word per
-        # episode, replaced (not stacked) by every re-sent batch; the word's
-        # status and lists are untouched.
+    def test_lookup_on_a_blue_word_is_not_yet(self):
+        # A popup open is one zero-weight lookup row per word per episode,
+        # replaced (not stacked) by every re-sent batch. On a plain / green /
+        # ★ word it changes nothing. On a BLUE word with no mark in the batch
+        # it is the "not yet" answer (2026-10-03): one confirm_defer per word
+        # per episode, snapshot aboard, and the word must re-earn the bar.
         self._expose_watched("窓", 6)
         lc.promote(self.conn)
-        before = dict(self.conn.execute(
-            "SELECT status, confirm_candidate FROM lemmas WHERE lemma='窓'").fetchone())
+        self.assertEqual(self.conn.execute(
+            "SELECT confirm_candidate FROM lemmas WHERE lemma='窓'").fetchone()[0], 1)
         r = lc.apply_taps(self.conn, {"episode_id": "ep0", "batch_id": "l1", "taps": [],
-                                      "lookups": [["窓", 2, {"confirm": 2}],
+                                      "lookups": [["窓", 2, {"confirm": 2}, "", {"on": 2}],
                                                   ["鍵", 1, {"none": 1}],
                                                   ["気を付ける", 1, {"interest": 1}, "phrase"],
                                                   ["bad", 0, {}], ["", 3, {}]]},
                           watched=False)
-        self.assertEqual(r["lookups"], 3)
+        self.assertEqual((r["lookups"], r["lookup_defers"]), (3, 1))
         r = lc.apply_taps(self.conn, {"episode_id": "ep0", "batch_id": "l2", "taps": [],
                                       "lookups": [["窓", 3, {"confirm": 2, "known": 1}]]},
                           watched=False)
-        self.assertEqual(r["lookups"], 1)  # replaced, not a second row
+        self.assertEqual((r["lookups"], r["lookup_defers"]), (1, 0))  # replaced, one defer
         self.assertEqual(self.conn.execute(
             "SELECT COUNT(*) FROM evidence WHERE source='lookup' AND lemma='窓'").fetchone()[0], 1)
+        defer = self.conn.execute(
+            "SELECT episode_id, context FROM evidence WHERE source='confirm_defer' AND lemma='窓'"
+        ).fetchall()
+        self.assertEqual(len(defer), 1)
+        ctx = json.loads(defer[0]["context"])
+        self.assertEqual((defer[0]["episode_id"], ctx["list"], ctx["mode"], ctx["from"]),
+                         ("ep0", "confirm", "on", "lookup"))
+        self.assertEqual(ctx["snap"]["lookups_listed"], 2)
         lc.apply_taps(self.conn, {"episode_id": "ep9", "batch_id": "l3", "taps": [],
                                   "lookups": [["窓", 1, {"should_know": 1}]]}, watched=False)
         lc.promote(self.conn)
         row = self.conn.execute(
             "SELECT status, confirm_candidate, lookups, lookups_listed, kind "
             "FROM lemmas WHERE lemma='窓'").fetchone()
-        self.assertEqual((row["status"], row["confirm_candidate"]),
-                         (before["status"], before["confirm_candidate"]))
+        # off the list until fresh exposures re-clear θ, exactly like a "not yet"
+        self.assertEqual((row["status"], row["confirm_candidate"]), ("learning", 0))
         self.assertEqual((row["lookups"], row["lookups_listed"]), (4, 3))
         self.assertEqual(self.conn.execute(
             "SELECT kind, lookups FROM lemmas WHERE lemma='気を付ける'").fetchone()[:], ("phrase", 1))
         self.assertEqual(self.conn.execute(
             "SELECT status FROM lemmas WHERE lemma='鍵'").fetchone()[0], "unknown")
-        # then a ✓: the calibration reports 4 lookups before it was known
+        # the label is a training row (a "no")
+        self.assertEqual([lab for _, lab in lc.training_rows(self.conn)], [False])
+        # then a ✓ in another episode: known; the ep0 "not yet" stands as history
         lc.apply_taps(self.conn, {"episode_id": "ep9", "batch_id": "l4",
-                                  "taps": [["窓", "k"]]}, watched=False)
+                                  "taps": [["窓", "k", "", "confirm"]]}, watched=False)
+        lc.promote(self.conn)
+        self.assertEqual(self.conn.execute(
+            "SELECT status FROM lemmas WHERE lemma='窓'").fetchone()[0], "known")
+        self.assertEqual(sorted(lab for _, lab in lc.training_rows(self.conn)), [False, True])
         rep = lc.query_calibration(self.conn)
         self.assertEqual(rep["lookups_before_known"], {"rare": {"4": 1}})
         self.assertEqual(rep["lookups_by_list"],
                          {"confirm": 2, "known": 1, "none": 1, "should_know": 1})  # words only
+        self.assertEqual(rep["model"]["labels_by_month"], {lc.now_iso()[:7]: {"yes": 1, "no": 1}})
+
+    def test_lookup_then_mark_in_the_same_episode(self):
+        # Looked up while blue, then ✓'d in the same episode (same or a later
+        # batch): the ✓ is the answer, the lookup-"not yet" is retracted.
+        # ✗ / ★ in the batch: no lookup-defer; ★ on blue is a "not yet" itself.
+        for w in ("窓", "扉", "壁"):
+            self._expose_watched(w, 6)
+        lc.promote(self.conn)
+        r = lc.apply_taps(self.conn, {"episode_id": "ep0", "batch_id": "m1",
+                                      "taps": [["窓", "k", "", "confirm"], ["扉", "u", "", "confirm"]],
+                                      "lookups": [["窓", 1, {"confirm": 1}], ["扉", 1, {"confirm": 1}],
+                                                  ["壁", 1, {"confirm": 1}]]}, watched=False)
+        self.assertEqual(r["lookup_defers"], 1)  # 壁 only
+        self.assertEqual({r[0] for r in self.conn.execute(
+            "SELECT lemma FROM evidence WHERE source='confirm_defer'")}, {"壁"})
+        # the later batch ✓'s 壁: its lookup-defer goes, the ✓ snapshot sees no defer
+        lc.apply_taps(self.conn, {"episode_id": "ep0", "batch_id": "m2",
+                                  "taps": [["壁", "k", "", "confirm"]],
+                                  "lookups": [["壁", 1, {"confirm": 1}]]}, watched=False)
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM evidence WHERE source='confirm_defer'").fetchone()[0], 0)
+        snap = json.loads(self.conn.execute(
+            "SELECT context FROM evidence WHERE source='tap_known' AND lemma='壁'").fetchone()[0])
+        self.assertEqual((snap["list"], snap["snap"]["defers"], snap["snap"]["lookups_listed"]),
+                         ("confirm", 0, 1))
+        # ★ on a blue word: tap_interest + a confirm_defer (origin interest)
+        self._expose_watched("床", 6, start_idx=20)
+        lc.promote(self.conn)
+        r = lc.apply_taps(self.conn, {"episode_id": "ep20", "batch_id": "m3",
+                                      "taps": [["床", "h", "", "confirm"]],
+                                      "lookups": [["床", 1, {"confirm": 1}]]}, watched=False)
+        self.assertEqual((r["interest"], r["lookup_defers"]), (1, 1))
+        ctx = json.loads(self.conn.execute(
+            "SELECT context FROM evidence WHERE source='confirm_defer' AND lemma='床'").fetchone()[0])
+        self.assertEqual((ctx["from"], ctx["list"]), ("interest", "confirm"))
+        lc.promote(self.conn)
+        self.assertEqual(self.conn.execute(
+            "SELECT status, confirm_candidate FROM lemmas WHERE lemma='床'").fetchone()[:],
+            ("learning", 0))
+
+    def test_backfill_lookup_defers(self):
+        # Historical lookup rows on blue words get their "not yet" stamped
+        # at the lookup's ts — except where the episode already holds a
+        # mark on the word. Re-runnable; snapshots stamped alongside.
+        for w in ("窓", "扉"):
+            self._expose_watched(w, 6)
+        lc.promote(self.conn)
+        lc.apply_taps(self.conn, {"episode_id": "ep0", "batch_id": "b1", "taps": [],
+                                  "lookups": [["窓", 2, {"confirm": 2}, "", {"kw": 2}],
+                                              ["扉", 1, {"confirm": 1}]]}, watched=False)
+        lc.apply_taps(self.conn, {"episode_id": "ep1", "batch_id": "b2", "taps": [],
+                                  "lookups": [["窓", 1, {"none": 1}]]}, watched=False)
+        # pretend the rows predate the rule: drop the live defers
+        self.conn.execute("DELETE FROM evidence WHERE source='confirm_defer'")
+        self.conn.execute("UPDATE evidence SET ts='2026-09-20T10:00:00+00:00' WHERE source='lookup'")
+        self.conn.execute("UPDATE evidence SET ts='2026-09-01T10:00:00+00:00' WHERE source='exposure'")
+        # 扉 was ✓'d in ep0 → no backfilled defer there
+        self.conn.execute(
+            "INSERT INTO evidence (lemma, kind, source, polarity, weight, episode_id, ts) "
+            "VALUES ('扉', 'word', 'tap_known', 1, 3.0, 'ep0', '2026-09-20T10:05:00+00:00')")
+        self.conn.commit()
+        r = lc.backfill_lookup_defers(self.conn)
+        self.assertEqual((r["lookups_on_blue"], r["defers_written"], r["skipped_marked"]),
+                         (2, 1, 1))
+        row = self.conn.execute(
+            "SELECT episode_id, ts, context FROM evidence WHERE source='confirm_defer'").fetchone()
+        ctx = json.loads(row["context"])
+        self.assertEqual((row["episode_id"], row["ts"][:10], ctx["list"], ctx["mode"], ctx["from"]),
+                         ("ep0", "2026-09-20", "confirm", "kw", "lookup"))
+        self.assertEqual(ctx["snap"]["eps"], 6)  # stamped by backfill_snapshots
+        self.assertEqual(lc.backfill_lookup_defers(self.conn)["defers_written"], 0)
 
     def test_claims_carry_snapshots_and_paint(self):
         # Every ✓ / ✗ / yes / not-yet stores what led up to it: the word's
@@ -907,7 +1035,7 @@ class LedgerTest(unittest.TestCase):
                 "INSERT INTO evidence (lemma, kind, source, polarity, weight, episode_id, context, ts) "
                 "VALUES (?, 'word', ?, ?, 3.0, NULL, ?, ?)",
                 (f"w{i}", "confirm_known" if yes else "confirm_defer", 1 if yes else 0,
-                 json.dumps({"snap": snap, "list": "prompt"}), f"2026-01-01T00:00:{i % 60:02d}+00:00"))
+                 json.dumps({"snap": snap, "list": "prompt"}), f"2026-09-10T00:00:{i % 60:02d}+00:00"))
         self.conn.commit()
         self.assertEqual(lc.fit_confirm_model(self.conn)["fitted"], True)
         model = lc.load_confirm_model(self.conn)
@@ -1616,34 +1744,28 @@ class PhraseGrammarTest(unittest.TestCase):
             lc.mark_watched(self.conn, f"g{i}")
         lc.promote(self.conn)
         row = self.conn.execute(
-            "SELECT status, confirm_candidate FROM grammar_points "
+            "SELECT status, confirm_candidate, exposure_count FROM grammar_points "
             "WHERE pattern='〜てしまう'").fetchone()
         self.assertEqual(row["status"], "learning")  # never auto-known
-        self.assertEqual(row["confirm_candidate"], 1)
-
-        queue = lc.query_confirm_queue(self.conn)
-        g = next(c for c in queue if c["kind"] == "grammar")
-        self.assertEqual((g["pattern"], g["level"], g["gloss"]),
-                         ("〜てしまう", 5, "completion/regret"))
-        self.assertTrue(g["episodes"])
-
-        # defer snoozes it out of the queue, still learning
+        self.assertEqual(row["exposure_count"], 2)
+        # grammar is never think-you-know (2026-10-03): exposure counts said
+        # nothing about it and it has no "no" channel to learn from
+        self.assertEqual(row["confirm_candidate"], 0)
+        self.assertEqual([c for c in lc.query_confirm_queue(self.conn)
+                          if c["kind"] == "grammar"], [])
+        for i in range(9, 20):
+            self._curate_grammar(f"g{i}")
+            lc.mark_watched(self.conn, f"g{i}")
+        lc.promote(self.conn)
+        self.assertEqual(self.conn.execute(
+            "SELECT confirm_candidate FROM grammar_points WHERE pattern='〜てしまう'"
+        ).fetchone()[0], 0)
+        # a "not yet" still lands as evidence, status unchanged
         lc.defer_known_lemma(self.conn, "〜てしまう", kind="grammar")
         lc.promote(self.conn)
-        self.assertEqual([c for c in lc.query_confirm_queue(self.conn)
-                          if c["kind"] == "grammar"], [])
-        # re-surfaces once fresh exposures re-clear its bar (N5: 2 / 2)
-        time.sleep(1.1)
-        self._curate_grammar("g9")
-        lc.mark_watched(self.conn, "g9")
-        lc.promote(self.conn)
-        self.assertEqual([c for c in lc.query_confirm_queue(self.conn)
-                          if c["kind"] == "grammar"], [])
-        self._curate_grammar("g10")
-        lc.mark_watched(self.conn, "g10")
-        lc.promote(self.conn)
-        self.assertTrue([c for c in lc.query_confirm_queue(self.conn)
-                         if c["kind"] == "grammar"])
+        self.assertEqual(self.conn.execute(
+            "SELECT status FROM grammar_points WHERE pattern='〜てしまう'"
+        ).fetchone()["status"], "learning")
         # confirm → known in grammar_points
         lc.confirm_known_lemma(self.conn, "〜てしまう", kind="grammar")
         lc.promote(self.conn)
@@ -1718,13 +1840,13 @@ class PhraseGrammarTest(unittest.TestCase):
         lc.promote(self.conn)
         summary = lc.query_summary(self.conn)
         self.assertEqual(summary["phrases"]["confirm_candidates"], 1)
-        self.assertEqual(summary["grammar"]["confirm_candidates"], 1)
+        self.assertEqual(summary["grammar"]["confirm_candidates"], 0)  # grammar: never blue
         # the headline total spans all kinds (the Stage-1 word 公園 also
         # crossed its bar here — 6 watched qualifying exposures)
         word_cc = self.conn.execute(
             "SELECT COUNT(*) FROM lemmas WHERE confirm_candidate=1 "
             "AND kind='word'").fetchone()[0]
-        self.assertEqual(summary["confirm_candidates"], word_cc + 2)
+        self.assertEqual(summary["confirm_candidates"], word_cc + 1)
 
 
 if __name__ == "__main__":

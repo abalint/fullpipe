@@ -1527,8 +1527,15 @@ def apply_taps(conn, payload, anki_call=None, watched=True):
     ts = now_iso()
     applied = interest = 0
     sources = {"k": "tap_known", "u": "tap_unknown", "h": "tap_interest"}
-    # lookups first: a ✓ in the same batch snapshots the opens that led to it
-    lookups = _apply_lookups(conn, episode_id, payload.get("lookups") or [], ts)
+    # lookups first: a ✓ in the same batch snapshots the opens that led to
+    # it — and an open on a blue word with no mark in the batch is the
+    # "not yet" answer (LIVE_REVIEW.md §5a, 2026-10-03)
+    marked = {}
+    for entry in payload.get("taps", []):
+        if isinstance(entry, (list, tuple)) and len(entry) > 1 and entry[1] in sources:
+            marked[(entry[2] if len(entry) > 2 and entry[2] else "word", entry[0])] = entry[1]
+    lookups, lookup_defers = _apply_lookups(conn, episode_id, payload.get("lookups") or [],
+                                            ts, marked=marked)
     for entry in payload.get("taps", []):
         lemma, verdict = entry[0], entry[1]
         kind = entry[2] if len(entry) > 2 and entry[2] else "word"
@@ -1557,6 +1564,14 @@ def apply_taps(conn, payload, anki_call=None, watched=True):
         ).fetchone():
             continue
         context = None
+        if verdict == "k" and kind != "grammar":
+            # looked it up earlier in this episode, now ✓'d: the ✓ is the
+            # answer, the lookup-"not yet" is retracted (whatever batch
+            # carried it) before the ✓'s own snapshot is taken
+            conn.execute(
+                """DELETE FROM evidence WHERE lemma = ? AND kind = ? AND episode_id IS ?
+                   AND source = 'confirm_defer' AND context LIKE '%"from": "lookup"%'""",
+                (lemma, kind, episode_id))
         if source in CLAIM_SOURCES and kind != "grammar":
             context = json.dumps({"snap": claim_snapshot(conn, lemma, kind, ts),
                                   "list": painted, "mode": met}, ensure_ascii=False)
@@ -1569,9 +1584,13 @@ def apply_taps(conn, payload, anki_call=None, watched=True):
         )
         if verdict == "h":
             interest += 1
+            # ★ on a blue word is "not yet" as well as "I want this"
+            # (LIVE_REVIEW.md §5a): the defer is the label, ★ the want.
+            if painted == "confirm" and kind != "grammar":
+                lookup_defers += _write_defer(conn, lemma, kind, episode_id, ts, met,
+                                              origin="interest")
         else:
             applied += 1
-
 
     if batch_id:
         conn.execute(
@@ -1581,7 +1600,8 @@ def apply_taps(conn, payload, anki_call=None, watched=True):
     conn.commit()
 
     result = {"batch_id": batch_id, "episode_id": episode_id, "interest": interest,
-              "applied": applied, "lookups": lookups, "duplicate": False}
+              "applied": applied, "lookups": lookups, "lookup_defers": lookup_defers,
+              "duplicate": False}
     if episode_id and watched:
         # Pasting a prep doc's corrections is proof you watched it (P5).
         try:
@@ -1597,7 +1617,7 @@ def apply_taps(conn, payload, anki_call=None, watched=True):
 LOOKUP_LISTS = ("confirm", "interest", "should_know", "known", "none")
 
 
-def _apply_lookups(conn, episode_id, entries, ts):
+def _apply_lookups(conn, episode_id, entries, ts, marked=None):
     """Land a batch's popup lookups: [[key, n, {list: n, …}, kind?, {mode: n}?], …] —
     the phone's cumulative count for this episode, so every re-sent batch
     carries the whole set and the row is replaced, never stacked (one
@@ -1605,8 +1625,22 @@ def _apply_lookups(conn, episode_id, entries, ts):
     item; the per-list split says what it was painted as at each tap
     (LOOKUP_LISTS; 'none' = plain); the optional fifth element splits the
     opens by where the word was met (ENCOUNTER_MODES — subtitle state /
-    page / prep). Returns the number of rows written."""
-    written = 0
+    page / prep).
+
+    An open made while the word was blue (think-you-know) and not followed
+    by a mark in this batch is the "not yet" answer — the one-popup player
+    has no button for it, the tap *is* the answer (user rule, 2026-09 /
+    2026-10-03): one confirm_defer row per word per episode, carrying the
+    claim snapshot, so the scorer learns from it. `marked` = {(kind, key):
+    verdict} for the batch's taps — a marked word gets no lookup-defer (a ✗
+    is its own label; a ✓ retracts any earlier lookup-defer of the episode,
+    see apply_taps).
+    Grammar is left out: the popup stacks a pattern's layer under any word
+    tapped inside it, so an open says nothing about the pattern.
+
+    Returns (lookup rows written, defers written)."""
+    marked = marked or {}
+    written = defers = 0
     for entry in entries:
         if not isinstance(entry, (list, tuple)) or len(entry) < 2:
             continue
@@ -1642,13 +1676,39 @@ def _apply_lookups(conn, episode_id, entries, ts):
                 conn.execute("UPDATE evidence SET context = ?, ts = ? WHERE id = ?",
                              (context, ts, row["id"]))
                 written += 1
-            continue
-        conn.execute(
-            """INSERT INTO evidence (lemma, kind, source, polarity, weight, episode_id, context, ts)
-               VALUES (?, ?, 'lookup', 0, 0.0, ?, ?, ?)""",
-            (lemma, kind, episode_id, context, ts))
-        written += 1
-    return written
+        else:
+            conn.execute(
+                """INSERT INTO evidence (lemma, kind, source, polarity, weight, episode_id, context, ts)
+                   VALUES (?, ?, 'lookup', 0, 0.0, ?, ?, ?)""",
+                (lemma, kind, episode_id, context, ts))
+            written += 1
+        if kind != "grammar" and lists.get("confirm") and (kind, lemma) not in marked:
+            defers += _write_defer(conn, lemma, kind, episode_id, ts,
+                                   _top_mode(modes), origin="lookup")
+    return written, defers
+
+
+def _top_mode(modes):
+    """The encounter mode a lookup row's opens mostly came from."""
+    return max(modes, key=modes.get) if modes else None
+
+
+def _write_defer(conn, lemma, kind, episode_id, ts, mode, origin):
+    """One confirm_defer per item per episode — the "not yet" a popup open
+    (origin "lookup") or a ★ (origin "interest") on a blue word stands for.
+    Carries the claim snapshot like every other label. Returns rows written."""
+    if conn.execute(
+            """SELECT 1 FROM evidence WHERE lemma = ? AND kind = ? AND episode_id IS ?
+               AND source = 'confirm_defer'""", (lemma, kind, episode_id)).fetchone():
+        return 0
+    context = {"snap": claim_snapshot(conn, lemma, kind, ts), "list": "confirm",
+               "mode": mode, "from": origin}
+    conn.execute(
+        """INSERT INTO evidence (lemma, kind, source, polarity, weight, episode_id, context, ts)
+           VALUES (?, ?, 'confirm_defer', ?, ?, ?, ?, ?)""",
+        (lemma, kind, POLARITY["confirm_defer"], WEIGHT["confirm_defer"], episode_id,
+         json.dumps(context, ensure_ascii=False), ts))
+    return 1
 
 
 def _lookup_totals(evs):
@@ -1837,17 +1897,71 @@ def backfill_snapshots(conn):
     return {"claims": len(claims), "stamped": done}
 
 
-def training_rows(conn):
-    """[(snapshot, label)] for the scorer: prompt answers (yes / not yet)
-    and ✓ / ✗ marks made on a blue word — every claim that judged a word
-    the list had put forward. Claims on unlisted words are kept in the
-    evidence (and in the calibration report) but not fit on: they carry no
-    "no" side, and mostly say which words were known before this system."""
+def backfill_lookup_defers(conn):
+    """Stamp the "not yet" that every historical popup open on a blue word
+    stood for (2026-10-03): one confirm_defer per word / phrase per episode
+    for each lookup row with opens while painted `confirm`, at the lookup's
+    own ts, unless the episode already holds a mark or prompt answer on
+    that item (a ✓ there is the answer; a ✗ / ★ / defer is its own label).
+    Re-runnable. Snapshots are stamped by backfill_snapshots afterwards."""
+    rows = conn.execute(
+        """SELECT lemma, kind, episode_id, ts, context FROM evidence
+           WHERE source = 'lookup' AND kind IN ('word', 'phrase') ORDER BY ts""").fetchall()
+    seen = written = skipped = 0
+    for r in rows:
+        ctx = _ctx(r)
+        if not (ctx.get("lists") or {}).get("confirm"):
+            continue
+        seen += 1
+        if conn.execute(
+                f"""SELECT 1 FROM evidence WHERE lemma = ? AND kind = ? AND episode_id IS ?
+                    AND source IN ({",".join("?" * len(CLAIM_SOURCES))}, 'tap_interest')""",
+                (r["lemma"], r["kind"], r["episode_id"], *CLAIM_SOURCES)).fetchone():
+            skipped += 1
+            continue
+        context = {"list": "confirm", "mode": _top_mode(ctx.get("modes") or {}),
+                   "from": "lookup"}
+        conn.execute(
+            """INSERT INTO evidence (lemma, kind, source, polarity, weight, episode_id, context, ts)
+               VALUES (?, ?, 'confirm_defer', ?, ?, ?, ?, ?)""",
+            (r["lemma"], r["kind"], POLARITY["confirm_defer"], WEIGHT["confirm_defer"],
+             r["episode_id"], json.dumps(context, ensure_ascii=False), r["ts"]))
+        written += 1
+    conn.commit()
+    snaps = backfill_snapshots(conn)
+    return {"lookups_on_blue": seen, "defers_written": written,
+            "skipped_marked": skipped, "snapshots": snaps}
+
+
+# Which labels the scorer is fit on. The lookup channel (2026-09-08) is what
+# gives the set its "no" side under the one-popup player, and the exposure
+# accounting the snapshots are built from changed the same week (line-played
+# credit, the ≤1-gap bar) — so the post-2026-09-08 rows are the regime the
+# list is scored in. On 2026-10-03 they were 136 rows (32 yes), too few to
+# stand alone, while the fit on everything (382 rows, July prompt answers
+# included) read AUC .80 and, out of fold on the post-09-08 rows alone,
+# precision 1.0 at recall .47 at the 0.9 cutoff. So: every label (None),
+# until the current regime has MODEL_MIN_ROWS of its own —
+# `fit-confirm-model --since 2026-09-08` to check.
+MODEL_TRAINING_SINCE = None
+
+
+def training_rows(conn, since=MODEL_TRAINING_SINCE):
+    """[(snapshot, label)] for the scorer: every claim that judged a word
+    the list had put forward — ✓ / ✗ / ★ marks made on a blue word, popup
+    opens on a blue word with no mark (confirm_defer, origin lookup), and
+    the old prompt's yes / not-yet answers. Claims on unlisted words are
+    kept in the evidence (and in the calibration report) but not fit on:
+    they carry no "no" side, and mostly say which words were known before
+    this system. `since` (ISO date, None = everything) drops the rows made
+    before the current label regime."""
     rows = []
     for r in conn.execute(
-            f"""SELECT source, context FROM evidence
+            f"""SELECT source, ts, context FROM evidence
                 WHERE kind = 'word' AND source IN ({",".join("?" * len(CLAIM_SOURCES))})""",
             CLAIM_SOURCES):
+        if since and r["ts"] < since:
+            continue
         ctx = _ctx(r)
         snap = ctx.get("snap")
         if not snap:
@@ -1857,13 +1971,14 @@ def training_rows(conn):
     return rows
 
 
-def fit_confirm_model(conn, target=0.8):
+def fit_confirm_model(conn, target=0.9, since=MODEL_TRAINING_SINCE):
     """Fit the scorer on training_rows and store it (models.name='confirm').
     Returns its metrics; with too few rows nothing is stored."""
-    rows = training_rows(conn)
+    rows = training_rows(conn, since=since)
     if len(rows) < MODEL_MIN_ROWS:
         return {"fitted": False, "rows": len(rows), "needed": MODEL_MIN_ROWS}
     model = confirm_model.fit(rows, target=target)
+    model["since"] = since
     conn.execute(
         """INSERT INTO models (name, params, n_rows, trained_at) VALUES ('confirm', ?, ?, ?)
            ON CONFLICT(name) DO UPDATE SET params = excluded.params,
@@ -1886,13 +2001,14 @@ def load_confirm_model(conn):
 def _maybe_refit(conn):
     """promote's hook: refit once MODEL_REFIT_EVERY new labeled snapshots
     have accrued since the stored fit (or on first reaching MODEL_MIN_ROWS)."""
-    n = len(training_rows(conn))
-    if n < MODEL_MIN_ROWS:
-        return None
     model = load_confirm_model(conn)
+    since = model.get("since", MODEL_TRAINING_SINCE) if model else MODEL_TRAINING_SINCE
+    n = len(training_rows(conn, since=since))
+    if n < MODEL_MIN_ROWS:
+        return model
     if model is None or n >= model["n_rows"] + MODEL_REFIT_EVERY:
-        target = (model or {}).get("metrics", {}).get("target_precision", 0.8)
-        fit_confirm_model(conn, target=target)
+        target = (model or {}).get("metrics", {}).get("target_precision", 0.9)
+        fit_confirm_model(conn, target=target, since=since)
         model = load_confirm_model(conn)
     return model
 
@@ -1991,9 +2107,13 @@ def _judge(evs, theta, spread_needed, in_anki_known=False, plays=None, pos=None,
     q_count = len(qualifying)
     q_spread = len({e["episode_id"] for e in qualifying})
 
-    positives = taps_known + imports + confirms + active_exposures
+    # Only deliberate claims can answer a ✗: a curated exposure that lands
+    # after the tap is a sighting, not a verdict, and must never reinstate
+    # an older tap/import (2026-10-03: four ✗'d words came back known within
+    # days on exposure rows alone — "exposure auto movement" is gone).
+    deliberate = taps_known + imports + confirms
     last_negative = max((e["ts"] for e in negatives), default=None)
-    last_positive = max((e["ts"] for e in positives), default=None)
+    last_positive = max((e["ts"] for e in deliberate), default=None)
 
     needs_review = 0
     confirm_candidate = 0
@@ -2081,8 +2201,9 @@ def promote(conn, anki_known=None):
     grammar_points for grammar evidence) from the append-only evidence log.
     One rule order for every item kind — first match wins:
 
-    1. Fresh negative (tap_unknown / card_lapse newer than any positive)
-       → learning. needs_review when a strong positive (tap_known / confirm_known)
+    1. Fresh negative (tap_unknown / card_lapse newer than any deliberate
+       positive — tap_known / confirm_known / import; exposures never
+       reinstate a claim) → learning. needs_review when a strong positive (tap_known / confirm_known)
        also exists, or when the lemma is live-Anki-known — there the demotion is a
        union no-op and the tap means *the card isn't doing its job* (Q2):
        route to REPLACE via the needs_review queue. The negative only cancels
@@ -2134,11 +2255,16 @@ def promote(conn, anki_known=None):
     grammar_prior = {r[0]: (r[1], r[2]) for r in conn.execute(
         "SELECT pattern, level, corpus_per_10k FROM grammar_points")}
 
-    # kind is part of the group key so a word and a grammar pattern that
-    # happen to share a string can't merge their evidence.
+    # A grammar pattern that happens to share a string with a word keeps its
+    # own evidence (its own table). Word and phrase evidence for one headword
+    # are judged together: they project onto the same lemmas row, and two
+    # groups writing it in turn let the last one win (2026-10-03: 15 imported
+    # headwords whose sightings were recorded as phrases flipped unknown→known
+    # →unknown on every promote, logging 4,365 phantom transitions).
     by_key = {}
     for r in rows:
-        by_key.setdefault((r["kind"], r["lemma"]), []).append(r)
+        key = ("grammar", r["lemma"]) if r["kind"] == "grammar" else ("lemma", r["lemma"])
+        by_key.setdefault(key, []).append(r)
 
     ts_now = now_iso()
     grammar_seen = 0
@@ -2147,6 +2273,14 @@ def promote(conn, anki_known=None):
         if kind == "grammar":
             theta, spread_needed = grammar_theta_for(*grammar_prior.get(lemma, (None, None)))
             v = _judge(evs, theta, spread_needed, coverage=coverage, ep_kinds=ep_kinds)
+            # No think-you-know for grammar (2026-10-03): θ alone put 157 of
+            # 190 learning patterns on the list — ones met in 100+ episodes
+            # and still not known — and grammar has no "no" channel to fit a
+            # scorer on (the popup stacks a pattern's layer under any word
+            # tapped inside it, so an open is not a look at the pattern).
+            # Until the app records a deliberate look at a pattern, blue is
+            # withheld; ✓ in the popup remains the way to known.
+            v["confirm_candidate"] = 0
             transitions += _log_status(conn, kind, lemma, prev_status, v["status"],
                                        evs, ep_kinds, ts_now)
             conn.execute(
@@ -2170,6 +2304,8 @@ def promote(conn, anki_known=None):
             grammar_seen += 1
             continue
 
+        # the row's kind: a word if any evidence row says so, else a phrase
+        kind = "word" if any(e["kind"] == "word" for e in evs) else "phrase"
         # freq only ever keys single Sudachi lemmas, so a phrase headword
         # misses → rare-word θ, per the docstring.
         freq_rank = freq.get(lemma)
@@ -2178,6 +2314,11 @@ def promote(conn, anki_known=None):
                    plays=plays, pos=pos_by_lemma.get(lemma),
                    model=model if kind == "word" else None, freq_rank=freq_rank,
                    lemma=lemma, coverage=coverage, ep_kinds=ep_kinds)
+        # laughter / filler / fragments are not vocabulary: never blue, the
+        # same rule the should-know window applies (_NOT_VOCAB_*)
+        if v["confirm_candidate"] and kind == "word" and (
+                pos_by_lemma.get(lemma) in _NOT_VOCAB_POS or _NOT_VOCAB_RE.search(lemma)):
+            v["confirm_candidate"] = 0
         transitions += _log_status(conn, kind, lemma, prev_status, v["status"],
                                    evs, ep_kinds, ts_now)
         conn.execute(
@@ -3247,12 +3388,29 @@ def _model_report(conn):
     the standardized weights — each is "one standard deviation more of this
     feature moves the log-odds by …", so sign and size read directly."""
     model = load_confirm_model(conn)
-    n = len(training_rows(conn))
+    since = model.get("since", MODEL_TRAINING_SINCE) if model else MODEL_TRAINING_SINCE
+    rows = training_rows(conn, since=since)
+    n = len(rows)
+    # the label mix over time — a month with no "no" side is a month the
+    # list could not be graded on
+    by_month = {}
+    for r in conn.execute(
+            f"""SELECT source, ts, context FROM evidence
+                WHERE kind = 'word' AND source IN ({",".join("?" * len(CLAIM_SOURCES))})""",
+            CLAIM_SOURCES):
+        ctx = _ctx(r)
+        if not ctx.get("snap") or not (r["source"].startswith("confirm")
+                                       or ctx.get("list") == "confirm"):
+            continue
+        m = by_month.setdefault(r["ts"][:7], {"yes": 0, "no": 0})
+        m["yes" if r["source"] in ("tap_known", "confirm_known") else "no"] += 1
     if model is None:
-        return {"active": False, "training_rows": n, "needed": MODEL_MIN_ROWS}
+        return {"active": False, "training_rows": n, "needed": MODEL_MIN_ROWS,
+                "since": since, "labels_by_month": by_month}
     return {
         "active": model.get("cutoff") is not None,
         "training_rows": n, "fitted_on": model["n_rows"], "trained_at": model["trained_at"],
+        "since": since, "labels_by_month": by_month,
         "cutoff": model.get("cutoff"), "metrics": model["metrics"],
         "weights": dict(sorted(zip(model["features"], model["weights"]),
                                key=lambda kv: -abs(kv[1]))),
@@ -3447,10 +3605,16 @@ def main(argv=None):
     p.add_argument("session_json")
     sub.add_parser("backfill-snapshots",
                    help="stamp claim snapshots onto historical ✓/✗/yes/not-yet rows")
+    sub.add_parser("backfill-lookup-defers",
+                   help="stamp the \"not yet\" every historical popup open on a blue word "
+                        "stood for (one confirm_defer per word per episode), then snapshots")
     p = sub.add_parser("fit-confirm-model",
                        help="fit the adaptive think-you-know scorer on the claim snapshots")
-    p.add_argument("--target", type=float, default=0.8,
-                   help="precision the cutoff must reach out-of-fold (default 0.8)")
+    p.add_argument("--target", type=float, default=0.9,
+                   help="precision the cutoff must reach out-of-fold (default 0.9)")
+    p.add_argument("--since", default=MODEL_TRAINING_SINCE,
+                   help="only labels at/after this ISO date (default: every label; "
+                        "2026-09-08 = the lookup-channel regime only)")
     p = sub.add_parser("backfill-occurrences",
                        help="stamp per-episode occurrence counts onto exposure rows "
                             "from the coverage.json files still on disk")
@@ -3518,9 +3682,11 @@ def main(argv=None):
     elif args.verb == "backfill-snapshots":
         _json_out(backfill_snapshots(conn))
     elif args.verb == "fit-confirm-model":
-        result = fit_confirm_model(conn, target=args.target)
+        result = fit_confirm_model(conn, target=args.target, since=args.since or None)
         result["promote"] = promote(conn)
         _json_out(result)
+    elif args.verb == "backfill-lookup-defers":
+        _json_out(backfill_lookup_defers(conn))
     elif args.verb == "backfill-occurrences":
         root = args.episodes or ((cfg or {}).get("work_dir") and
                                  str(Path(cfg["work_dir"]) / "episodes"))

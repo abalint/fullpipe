@@ -104,7 +104,8 @@ them when PRIME mode is built.
 | `confirm LEMMA` / `defer LEMMA` | answer the exposure prompt: known ('yes') / snooze ('not yet') |
 | `backfill-occurrences` | stamp per-episode occurrence counts onto exposure rows from the coverage.json files still on disk (+ promote) |
 | `backfill-snapshots` | stamp claim snapshots onto historical ✓/✗/yes/not-yet rows (one-off; new claims snapshot as they land) |
-| `fit-confirm-model [--target 0.8]` | fit the adaptive think-you-know scorer on the claim snapshots (+ promote); `promote` also refits on its own every 25 new labeled claims |
+| `backfill-lookup-defers` | stamp the "not yet" every historical popup open on a blue word stood for (one `confirm_defer` per word per episode, at the lookup's ts; skipped where the episode holds a mark) + snapshots (one-off, 2026-10-03; live batches do it as they land) |
+| `fit-confirm-model [--target 0.9] [--since DATE]` | fit the adaptive think-you-know scorer on the claim snapshots (+ promote); `promote` also refits on its own every 25 new labeled claims. When no cutoff reaches the target the strictest cutoff the data supports is stored (`target_met: false`), never the hand gate |
 | `query summary\|needs-review\|confirm-queue\|why LEMMA\|unwatched\|calibration` | read the ledger |
 | `backfill-page-words [--episodes DIR]` | stamp per-page word / char counts onto read episodes (manga volumes, 5ch pages) from the coverage.json files on disk — the reading-speed numerator; Stage 1 does it for new ones |
 | `query reading` | reading speed: pages, words, chars, minutes and words/min · chars/min per day, per volume and all-time |
@@ -138,11 +139,22 @@ data accrues — rows from before 2026-09-07 whose episode was purged read as on
 occurrence.
 
 **Lookups (2026-09-07).** Opening the popup on a word without marking it is a
-`lookup`: zero weight, never moves status or lists. The tap batch carries the
+`lookup`: zero weight, never moves status or lists — **except on a blue word,
+where the open is the "not yet" answer (2026-10-03)**: the one-popup player
+has no button for it, so a lookup on a think-you-know word with no mark in
+the batch lands a `confirm_defer` (one per word per episode, claim snapshot
+aboard, `context.from = "lookup"`), the word re-earns its bar, and the scorer
+learns from it; a ✓ on the word in that episode retracts it, a ✗ is its own
+label, and ★ on a blue word is a defer too. The tap batch carries the
 episode's cumulative opens per item with what the word was painted as at each
 tap (blue think-you-know / ★ / green should-know / known / none); the lemma
 row keeps `lookups` and `lookups_listed`, and `query calibration` reports how
-many lookups precede a ✓ per band and how the opens split by list.
+many lookups precede a ✓ per band, how the opens split by list, and the
+scorer's labels by month (`model.labels_by_month` — a month with no "no" side
+is a month the list could not be graded on). Grammar patterns are never blue
+(the popup stacks a pattern's layer under any word tapped inside it, so an
+open says nothing about the pattern, and θ alone proved meaningless — see
+GRAMMAR.md); ✓ in the popup remains the way a pattern becomes known.
 
 Bootstrap order: `init` → `build_freq` → `import-anki` (if inheriting an Anki collection), plus
 `import-known` if you have an external known list (e.g. an AnkiMorphs

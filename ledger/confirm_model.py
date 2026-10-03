@@ -2,9 +2,11 @@
 
 A logistic regression over the snapshot the ledger takes of a word at every
 knowledge claim (ledgerctl.claim_snapshot): how the word had been met up to
-that moment. Trained on the claims that judged a *listed* word — the exposure
-prompt's yes / not-yet answers and ✓ / ✗ marks made on a blue word — so the
-population it is fit on is the population it scores: words that cleared θ.
+that moment. Trained on the claims that judged a *listed* word — ✓ / ✗ marks
+made on a blue word, the old exposure prompt's yes / not-yet answers, and
+(2026-10-03) every popup open on a blue word that was not followed by a ✓,
+which is the "not yet" of the one-popup player — so the population it is
+fit on is the population it scores: words that cleared θ.
 Pure Python (the venv has no numpy); a few hundred rows × 16 features fits
 in well under a second.
 
@@ -118,11 +120,17 @@ def _auc(probs, y):
 
 
 def _threshold_for(probs, y, target, min_pos=10):
-    """Smallest cutoff whose precision over rows scoring ≥ it reaches
-    `target` with at least `min_pos` predicted positives; None if no cutoff
-    does (then the caller keeps the hand gate)."""
+    """(cutoff, target_met). The smallest cutoff whose precision over rows
+    scoring ≥ it reaches `target` with at least `min_pos` predicted
+    positives. When no cutoff reaches the target the list must not fall
+    back to a looser rule: the cutoff with the best precision the data can
+    reach (ties → the one that keeps more words) is returned with
+    target_met=False, so the list stays as precise as it can be and the
+    report says the bar was missed. None only when no cutoff has
+    `min_pos` rows at all."""
     order = sorted(zip(probs, y), key=lambda t: -t[0])
     best = None
+    strict = None  # (precision, n, cutoff)
     tp = n = 0
     for i, (p, t) in enumerate(order):
         n += 1
@@ -130,9 +138,18 @@ def _threshold_for(probs, y, target, min_pos=10):
         # only cut between distinct scores
         if i + 1 < len(order) and order[i + 1][0] == p:
             continue
-        if n >= min_pos and tp / n >= target:
+        if n < min_pos:
+            continue
+        prec = tp / n
+        if prec >= target:
             best = p
-    return best
+        if strict is None or (prec, n) > (strict[0], strict[1]):
+            strict = (prec, n, p)
+    if best is not None:
+        return best, True
+    if strict is not None:
+        return strict[2], False
+    return None, False
 
 
 def fit(rows, target=0.8, folds=5, seed=7):
@@ -155,14 +172,14 @@ def fit(rows, target=0.8, folds=5, seed=7):
             for i in test:
                 z = _apply([X[i]], means, stds)[0]
                 oof[i] = _sigmoid(sum(wi * x for wi, x in zip(w, z)) + b)
-        cutoff = _threshold_for(oof, y, target)
+        cutoff, target_met = _threshold_for(oof, y, target)
         auc = _auc(oof, y)
     else:
-        cutoff, auc = None, None
+        cutoff, target_met, auc = None, False, None
     means, stds = _standardize(X)
     w, b = _fit_raw(_apply(X, means, stds), y)
     metrics = {"n": n, "positives": int(sum(y)), "auc": round(auc, 3) if auc is not None else None,
-               "target_precision": target}
+               "target_precision": target, "target_met": target_met}
     if cutoff is not None:
         sel = [(p, t) for p, t in zip(oof, y) if p >= cutoff]
         metrics["precision"] = round(sum(t for _, t in sel) / len(sel), 3)

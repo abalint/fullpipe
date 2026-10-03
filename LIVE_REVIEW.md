@@ -36,7 +36,7 @@ already make.
 | List | Meaning | Enters by | Leaves by |
 |---|---|---|---|
 | **High interest** ★ | "I want to learn this" | ★ tap on any surface | promoted to think-you-know, or ✓ |
-| **Think you know** | exposures cleared the bar | ledger `promote` (θ qualifying exposures, spread k) | ✓ → known · ★ → back to interest, snoozed · silence → see §5b |
+| **Think you know** | the scorer says you very probably know it | ledger `promote` (θ qualifying exposures, spread k, then the adaptive scorer's cutoff — 0.9 precision) | ✓ → known · ★ or a popup open with no ✓ → "not yet", re-earns the bar (§5a) · silence → stays blue (§5b) |
 | **Should know** | the 100 most frequent words not yet known | rolling window over the corpus freq table, minus the other lists | promoted to think-you-know, ★'d into interest, or ✓ |
 
 Plus the episode-local paint that already exists (unknown / i+1 target /
@@ -142,13 +142,17 @@ difference:
 |---|---|---|---|---|
 | ✓ | tap_known → known | tap_known → known | confirm_known → known | tap_known → known |
 | ★ | tap_interest → interest | (cycle → ✗) | confirm_defer + tap_interest → interest, snoozed | tap_interest → interest |
+| open, no mark | lookup (counted, not judged) | lookup | **confirm_defer** — the "not yet" (2026-10-03): one per word per episode, snapshot aboard, re-earns the bar; a ✓ in the episode retracts it | lookup |
 | ★ on a **known** word | tap_interest newer than last positive → learning (the lapse signal; today a no-op) |
 | ✗ (any word, **built**) | tap_unknown → out of known; nothing else is special-cased: `promote` re-judges at once, so if its qualifying exposures already clear θ it is blue immediately, and if it sits in the frequency window it is green immediately (`should_know` reads status ≠ known). On the phone the ✗ paints the unknown wash on the spot, `/paint` ships an `unknown` list so the sidecar's frozen `k` is undone on every surface, and the surfaces re-pull `/paint` after the batch lands so the blue/green shows in the same sitting. |
 
 The Progress tab's confirm list stays as a batch surface but is no longer
 the primary path.
 
-**b. No self-promotion.** A blue word stays blue until you ✓ it. Nothing
+**b. No self-promotion, no demotion.** A blue word stays blue until you ✓ it
+(or look it up without ✓-ing — that is "not yet"). Nothing expires it and
+nothing rotates it: the list is kept honest by its labels and its precision
+bar (DESIGN.md — The "no" side), not by moving words around. Nothing
 becomes known without a manual mark (user rule, 2026-09-04): the ledger
 may *suggest* (blue), never *decide*.
 
