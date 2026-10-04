@@ -41,11 +41,23 @@ jargon and character names get mangled the same way in every episode, and
 the cross-episode registry carries the fixes forward), the phone pulls,
 taps, marks watched, rates.
 
-Subtitle discovery order when the folder has none: the show-graph repo's
-kitsunekko mirror (`~/Documents/code/graphs/japaneseShowGraph/subs`), then
-jimaku.cc / kitsunekko.net / SubDL / OpenSubtitles online. Older OVAs and
-anything never on a JP streaming service usually have none — go straight to
-GPU ASR rather than searching long.
+Subtitle discovery when the folder has none — **always do this before
+letting Stage 1 ASR anything, no matter how old or obscure the show is**
+(user rule, 2026-10-04): the show-graph repo's kitsunekko mirror
+(`~/Documents/code/graphs/japaneseShowGraph/subs`, only a handful of shows),
+then the two full index pages, which are one curl each and grep in seconds:
+
+```sh
+curl -s -A Mozilla/5.0 https://jimaku.cc/ | grep -i -o -E 'href="/entry/[0-9]+"[^>]*>[^<]*<title fragment>[^<]*'
+curl -s -A Mozilla/5.0 'https://kitsunekko.net/dirlist.php?dir=subtitles%2Fjapanese%2F' | grep -i '<title fragment>'
+```
+
+(grep both the romaji and the katakana title), then SubDL / OpenSubtitles
+(both often Cloudflare-walled from curl — a WebSearch for
+`<title> 日本語字幕 srt` is the fallback). A hit → pre-place
+`<slug>-eNNN.ja.srt` in `~/immersion/series/<slug>/` and ingest (the subs
+pre-placement note in memory). Only after all of that comes up empty is GPU
+ASR the answer — report the search as done, with what was checked.
 
 ## Commands
 
