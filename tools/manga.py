@@ -44,7 +44,9 @@ CLI:
                                           [--dry-run] [--no-drain]
     python -m tools.manga list
     python -m tools.manga status dandadan
-    python -m tools.manga remove dandadan [--remote]           # Mac (+ PC OCR cache); never the scans
+    python -m tools.manga archive dandadan|--all               # mirror reads/voice/coverage onto the media server (t7)
+    python -m tools.manga restore dandadan [--volumes 2]       # back onto the Mac (artifacts + pages + queue rows)
+    python -m tools.manga remove dandadan [--remote] [--force] # Mac (+ PC OCR cache); never the scans; needs a current archive
     python -m tools.manga voice  prep|status|apply|tts|… <id>  # the voice track (tools/manga_voice.py)
 """
 
@@ -843,16 +845,25 @@ def status(cfg, slug):
             "volumes": rows}
 
 
-def remove(cfg, slug, remote_too=False, log=print):
+def remove(cfg, slug, remote_too=False, force=False, log=print):
     """Full delete on the Mac: queue rows, episode dirs (pages, OCR, derived
     data), the ledger footprint of unread volumes (read evidence is kept, as
     the server's DELETE does), the manifest — and with remote_too the PC's
     OCR cache (and any parked pages). The scans on the library share are
-    never touched."""
+    never touched. Refuses while any built volume is not current in the
+    archive tier (the reads and voice clips would have no other copy) —
+    `force` overrides."""
 
     from ledger import ledgerctl as lc
     from server import jobqueue as q
     man = load_manifest(cfg, slug)
+    if not force and lib.archive_dir(cfg):
+        stale = [v["id"] for v in man["volumes"]
+                 if (episode_dir(cfg, v["id"]) / "manga.json").exists()
+                 and not archive_status(cfg, slug, v["id"])["current"]]
+        if stale:
+            raise RuntimeError(f"not archived (or not current) on the media server: {', '.join(stale)} — "
+                               f"run `tools.manga archive {slug}` first, or --force")
     conn = q.open_queue(Path(cfg["work_dir"]).expanduser() / "queue.db")
     ledger = lc.open_db(cfg["ledger_db"])
     removed = []
@@ -871,6 +882,186 @@ def remove(cfg, slug, remote_too=False, log=print):
     shutil.rmtree(manga_dir(cfg, slug), ignore_errors=True)
     log(f"removed manga {slug}: {len(removed)} volume(s)")
     return {"removed": removed, "remote_ocr_removed": remote_too}
+
+
+# --- archive tier: everything derived, on the media server ---------------------------
+#
+# The scans live on the library share (read-only, never copied back there),
+# so "retained on the media server" means: everything the Mac derived for a
+# volume — OCR + the AI read (with its voice fields), transcript / coverage /
+# curate, the voice clips — mirrored under <archive_dir>/manga/<slug>/ on the
+# t7 share, plus the series files (manifest, cast) and a snapshot of the
+# queue rows. The phone's swipe-delete is local; the Mac keeps its copy; this
+# tier is the second holder so a dead Mac loses nothing. `restore` brings a
+# volume back onto the Mac (artifacts from t7, pages off the library share).
+
+ARCHIVE_SKIP = ("pages/", "ocr/read/pages/")  # the scans (library share) and the numbered renders (read-prep rebuilds them)
+
+
+def archive_dir_of(cfg, slug):
+    root = lib.archive_dir(cfg)
+    return f"{root}/manga/{slug}" if root else None
+
+
+def volume_artifacts(cfg, ep_id):
+    """[(local Path, archive-relative name)] — every file under the episode
+    dir except the page scans and the read-prep renders."""
+    from tools.series import _is_artifact
+    out = []
+    d = episode_dir(cfg, ep_id)
+    if d.exists():
+        for p in sorted(d.rglob("*")):
+            rel = p.relative_to(d).as_posix()
+            if rel.startswith(ARCHIVE_SKIP) or not _is_artifact(p):
+                continue
+            out.append((p, f"episodes/{ep_id}/{rel}"))
+    return out
+
+
+def series_files(cfg, slug):
+    """manga.json (the manifest) and cast.json (the voice cast) beside it."""
+    from tools.series import _is_artifact
+    d = manga_dir(cfg, slug)
+    return [(p, f"manga/{p.name}") for p in sorted(d.glob("*")) if _is_artifact(p)]
+
+
+def archive_status(cfg, slug, ep_id):
+    """{"archived", "current", "missing"} for one volume — archived = the
+    transcript + reader structure are on the server; current = every
+    artifact the Mac holds is mirrored (size + mtime)."""
+    from tools.series import _archive_reachable
+    root = archive_dir_of(cfg, slug)
+    if not _archive_reachable(cfg, root):
+        return {"archived": False, "current": False, "missing": None}
+    base = f"{root}/episodes/{ep_id}"
+    archived = all(os.path.isfile(f"{base}/{f}") for f in ("transcript.json", "manga.json"))
+    missing = [rel for local, rel in volume_artifacts(cfg, ep_id)
+               if not lib.same_file(local, f"{root}/{rel}")]
+    return {"archived": archived, "current": archived and not missing, "missing": missing}
+
+
+_ARCHIVE_README = """{title} — fullPipe manga mirror (tools.manga archive, last run {at})
+
+  episodes/<id>/   everything the Mac derived for a volume: ocr/ (mokuro +
+                   the AI read with speaker/say), transcript.json, manga.json,
+                   coverage.json, curate.json, read/lines.json, voice/
+                   (script, the ElevenLabs clips, index) — not the page scans
+                   (they are the library share's) nor read-prep's renders
+  manga/           manga.json (the manifest), cast.json (name → voice),
+                   queue.json (a snapshot of the queue rows: state, watched)
+
+Restore onto the Mac (idempotent): python -m tools.manga restore {slug}
+  (artifacts from here, pages re-copied off the library share, queue rows re-created)
+"""
+
+
+def archive(cfg, slug, vol_nos=None, log=print):
+    """Mirror a manga's volumes onto the t7 share. Never deletes anything
+    anywhere; a re-run copies only what changed."""
+    from server import jobqueue as q
+    from tools.series import _mirror
+    man = load_manifest(cfg, slug)
+    root = archive_dir_of(cfg, slug)
+    if not root:
+        raise RuntimeError("no archive tier configured (config.json → library.archive_dir)")
+    lib.ensure_mounted(cfg, root, log=log)
+    conn = q.open_queue(Path(cfg["work_dir"]).expanduser() / "queue.db")
+    summary = {"slug": slug, "copied": 0, "skipped": 0, "bytes": 0, "volumes": []}
+    rows = []
+    for v in man["volumes"]:
+        if vol_nos and v["vol_no"] not in vol_nos:
+            continue
+        c, k, b = _mirror(cfg, volume_artifacts(cfg, v["id"]), root, log)
+        summary["copied"] += c
+        summary["skipped"] += k
+        summary["bytes"] += b
+        job = q.get_job(conn, v["id"])
+        if job:
+            rows.append(job)
+        summary["volumes"].append(v["id"])
+        if c:
+            log(f"  vol {v['vol_no']}: {c} file(s) mirrored")
+    c, k, b = _mirror(cfg, series_files(cfg, slug), root, log)
+    summary["copied"] += c
+    summary["skipped"] += k
+    summary["bytes"] += b
+    snap_path = f"{root}/manga/queue.json"
+    snap = read_json(snap_path) if os.path.isfile(snap_path) else {"jobs": []}
+    by_id = {j["id"]: j for j in snap.get("jobs", [])}
+    by_id.update({j["id"]: j for j in rows})
+    write_json(snap_path, {"snapshot_at": now_iso(),
+                           "jobs": sorted(by_id.values(), key=lambda j: j["id"])})
+    Path(f"{root}/README.txt").write_text(
+        _ARCHIVE_README.format(title=man["title"], slug=slug, at=now_iso()[:10]), encoding="utf-8")
+    log(f"archived manga {slug}: {summary['copied']} file(s) copied "
+        f"({summary['bytes'] / 1e6:.1f} MB), {summary['skipped']} already current")
+    return summary
+
+
+def archive_all(cfg, log=print):
+    out = []
+    for m in list_manga(cfg):
+        out.append(archive(cfg, m["slug"], log=log))
+    return out
+
+
+def restore(cfg, slug, vol_nos=None, overwrite=False, log=print):
+    """A manga back onto the Mac: the manifest + cast from the archive when
+    the Mac has none, each volume's artifacts (the files the Mac lacks, or
+    all with overwrite), the page scans re-copied off the library share,
+    and a missing queue row re-created in the state the snapshot recorded
+    (a restore onto a fresh Mac keeps 'watched')."""
+    from server import jobqueue as q
+    root = archive_dir_of(cfg, slug)
+    if not root:
+        raise RuntimeError("no archive tier configured (config.json → library.archive_dir)")
+    lib.ensure_mounted(cfg, root, log=log)
+    if not os.path.isdir(root):
+        raise FileNotFoundError(f"nothing archived for manga '{slug}' under {lib.archive_dir(cfg)}")
+    restored_series = 0
+    src = f"{root}/manga"
+    if os.path.isdir(src):
+        for f in lib.listing(src):
+            name = lib.name_of(f)
+            if name == "queue.json":
+                continue
+            dst = manga_dir(cfg, slug, create=True) / name
+            if overwrite or not dst.exists():
+                lib.copy_file(f, dst)
+                restored_series += 1
+    man = load_manifest(cfg, slug)
+    conn = q.open_queue(Path(cfg["work_dir"]).expanduser() / "queue.db")
+    snap_path = f"{root}/manga/queue.json"
+    snap = {j["id"]: j for j in (read_json(snap_path).get("jobs", []) if os.path.isfile(snap_path) else [])}
+    files, pages, rows = 0, 0, []
+    for v in man["volumes"]:
+        if vol_nos and v["vol_no"] not in vol_nos:
+            continue
+        ep_id = v["id"]
+        src_dir = f"{root}/episodes/{ep_id}"
+        if os.path.isdir(src_dir):
+            for f in lib.listing(src_dir):
+                dst = episode_dir(cfg, ep_id) / f[len(src_dir) + 1:]
+                if overwrite or not dst.exists():
+                    lib.copy_file(f, dst)
+                    files += 1
+        pages_dir = episode_dir(cfg, ep_id) / "pages"
+        if v.get("remote_dir") and len(page_files_in(pages_dir)) < int(v.get("page_count") or v.get("pages") or 0):
+            try:
+                pages += len(copy_pages(cfg, v["remote_dir"], pages_dir, log=lambda m: None))
+            except RuntimeError as e:
+                log(f"  vol {v['vol_no']}: pages not re-copied ({str(e)[:120]})")
+        if not q.get_job(conn, ep_id):
+            old = snap.get(ep_id)
+            job, _ = q.enqueue(conn, manga_source(slug, v["vol_no"]), title=v.get("title"),
+                               series=slug, series_title=man["title"], ep_no=v["vol_no"])
+            if old and old.get("state") in q.STATES and old["state"] not in q.STAGE1_STATES:
+                q.set_state(conn, job["id"], old["state"], episode_id=ep_id, title=v.get("title"))
+            rows.append(ep_id)
+    log(f"restored manga {slug}: {files} artifact file(s), {pages} page(s) off the share, "
+        f"{restored_series} series file(s), {len(rows)} queue row(s) re-created")
+    return {"slug": slug, "files": files, "pages": pages, "series_files": restored_series,
+            "queue_rows": rows}
 
 
 # --- CLI ------------------------------------------------------------------------------
@@ -898,6 +1089,17 @@ def main(argv=None):
     p = sub.add_parser("remove")
     p.add_argument("slug")
     p.add_argument("--remote", action="store_true", help="also drop the PC's OCR cache")
+    p.add_argument("--force", action="store_true", help="even when the archive tier is not current")
+    p = sub.add_parser("archive", help="mirror the derived files (reads, voice clips, coverage…) onto the media server")
+    p.add_argument("slug", nargs="?")
+    p.add_argument("--all", action="store_true")
+    p.add_argument("--volumes", help="e.g. 1,3-5")
+    p = sub.add_parser("archive-status")
+    p.add_argument("slug")
+    p = sub.add_parser("restore", help="a manga back onto the Mac: artifacts from the archive, pages off the share, queue rows")
+    p.add_argument("slug")
+    p.add_argument("--volumes")
+    p.add_argument("--overwrite", action="store_true")
     p = sub.add_parser("read-prep", help="numbered-box page renders + manifest for the AI read")
     p.add_argument("episode_id")
     p = sub.add_parser("read-status")
@@ -937,8 +1139,23 @@ def main(argv=None):
     elif args.cmd == "status":
         print(json.dumps(status(cfg, args.slug), ensure_ascii=False, indent=1))
     elif args.cmd == "remove":
-        print(json.dumps(remove(cfg, args.slug, remote_too=args.remote, log=log),
+        print(json.dumps(remove(cfg, args.slug, remote_too=args.remote, force=args.force, log=log),
                          ensure_ascii=False, indent=1))
+    elif args.cmd == "archive":
+        if args.all:
+            out = archive_all(cfg, log=log)
+        elif args.slug:
+            out = archive(cfg, args.slug, vol_nos=parse_volume_spec(args.volumes), log=log)
+        else:
+            ap.error("archive: give a slug or --all")
+        print(json.dumps(out, ensure_ascii=False, indent=1))
+    elif args.cmd == "archive-status":
+        man = load_manifest(cfg, args.slug)
+        print(json.dumps({v["id"]: archive_status(cfg, args.slug, v["id"]) for v in man["volumes"]},
+                         ensure_ascii=False, indent=1))
+    elif args.cmd == "restore":
+        print(json.dumps(restore(cfg, args.slug, vol_nos=parse_volume_spec(args.volumes),
+                                 overwrite=args.overwrite, log=log), ensure_ascii=False, indent=1))
     elif args.cmd == "read-prep":
         man = read_prep(cfg, args.episode_id, log=log)
         todo = [p["stem"] for p in man["pages"] if p["blocks"] and not p["done"]]

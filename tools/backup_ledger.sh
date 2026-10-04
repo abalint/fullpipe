@@ -85,6 +85,12 @@ if [[ -x "$REPO_DIR/.venv/bin/python" ]]; then
   else
     log "WARNING: series archive --all failed (media server off?): $(tail -1 "$STAGE/series-archive.log" 2>/dev/null)"
   fi
+  # the same for manga volumes (tools/manga.py archive): reads, voice clips, coverage
+  if (cd "$REPO_DIR" && "$REPO_DIR/.venv/bin/python" -m tools.manga archive --all >/dev/null 2>"$STAGE/manga-archive.log"); then
+    log "Manga artifacts mirrored to the media server."
+  else
+    log "WARNING: manga archive --all failed (media server off?): $(tail -1 "$STAGE/manga-archive.log" 2>/dev/null)"
+  fi
 fi
 
 # --- Off-site upload + prune --------------------------------------------------

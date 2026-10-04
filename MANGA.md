@@ -190,6 +190,22 @@ element on the local file (never the passive-audio service — a bubble is
 not a listening sitting). Nothing about exposure changes: hearing a
 bubble is not a mark.
 
+## Retention (2026-10-04)
+
+| where | what | reclaim | restore |
+|---|---|---|---|
+| phone | pages + sidecars + voice clips under `manga/<id>/` | swipe-delete = **phone-local only** (the row stays, the ledger keeps every mark and exposure) | ⬇ / open the volume again |
+| Mac | `episodes/manga_<slug>_vNN/` (pages, ocr + read, voice, coverage, curate) | `tools.manga remove` — **refuses unless the archive is current** (`--force`) | `tools.manga restore <slug>` |
+| media server (t7) | `fullpipe_archive/manga/<slug>/` — everything derived (reads with speaker/say, voice clips, coverage, curate, manifest, cast, queue snapshot); not the scans | never | — |
+| media server (library) | the scans | **never** | — |
+
+The mirror is written three ways: `tools.manga archive <slug>|--all` by hand,
+by the server the moment a volume flips to read/watched (same hook as a
+series episode), by `tools.manga voice tts` right after a render, and by
+the nightly backup (`tools/backup_ledger.sh`). Nothing is ever deleted
+from the archive. So deleting a volume on the phone costs nothing, and a
+dead Mac costs nothing but the page copies, which come back off the share.
+
 ## Server API additions
 
 | route | role |

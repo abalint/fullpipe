@@ -853,7 +853,8 @@ def create_app(cfg, start_worker=True):
         catches anything this misses."""
         if not job or not job.get("series") or not lib.archive_dir(cfg):
             return None
-        parsed = series_tool.parse_series_source(job["source"])
+        manga = manga_tool.parse_manga_source(job["source"])
+        parsed = manga or series_tool.parse_series_source(job["source"])
         if not parsed:
             return None
         slug, ep_no = parsed
@@ -862,9 +863,12 @@ def create_app(cfg, start_worker=True):
         def run():
             with lock:
                 try:
-                    series_tool.archive(cfg, slug, ep_nos={ep_no}, log=lambda m: None)
+                    if manga:  # a manga volume: reads, voice clips, coverage → t7 (tools.manga archive)
+                        manga_tool.archive(cfg, slug, vol_nos={ep_no}, log=lambda m: None)
+                    else:
+                        series_tool.archive(cfg, slug, ep_nos={ep_no}, log=lambda m: None)
                 except Exception as e:  # the share is off, the disk is full …
-                    print(f"series archive {slug} e{ep_no} failed: {str(e)[:200]}", file=sys.stderr)
+                    print(f"archive {slug} e{ep_no} failed: {str(e)[:200]}", file=sys.stderr)
         t = threading.Thread(target=run, daemon=True, name=f"archive-{slug}-{ep_no}")
         t.start()
         return t

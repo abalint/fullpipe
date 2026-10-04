@@ -357,3 +357,88 @@ class TestRoutes(ServerTestBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestArchive(unittest.TestCase):
+    """The archive tier for manga (tools.manga archive / restore / remove):
+    everything derived — reads, voice clips, coverage — mirrored onto the
+    t7 stand-in; the page scans and read-prep renders are not; restore
+    brings a volume back onto a bare Mac with its queue row."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        work = Path(self.tmp.name)
+        self.archive = work / "t7" / "archive"
+        lib_root = work / "library" / "manga" / "Dandadan" / "VOL 2 (JA)"
+        lib_root.mkdir(parents=True)
+        for n in (1, 2):
+            (lib_root / f"{n:03d}.jpg").write_bytes(b"\xff\xd8jpeg")
+        self.cfg = {"work_dir": str(work), "ledger_db": str(work / "ledger.db"),
+                    "library": {"mounts": {}, "manga_root": str(work / "library" / "manga"),
+                                "archive_dir": str(self.archive), "legacy_roots": {}},
+                    "manga": {"voice": {"default_voices": {"female": "F", "male": "M", "neutral": "N"}}}}
+        stage_volume(self.cfg)
+        ep_dir = episode_dir(self.cfg, EP)
+        (ep_dir / "pages").mkdir()
+        for n in (1, 2):
+            (ep_dir / "pages" / f"{n:03d}.jpg").write_bytes(b"\xff\xd8jpeg")
+        (ep_dir / "ocr" / "read" / "pages").mkdir(parents=True)
+        (ep_dir / "ocr" / "read" / "pages" / "001.png").write_bytes(b"render")
+        MG.save_manifest(self.cfg, {"slug": SLUG, "title": "Dandadan", "remote_dir": str(lib_root.parent),
+                                    "created_at": "x", "volumes": [
+                                        {"vol_no": 2, "label": "VOL 2 (JA)", "id": EP, "title": "Dandadan Vol. 2",
+                                         "remote_dir": str(lib_root), "pages": 2, "page_count": 2}]})
+        from server import jobqueue as q
+        self.q = q
+        self.conn = q.open_queue(work / "queue.db")
+        q.enqueue(self.conn, "manga://dandadan/2", title="Dandadan Vol. 2", series=SLUG,
+                  series_title="Dandadan", ep_no=2)
+        q.set_state(self.conn, EP, "watched", episode_id=EP)
+        MV.voice_prep(self.cfg, EP, log=lambda m: None)
+        MV.voice_apply(self.cfg, EP, log=lambda m: None)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_archive_mirrors_derived_files_not_scans_and_render_archives(self):
+        st = MG.archive_status(self.cfg, SLUG, EP)
+        self.assertEqual((st["archived"], st["current"]), (False, False))
+        with self.assertRaises(RuntimeError):  # not archived → remove refuses
+            MG.remove(self.cfg, SLUG, log=lambda m: None)
+        out = MV.synthesize(self.cfg, EP, client=FakeClient(), log=lambda m: None)
+        self.assertGreater(out["archived"], 0)  # the render mirrored itself
+        root = self.archive / "manga" / SLUG
+        self.assertTrue((root / "episodes" / EP / "voice" / "clips" / "001_2.mp3").exists())
+        self.assertTrue((root / "episodes" / EP / "ocr" / "read" / "001.json").exists())
+        self.assertTrue((root / "episodes" / EP / "transcript.json").exists())
+        self.assertTrue((root / "manga" / "manga.json").exists())
+        self.assertTrue((root / "manga" / "cast.json").exists())
+        self.assertFalse((root / "episodes" / EP / "pages").exists())  # the scans are the share's
+        self.assertFalse((root / "episodes" / EP / "ocr" / "read" / "pages").exists())
+        snap = read_json(root / "manga" / "queue.json")
+        self.assertEqual(snap["jobs"][0]["state"], "watched")
+        st = MG.archive_status(self.cfg, SLUG, EP)
+        self.assertEqual((st["archived"], st["current"], st["missing"]), (True, True, []))
+        again = MG.archive(self.cfg, SLUG, log=lambda m: None)
+        self.assertEqual(again["copied"], 0)  # idempotent
+        # now remove is allowed, and restore brings everything back onto a bare Mac
+        MG.remove(self.cfg, SLUG, log=lambda m: None)
+        self.assertFalse(episode_dir(self.cfg, EP).exists())
+        self.assertFalse(MG.manifest_path(self.cfg, SLUG).exists())
+        self.assertIsNone(self.q.get_job(self.conn, EP))
+        res = MG.restore(self.cfg, SLUG, log=lambda m: None)
+        self.assertEqual((res["series_files"], res["pages"], res["queue_rows"]), (2, 2, [EP]))
+        ep_dir = episode_dir(self.cfg, EP)
+        self.assertTrue((ep_dir / "voice" / "clips" / "001_2.mp3").exists())
+        self.assertTrue((ep_dir / "voice" / "index.json").exists())
+        self.assertTrue((ep_dir / "pages" / "002.jpg").exists())
+        self.assertEqual(self.q.get_job(self.conn, EP)["state"], "watched")  # kept from the snapshot
+        self.assertEqual(MV.load_cast(self.cfg, SLUG)["cast"]["モモ"]["kana"], "もも")
+
+    def test_archive_all_and_no_tier(self):
+        self.assertEqual([a["slug"] for a in MG.archive_all(self.cfg, log=lambda m: None)], [SLUG])
+        self.cfg["library"]["archive_dir"] = ""
+        self.assertEqual(MG.archive_status(self.cfg, SLUG, EP)["missing"], None)
+        with self.assertRaises(RuntimeError):
+            MG.archive(self.cfg, SLUG, log=lambda m: None)
+        MG.remove(self.cfg, SLUG, log=lambda m: None)  # no tier configured → no gate

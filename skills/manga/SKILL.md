@@ -68,7 +68,9 @@ $PY -m tools.manga scan   Dandadan                            # volumes that wou
 $PY -m tools.manga ingest Dandadan [--slug dandadan] [--title Dandadan] [--volumes 1,3-5] [--dry-run] [--no-drain]
 $PY -m tools.manga list
 $PY -m tools.manga status dandadan                            # per-volume state / pages on Mac / built?
-$PY -m tools.manga remove dandadan [--remote]                 # Mac (+ PC OCR cache and parked pages); never the scans
+$PY -m tools.manga archive dandadan|--all                     # mirror reads / voice clips / coverage onto the media server (t7)
+$PY -m tools.manga restore dandadan [--volumes 2]             # back onto the Mac: artifacts + pages + queue rows
+$PY -m tools.manga remove dandadan [--remote] [--force]       # Mac (+ PC OCR cache and parked pages); never the scans; needs a current archive
 ```
 
 `--no-drain` (default when the server is up — its worker drains the queue) vs a
@@ -163,7 +165,8 @@ $PY -m tools.manga voice status manga_dandadan_v02
 | where | what | reclaim | restore |
 |---|---|---|---|
 | phone | page scans + sidecars under `manga/<id>/` | swipe-delete a volume row = **phone-local only** | ⬇ on the row / series header |
-| Mac | `episodes/manga_<slug>_vNN/{pages,ocr,…}` | `remove` | re-copied off the mount on the next Stage 1 (OCR cache reused) |
+| Mac | `episodes/manga_<slug>_vNN/{pages,ocr,read,voice,…}` | `remove` (refuses unless archived + current; `--force`) | `restore <slug>` — artifacts from t7, pages off the share, queue rows |
+| media server (t7) | `fullpipe_archive/manga/<slug>/` — reads (with the voice fields), voice clips, coverage, curate, manifest, cast, queue snapshot | never | `archive <slug>|--all` writes it; also on read/watched, after a `voice tts`, and nightly |
 | PC | OCR cache `I:/transcribe/fullpipe_manga/<slug>/` (+ parked pages under `fullpipe_manga_src/` while a job runs) | `remove --remote` | re-OCR'd on demand |
 | media server | scans under `/Volumes/library/Japanese/manga` | **never** | — |
 

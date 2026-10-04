@@ -629,6 +629,16 @@ def synthesize(cfg, episode_id, client=None, dry_run=False, model=None, force=Fa
                     "chars_sent": sum(done[c["file"]]["chars"] for c in todo if c["file"] in done)})
     log(f"rendered {rendered}/{len(todo)} clips ({len(errors)} errors); "
         f"index: {len(idx['clips'])} clips")
+    if rendered:  # the clips cost money: mirror them onto the media server now, not tonight
+        try:
+            from tools import library as lib
+            if lib.archive_dir(cfg):
+                a = MG.archive(cfg, pl["script"]["slug"], vol_nos={int(episode_id.rsplit("_v", 1)[1])},
+                               log=lambda m: None)
+                summary["archived"] = a["copied"]
+                log(f"archived: {a['copied']} file(s) mirrored to the media server")
+        except Exception as e:  # noqa: BLE001 — the nightly pass retries
+            log(f"(archive skipped: {str(e)[:120]})")
     return summary
 
 
