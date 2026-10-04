@@ -526,6 +526,29 @@ def create_app(cfg, start_worker=True):
             raise HTTPException(404, f"no page {name} for {episode_id}")
         return FileResponse(path)
 
+    @app.get("/manga/{episode_id}/voice", dependencies=[Depends(auth)])
+    def get_manga_voice(episode_id: str):
+        """The volume's voice track index (tools.manga_voice): one entry per
+        rendered bubble clip with its sentence idxs, speaker and duration.
+        404 while the volume has no voice track — the phone treats that as
+        "no audio", not an error. Clips are /manga/{id}/voice/{file}."""
+        path = episode_dir(cfg, episode_id) / "voice" / "index.json"
+        if not path.exists():
+            raise HTTPException(404, f"no voice track for {episode_id}")
+        return read_json(path)
+
+    @app.get("/manga/{episode_id}/voice/{name}")
+    def get_manga_voice_clip(episode_id: str, name: str, request: Request,
+                             t: str | None = None):
+        """One bubble clip (media auth: header or ?t=, like the pages)."""
+        media_auth(request, t)
+        if "/" in name or "\\" in name or name.startswith("."):
+            raise HTTPException(404, "bad clip name")
+        path = episode_dir(cfg, episode_id) / "voice" / "clips" / name
+        if not path.exists():
+            raise HTTPException(404, f"no clip {name} for {episode_id}")
+        return FileResponse(path, media_type="audio/mpeg")
+
     @app.get("/transcript/{episode_id}", dependencies=[Depends(auth)])
     def get_transcript(episode_id: str):
         """Full tokenized sentence track for the in-app player's subtitle

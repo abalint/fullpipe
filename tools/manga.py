@@ -45,6 +45,7 @@ CLI:
     python -m tools.manga list
     python -m tools.manga status dandadan
     python -m tools.manga remove dandadan [--remote]           # Mac (+ PC OCR cache); never the scans
+    python -m tools.manga voice  prep|status|apply|tts|… <id>  # the voice track (tools/manga_voice.py)
 """
 
 import argparse
@@ -457,9 +458,27 @@ def rebuild(cfg, episode_id, log=print):
     return {"pages": len(pages), "blocks": n_blocks, "lined": lined}
 
 
+def load_read_cast(ocr_dir):
+    """The cast entries the reading agents wrote ([{name, kana, gender, age,
+    note}] per ocr/read/<stem>.json), concatenated — tools.manga_voice
+    merges them into the series cast."""
+    out = []
+    for p in sorted((Path(ocr_dir) / "read").glob("*.json")):
+        if p.name in ("manifest.json", "applied.json"):
+            continue
+        try:
+            d = read_json(p)
+        except ValueError:
+            continue
+        if isinstance(d, dict) and isinstance(d.get("cast"), list):
+            out += [c for c in d["cast"] if isinstance(c, dict) and c.get("name")]
+    return out
+
+
 def load_read(ocr_dir):
     """The AI read (read_apply) — {page stem: {raw block index: {lines,
-    gloss}}} from ocr/read/<stem>.json, {} when no agent has read yet."""
+    gloss, speaker?, say?}}} from ocr/read/<stem>.json, {} when no agent
+    has read yet. speaker/say are the voice fields (tools.manga_voice)."""
     out = {}
     for p in sorted((Path(ocr_dir) / "read").glob("*.json")):
         if p.name in ("manifest.json", "applied.json"):
@@ -669,7 +688,13 @@ def read_prep(cfg, episode_id, log=print):
     files = page_files_in(pages_dir)
     if not files:
         raise RuntimeError(f"no pages under {pages_dir} — run Stage 1 first")
-    manifest = {"episode_id": episode_id, "pages": []}
+    doc_p = ep_dir / "manga.json"
+    slug = read_json(doc_p).get("slug") if doc_p.exists() else None
+    cast = {}
+    if slug:
+        from tools.manga_voice import load_cast
+        cast = load_cast(cfg, slug)["cast"]
+    manifest = {"episode_id": episode_id, "cast": cast, "pages": []}
     for n, file in enumerate(files):
         stem = Path(file).stem
         p = ocr_dir / f"{stem}.json"
@@ -881,7 +906,12 @@ def main(argv=None):
     p.add_argument("episode_id")
     p = sub.add_parser("rebuild", help="re-emit manga.json + bubble glosses from ocr/ + read/ (no coverage)")
     p.add_argument("episode_id")
+    p = sub.add_parser("voice", help="the voice track (tools.manga_voice): prep | status | apply | tts | cast | voices | usage")
+    p.add_argument("rest", nargs=argparse.REMAINDER)
     args = ap.parse_args(argv)
+    if args.cmd == "voice":
+        from tools import manga_voice
+        return manga_voice.main((["--config", args.config] if args.config else []) + args.rest)
     cfg = load_config(args.config)
     log = lambda m: print(m, file=sys.stderr)  # noqa: E731
 

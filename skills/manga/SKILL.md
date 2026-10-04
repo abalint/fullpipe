@@ -1,6 +1,6 @@
 ---
 name: manga
-description: Ingest manga volumes from the media server's library (the Raspberry Pi's `library` share, mounted at /Volumes/library/Japanese/manga/<Series>/<VOL n>/NNN.jpg) into the fullPipe Immersion Workstation as readable, tappable volumes. `/manga ingest <series>` scans the series folder on the mount, enqueues one job per volume, and the worker copies the page scans off the mount, boxes the bubbles on the desktop GPU (mokuro — the pages are parked on the PC over ssh just for that), and runs Stage 1 coverage; then `/manga read <episode_id>` has Opus subagents read every page and gloss every bubble in one pass (mokuro's text is only a draft) — the phone's Read tab then shows the series grouped by volume, and the manga reader lays colour-coded, tappable words over the original pages. Also `/manga library | scan <series> | list | status <slug> | remove <slug> | read-prep/read-status/read-apply <episode_id>`. Use for "/manga", "ingest this manga", "add <title> from the media server / the manga folder", "set up <manga> for reading", "queue volume N of <manga>".
+description: Ingest manga volumes from the media server's library (the Raspberry Pi's `library` share, mounted at /Volumes/library/Japanese/manga/<Series>/<VOL n>/NNN.jpg) into the fullPipe Immersion Workstation as readable, tappable volumes. `/manga ingest <series>` scans the series folder on the mount, enqueues one job per volume, and the worker copies the page scans off the mount, boxes the bubbles on the desktop GPU (mokuro — the pages are parked on the PC over ssh just for that), and runs Stage 1 coverage; then `/manga read <episode_id>` has Opus subagents read every page and gloss every bubble in one pass (mokuro's text is only a draft) — the phone's Read tab then shows the series grouped by volume, and the manga reader lays colour-coded, tappable words over the original pages. Also `/manga voice <episode_id>` (the bubble-by-bubble ElevenLabs voice track the reader plays on a long-press) and `/manga library | scan <series> | list | status <slug> | remove <slug> | read-prep/read-status/read-apply <episode_id>`. Use for "/manga", "ingest this manga", "add <title> from the media server / the manga folder", "set up <manga> for reading", "queue volume N of <manga>".
 ---
 
 # /manga — volumes from the media server
@@ -42,6 +42,13 @@ the JSON back and deletes the parked copy. This skill drives
    popup's foot).
 5. **`/immerse` manga pass (Step 1.6)** takes it to `staged`: defs for what JMdict
    lacks (names, sound words, slang) + a short synopsis. No cards, no prep doc.
+6. **The voice track (`/manga voice <episode_id>`, 2026-10-04)** — every bubble as
+   a short ElevenLabs clip the reader plays on a long-press / ▶ in the popup.
+   The reading agents already wrote who speaks and what the voice should read
+   (READ_PROMPT.md `speaker` / `say` / `cast`); `tools.manga voice` compiles the
+   script, keeps the series cast → voice map, renders the clips once
+   (`tools/manga_voice.py`, MANGA.md "The voice track") and the phone pulls them
+   with the volume.
 
 Exposure credit is per **page viewed**: the reader's sittings carry played
 ranges in page pseudo-seconds, so the words on the pages you actually read are
@@ -101,6 +108,37 @@ $PY -m tools.manga read-apply  manga_dandadan_v01     # refuses under 95 % read
    `read-apply`. Skim a few pages' JSON against their PNG.
 3. Hand off to `/immerse` Step 1.6 (defs + synopsis; its `lines` are
    overrides only now).
+
+## The voice track — procedure (`/manga voice <episode_id>`)
+
+After `read-apply` (the script rides on the read). Needs `ELEVENLABS_API_KEY`
+(.env or the macOS keychain, `security add-generic-password -a "$USER" -s
+ELEVENLABS_API_KEY -w`) with the text_to_speech + voices_read + user_read scopes.
+
+```sh
+$PY -m tools.manga voice prep   manga_dandadan_v02    # → {to_script: [stems…]} — [] when the read carried the fields
+$PY -m tools.manga voice apply  manga_dandadan_v02    # script.json + cast merge → prints the cast (+ new names)
+$PY -m tools.manga voice cast   dandadan              # the series cast; --set モモ=<voice_id> / --unset
+$PY -m tools.manga voice voices --language ja         # the account's voices (add library voices on the site)
+$PY -m tools.manga voice tts    manga_dandadan_v02 --dry-run   # clips / chars / credits by voice
+$PY -m tools.manga voice tts    manga_dandadan_v02 [--pages 1-10]
+$PY -m tools.manga voice status manga_dandadan_v02
+```
+
+1. `prep`. If `to_script` is non-empty (a volume read before the voice fields
+   existed), split it into batches of ~40 pages and launch one Opus subagent
+   per batch: "Read `skills/manga/VOICE_PROMPT.md` and follow it for episode
+   `<id>` (EPISODE_DIR = `~/immersion/episodes/<id>`), pages: <stems>." —
+   text only, so ~5 min a batch.
+2. `apply`. Look at the cast it prints: every new name needs a `gender`
+   (and `age` / `dialect` when they matter — the default voice is picked by
+   the most specific `default_voices` key: `female:old`, `male:kansai`,
+   `female`, …) and, for a main character, its own `voice_id` (`cast --set`).
+3. `tts --dry-run`, then `tts`. A 200-page volume is ~1,500 requests, 5–10
+   min at 3 in flight; `--pages` for a taste first. Re-running after a cast
+   or script change renders only what changed.
+4. The phone picks the track up on the next reader open (status line
+   "voice n/N" while it pulls); a re-render replaces it.
 
 ## Procedure
 

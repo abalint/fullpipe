@@ -94,7 +94,20 @@
     "remote_src_dir": "I:/transcribe/fullpipe_manga_src",
     "remote_ocr_dir": "I:/transcribe/fullpipe_manga",
     "remote_python": "I:/transcribe/mokuro/.venv/Scripts/python.exe",
-    "remote_script": "I:/transcribe/ocr_volume.py"
+    "remote_script": "I:/transcribe/ocr_volume.py",
+    "voice": {
+      "_comment": "tools.manga_voice: the volume's voice track — one ElevenLabs clip per bubble, rendered once on the Mac after the AI read and played by the phone's reader (long-press a bubble / ▶ in the popup). Key: ELEVENLABS_API_KEY in .env or the macOS keychain (security add-generic-password -a \"$USER\" -s ELEVENLABS_API_KEY -w). default_voices = the voice_id used for a cast member without one of their own, by gender (female / male / neutral; neutral also voices narration). Per-series voices live in <work_dir>/manga/<slug>/cast.json (tools.manga_voice cast <slug> --set NAME=VOICE_ID).",
+      "model": "eleven_v4",
+      "output_format": "mp3_44100_64",
+      "language": "ja",
+      "concurrency": 3,
+      "context": true,
+      "default_voices": {
+        "female": "",
+        "male": "",
+        "neutral": ""
+      }
+    }
   },
   "freq": {
     "show_graph_db": "~/Documents/code/anki/phrases/japaneseShowGraph/subs/japaneseShowGraph.db",

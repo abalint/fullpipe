@@ -147,6 +147,49 @@ and grammar units from their own state) under the player's off / focus /
 learn tiers; `T` shows the OCR text (checking a bubble), `◨` cycles the tier. The gloss popup,
 mark cycle, lookups and live sync are the player's, unchanged.
 
+## The voice track (2026-10-04)
+
+Every bubble of a volume is also a short ElevenLabs clip — pre-rendered
+once on the Mac, shipped with the pages, played by the reader on demand
+(long-press a bubble, or ▶ in the popup's foot). Pre-rendered, not
+generated at tap time, because the reader is offline-tolerant and a
+volume is 10–30k characters (≈ one to three dollars at list price,
+roughly a Starter plan's month at the user's three-volumes-a-month pace);
+see tools/manga_voice.py for the full rationale.
+
+```
+read agents (READ_PROMPT.md)   per block: speaker + say (names in kana, flavour
+                               cleaned, null = not voiced) + a per-file cast
+tools.manga voice prep <id>    voice/manifest.json (bubbles + series cast + synopsis);
+                               pages whose read lacks the fields → VOICE_PROMPT.md
+                               agents write voice/pages/<stem>.json (text-only pass)
+tools.manga voice apply <id>   voice/script.json — read fields first, voice pages
+                               second, lettered text last; cast merged into
+                               <work_dir>/manga/<slug>/cast.json (name → kana, gender,
+                               age, note, voice_id)
+tools.manga voice cast <slug> --set 名前=<voice_id>   (else manga.voice.default_voices, most
+                               specific key first: gender:age:dialect → gender:dialect →
+                               gender:age → dialect → gender → neutral; the read's cast
+                               carries age + dialect — kansai / kyushu / tohoku / inaka /
+                               rough / archaic — so "female:old" or "male:kansai" needs no
+                               per-character mapping)
+tools.manga voice tts <id> [--dry-run] [--pages a-b]   one request per bubble (eleven_v4,
+                               language ja, neighbours as previous/next_text), 3 in
+                               flight; clips.json keeps a signature per clip so a
+                               re-run renders only bubbles whose text/voice/model
+                               changed; usage checked against the account first
+voice/index.json               what the phone fetches: clips with sentence idxs
+```
+
+Phone: `downloadMangaVoice` (mobile `manga.ts`) pulls the index (404 = no
+track) and the clips not on disk, in the background on every reader open,
+so a volume already on the phone picks the track up when the Mac renders
+it, and a re-render (new `built_at`) replaces it. The reader maps the
+tapped sentence to its clip (`voiceBySent`); playback is a plain `Audio`
+element on the local file (never the passive-audio service — a bubble is
+not a listening sitting). Nothing about exposure changes: hearing a
+bubble is not a mark.
+
 ## Server API additions
 
 | route | role |
@@ -155,6 +198,8 @@ mark cycle, lookups and live sync are the player's, unchanged.
 | `POST /manga/ingest {remote_dir, volumes?, title?, slug?}` | manifest + enqueue (the Read tab's 📚 picker) |
 | `GET /manga/{id}` | `manga.json` |
 | `GET /manga/{id}/page/{file}` | one page scan (`media_auth`: header or `?t=`) |
+| `GET /manga/{id}/voice` | the voice track index (`voice/index.json`); 404 = none yet |
+| `GET /manga/{id}/voice/{file}` | one bubble clip, audio/mpeg (`media_auth`) |
 
 `/transcript`, `/definitions`, `/episodes/{id}/paint`, `/taps`, `/watched`,
 `/viewtime` work unchanged (`is_text_kind` covers the no-cards branches).
