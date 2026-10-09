@@ -187,8 +187,12 @@ so a volume already on the phone picks the track up when the Mac renders
 it, and a re-render (new `built_at`) replaces it. The reader maps the
 tapped sentence to its clip (`voiceBySent`); playback is a plain `Audio`
 element on the local file (never the passive-audio service — a bubble is
-not a listening sitting). Nothing about exposure changes: hearing a
-bubble is not a mark.
+not a listening sitting). Once a bubble has been read aloud a floating
+"▶ <next speaker>" button appears above the bottom bar (2026-10-09):
+each tap plays the following bubble in the track's reading order
+(`nextVoiceClip`), turning the page / scrolling the strip first when the
+next bubble is on another page, and disappears after the volume's last
+bubble. Nothing about exposure changes: hearing a bubble is not a mark.
 
 ## Retention (2026-10-04)
 
