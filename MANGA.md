@@ -192,7 +192,8 @@ not a listening sitting). Once a bubble has been read aloud a floating
 each tap plays the following bubble in the track's reading order
 (`nextVoiceClip`), turning the page / scrolling the strip first when the
 next bubble is on another page, and disappears after the volume's last
-bubble. Nothing about exposure changes: hearing a bubble is not a mark.
+bubble. Drag it to wherever the thumb likes it — the spot is remembered
+(stage fractions, clamped on resize); a still press plays, a drag only moves. Nothing about exposure changes: hearing a bubble is not a mark.
 
 ## Retention (2026-10-04)
 
