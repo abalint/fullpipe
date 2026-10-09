@@ -166,12 +166,30 @@ def copy_file(src, dst):
     """Atomic-ish copy: write <dst>.part beside the target, then rename.
     The mtime rides along (copy2) so a mirror can tell an unchanged file
     from a re-curated one by size + mtime instead of re-reading it."""
-    import shutil
+    import shutil, time
     dst = Path(dst)
     dst.parent.mkdir(parents=True, exist_ok=True)
     tmp = dst.with_name(dst.name + ".part")
-    shutil.copy2(src, tmp)
+    # macOS smbfs occasionally answers ENOENT for the utime copystat issues
+    # right after creating the .part (seen mirroring ~1,000 small clips onto
+    # the Pi's t7 share, 2026-10-04): one retry after a beat clears it, and
+    # the last resort is a plain copy with the mtime applied to the final name.
+    for attempt in range(3):
+        try:
+            shutil.copy2(src, tmp)
+            break
+        except FileNotFoundError:
+            if attempt == 2:
+                shutil.copyfile(src, tmp)
+            else:
+                time.sleep(0.5)
     tmp.replace(dst)
+    try:
+        st = os.stat(src)
+        if abs(os.stat(dst).st_mtime - st.st_mtime) > 2.0:
+            os.utime(dst, ns=(st.st_atime_ns, st.st_mtime_ns))
+    except OSError:
+        pass
     return dst
 
 
