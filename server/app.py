@@ -36,6 +36,7 @@ from tools import jmdict  # noqa: E402
 from tools import library as lib  # noqa: E402
 from tools import series as series_tool
 from tools import manga as manga_tool  # noqa: E402
+from tools import ambience as ambience_tool  # noqa: E402
 from tools._staging import (  # noqa: E402
     downloads_dir, episode_dir, load_coverage, load_transcript, read_json)
 from tools.render import build_prep_data  # noqa: E402
@@ -548,6 +549,40 @@ def create_app(cfg, start_worker=True):
         if not path.exists():
             raise HTTPException(404, f"no clip {name} for {episode_id}")
         return FileResponse(path, media_type="audio/mpeg")
+
+    @app.get("/ambience", dependencies=[Depends(auth)])
+    def get_ambience():
+        """The background-sound catalog (tools.ambience): looping sounds
+        (rain, waves, noise…) and mood music playlists, each entry with its
+        relative file path, duration and size. An empty catalog (nothing
+        built yet) is a normal answer, not a 404 — the phone shows the
+        panel with nothing to play."""
+        return ambience_tool.load_catalog(cfg)
+
+    def _ambience_file(rel: Path):
+        root = ambience_tool.ambience_root(cfg)
+        path = root / rel
+        if not path.exists():
+            raise HTTPException(404, f"no ambience file {rel}")
+        return FileResponse(path, media_type="audio/ogg")
+
+    def _safe_name(name: str):
+        if "/" in name or "\\" in name or name.startswith("."):
+            raise HTTPException(404, "bad file name")
+        return name
+
+    @app.get("/ambience/sounds/{name}")
+    def get_ambience_sound(name: str, request: Request, t: str | None = None):
+        """One loop (media auth: header or ?t=, like the clips). Opus in
+        Ogg — the phone's player loops it gaplessly."""
+        media_auth(request, t)
+        return _ambience_file(Path("sounds") / _safe_name(name))
+
+    @app.get("/ambience/music/{mood}/{name}")
+    def get_ambience_track(mood: str, name: str, request: Request, t: str | None = None):
+        """One music track of a mood (media auth)."""
+        media_auth(request, t)
+        return _ambience_file(Path("music") / _safe_name(mood) / _safe_name(name))
 
     @app.get("/transcript/{episode_id}", dependencies=[Depends(auth)])
     def get_transcript(episode_id: str):

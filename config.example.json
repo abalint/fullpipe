@@ -86,6 +86,15 @@
       "H:/manga": "/Volumes/library/Japanese/manga"
     }
   },
+  "ambience": {
+    "_comment": "tools.ambience: background sound for reading (skills/ambience). Loops are sound_seconds long (the phone loops them gaplessly; the seam is crossfaded over xfade s), Opus at sound_kbps / music_kbps, loudness-normalized to sound_lufs / music_lufs (EBU R128) so the sliders mean the same across entries.",
+    "sound_seconds": 1800,
+    "xfade": 4.0,
+    "sound_kbps": 64,
+    "music_kbps": 96,
+    "sound_lufs": -22,
+    "music_lufs": -16
+  },
   "manga": {
     "_comment": "tools.manga: the desktop is only the GPU box now — the pages come off the media server mount (library.manga_root) and are parked on the PC over ssh just for the boxing (mokuro in remote_python + remote_script = gpu_service/ocr_volume.py deployed to I:/transcribe), under remote_src_dir; per-volume JSON is cached under remote_ocr_dir.",
     "ocr_ssh_host": "transcribe-svc@192.168.0.230",
