@@ -481,6 +481,26 @@ class LedgerTest(unittest.TestCase):
         self.assertEqual((row["exposure_count"], row["seen_active"], row["seen_passive"]),
                          (1, 3, 3))
 
+    def test_fast_read_finishes_on_pages_not_clock(self):
+        # A manga sitting's duration is pseudo-time (30 s a page); a reader
+        # who turned every page at ~24 s logged < 80 % of it in wall-clock
+        # yet saw every page. Finished follows the pages on screen, unioned
+        # across sittings (overlaps and revisits counted once).
+        for eid in ("m_fast", "m_part"):
+            ep, exp = _exposure_payload(eid, ["剣"])
+            lc.record_exposure(self.conn, ep, exp)
+        for sid, eid, secs, played in (
+                ("r1", "m_fast", 1200.0, [[0.0, 1500.0], [1470.0, 1500.0]]),
+                ("r2", "m_fast", 1200.0, [[1470.0, 3000.0]]),
+                ("r3", "m_part", 2900.0, [[0.0, 900.0], [0.0, 900.0]])):
+            lc.record_view_session(self.conn, {
+                "id": sid, "episode_id": eid, "kind": "read", "day": "2026-10-10",
+                "start": "2026-10-10T09:00:00Z", "secs": secs, "duration": 3000.0,
+                "played": played})
+        lc.activate_played_episodes(self.conn)
+        watched = dict(self.conn.execute("SELECT id, watched FROM episodes").fetchall())
+        self.assertEqual(watched, {"m_fast": 1, "m_part": 0})
+
     def test_exposure_credit_follows_played_ranges(self):
         # "I got exposed to the word when I got exposed to it": credit comes
         # from the sittings' played ranges against each occurrence's time —

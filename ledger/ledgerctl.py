@@ -2424,10 +2424,25 @@ def episode_plays(conn):
     durations = dict(conn.execute(
         "SELECT id, duration FROM episodes WHERE duration IS NOT NULL").fetchall())
     plays = {}
+    pages = {}  # episode_id → (pseudo-duration, [played page spans]) for `read`
     for r in conn.execute(
-            "SELECT episode_id, kind, secs, duration, modes FROM view_sessions "
+            "SELECT episode_id, kind, secs, duration, modes, played FROM view_sessions "
             "WHERE source = 'app'"):
         dur = r["duration"] or durations.get(r["episode_id"])
+        if r["kind"] == "read" and dur and dur > 0 and r["played"]:
+            # a read sitting's clock is pseudo-time (page_secs per page), so
+            # wall-clock over it measures reading speed, not progress: a fast
+            # reader finished every page at ~0.8 "plays". Credit the share of
+            # pages actually on screen, unioned across sittings, instead.
+            try:
+                spans = [(float(a), float(b)) for a, b in json.loads(r["played"])]
+            except (ValueError, TypeError):
+                spans = None
+            if spans is not None:
+                d0, acc = pages.get(r["episode_id"], (dur, []))
+                pages[r["episode_id"]] = (max(d0, dur), acc + spans)
+                plays.setdefault(r["episode_id"], (0.0, 0.0, {}))
+                continue
         if dur and dur > 0:
             frac = r["secs"] / dur
             per_sec = 1.0 / dur
@@ -2448,6 +2463,17 @@ def episode_plays(conn):
         else:
             p += frac
         plays[r["episode_id"]] = (a, p, by_mode)
+    for ep, (dur, spans) in pages.items():
+        covered, end = 0.0, None
+        for a, b in sorted(spans):
+            if end is None or a > end:
+                covered += b - a
+                end = b
+            elif b > end:
+                covered += b - end
+                end = b
+        a, p, by_mode = plays[ep]
+        plays[ep] = (a + min(covered, dur) / dur, p, by_mode)
     return plays
 
 
