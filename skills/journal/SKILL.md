@@ -1,6 +1,6 @@
 ---
 name: journal
-description: Review the Japanese journal entries typed on the phone's Journal tab in the fullPipe Immersion Workstation. Bare `/journal` pulls every entry not yet reviewed at its current text, and YOU (this session — no cloud LLM) rewrite each one the way a native would actually SAY it to a friend (casual spoken register, not polished written Japanese), add plain-English notes on what changed, and stamp the review onto the entry so the phone shows it under the original in the same row — reviewed entries are skipped on the next run until they are edited again. Also `/journal list`, `/journal show <id>`, `/journal redo <id|all>`. Use for "/journal", "review my journal", "correct my journal entries", "check what I wrote in the journal", "did I write that right", "look at today's entry".
+description: Review the Japanese journal entries typed on the phone's Journal tab in the fullPipe Immersion Workstation. Bare `/journal` pulls every entry never reviewed, and YOU (this session — no cloud LLM) rewrite each one the way a native would actually SAY it to a friend (casual spoken register, not polished written Japanese), add plain-English notes on what changed, and stamp the review onto the entry so the phone shows it under the original in the same row — one review per entry, ever: a reviewed entry is never looked at again, however much it is edited afterwards (the user rewrites once and is done). Also `/journal list`, `/journal show <id>`, `/journal redo <id|all>`. Use for "/journal", "review my journal", "correct my journal entries", "check what I wrote in the journal", "did I write that right", "look at today's entry".
 ---
 
 # /journal — a friend reads your journal
@@ -21,9 +21,9 @@ mirror + review only. The user is the writer; never edit `text`.
 
 | command | what |
 |---|---|
-| `$PY -m ledger.ledgerctl query journal --unreviewed` | the work list: entries never reviewed, or edited since their review (`reviewed_text != text`). Newest first. Each row: `id, text, created_at, updated_at, review_text, review_notes, reviewed_at, reviewed_text` |
+| `$PY -m ledger.ledgerctl query journal --unreviewed` | the work list: entries never reviewed (`reviewed_at IS NULL`). Newest first. Each row: `id, text, created_at, updated_at, review_text, review_notes, reviewed_at, reviewed_text` |
 | `$PY -m ledger.ledgerctl query journal` | every entry, reviews included |
-| `$PY -m ledger.ledgerctl journal-review <id> <review.json>` | store `{"text": "<rewrite>", "notes": "<notes>"}` on the entry and stamp `reviewed_text = text` — the **reviewed marker**. The entry leaves `--unreviewed` until the user edits it again; then it comes back (the old review stays visible on the phone, labelled "for an earlier draft", until you replace it) |
+| `$PY -m ledger.ledgerctl journal-review <id> <review.json>` | store `{"text": "<rewrite>", "notes": "<notes>"}` on the entry and stamp `reviewed_at` — the **reviewed marker, for good**. **One review per entry, ever** (user rule 2026-10-11): after reading it the user rewrites the entry once underneath or in place and is done with it; the edit never brings it back onto the list, and you never review it again unless explicitly told `/journal redo <id>`. `reviewed_text` records which draft the review was for (the phone labels the review "on your first draft" once the text differs) |
 
 The review JSON files go in the scratchpad (`<scratchpad>/journal/<id>.json`),
 one per entry; `journal-review` reads the file so the Japanese never passes
@@ -43,20 +43,20 @@ restart it per the usual hand-start.)
    verbatim plus its entries' JSON; each agent writes its review files and
    runs `journal-review` itself. Never cloud-API the text out.
 3. `journal-review` each one. Re-run `query journal --unreviewed` to confirm
-   the list is empty (an entry still listed = its text changed under you
-   while you worked; review the new text).
+   the list is empty. Never re-review an entry because its text changed
+   after the review — that is the user's rewrite, and it is not for you.
 4. Report, one line per entry: date · first line of the original · how many
    notes · the single biggest point. No need to repeat the whole rewrite in
    chat — it is on the phone.
 
 ## `/journal list` · `/journal show <id>` · `/journal redo <id|all>`
 
-- `list`: `query journal` → date · first line · ✓ (reviewed, current) / ✎
-  (edited since review) / — (unreviewed), one line each, newest first.
+- `list`: `query journal` → date · first line · ✓ (reviewed) / — (not yet),
+  one line each, newest first.
 - `show <id>`: the entry, the review, the notes, as stored.
-- `redo <id>`: re-review one entry even though its marker is current
-  (the user disagrees with a review, or wants a second opinion — ask
-  what they want different if they said). `redo all`: every entry.
+- `redo <id>`: the only way an entry gets a second review — the user asked
+  for it by name (they disagree with a review, or want a second opinion;
+  ask what they want different if they said). `redo all`: every entry.
 
 ## Writing the review
 

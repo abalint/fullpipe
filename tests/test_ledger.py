@@ -1576,7 +1576,7 @@ class JournalReviewTest(unittest.TestCase):
                   "updated_at": "2026-10-11T09:00:00Z"}
         lc.record_journal_entry(self.conn, self.e)
 
-    def test_review_marks_entry_and_edit_unmarks_it(self):
+    def test_review_marks_entry_for_good(self):
         self.assertEqual([e["id"] for e in lc.query_journal(self.conn, unreviewed=True)], ["j1"])
         row = lc.record_journal_review(self.conn, "j1", {"text": "今日雨だね。", "notes": "- は→ nothing"})
         self.assertEqual(row["review_text"], "今日雨だね。")
@@ -1585,18 +1585,20 @@ class JournalReviewTest(unittest.TestCase):
         self.assertEqual(lc.query_journal(self.conn, unreviewed=True), [])
         # the review rides along in the plain listing (the phone shows it)
         self.assertEqual(lc.query_journal(self.conn)[0]["review_notes"], "- は→ nothing")
-        # an autosave of the same text keeps the review current…
-        lc.record_journal_entry(self.conn, {**self.e, "updated_at": "2026-10-11T09:05:00Z"})
-        self.assertEqual(lc.query_journal(self.conn, unreviewed=True), [])
-        # …an edit makes it unreviewed again, review kept for display
-        lc.record_journal_entry(self.conn, {**self.e, "text": "今日は雨。寒い。",
+        # the user's rewrite after reading it does NOT bring the entry back:
+        # one review per entry, ever (user rule 2026-10-11)
+        lc.record_journal_entry(self.conn, {**self.e, "text": "今日雨だね。寒い。",
                                             "updated_at": "2026-10-11T09:06:00Z"})
-        un = lc.query_journal(self.conn, unreviewed=True)
-        self.assertEqual([e["id"] for e in un], ["j1"])
-        self.assertEqual(un[0]["review_text"], "今日雨だね。")
-        # a second review replaces the first
-        lc.record_journal_review(self.conn, "j1", {"text": "今日雨で寒い。", "notes": ""})
         self.assertEqual(lc.query_journal(self.conn, unreviewed=True), [])
+        row = lc.query_journal(self.conn)[0]
+        self.assertEqual((row["text"], row["reviewed_text"], row["review_text"]),
+                         ("今日雨だね。寒い。", "今日は雨。", "今日雨だね。"))
+        # an explicit redo replaces the review and re-stamps the draft
+        row = lc.record_journal_review(self.conn, "j1", {"text": "今日雨で寒い。", "notes": ""})
+        self.assertEqual(row["reviewed_text"], "今日雨だね。寒い。")
+        # a new entry is the only thing on the list
+        lc.record_journal_entry(self.conn, {**self.e, "id": "j2", "created_at": "2026-10-12T09:00:00Z"})
+        self.assertEqual([e["id"] for e in lc.query_journal(self.conn, unreviewed=True)], ["j2"])
 
     def test_writing_time_and_output_counts(self):
         """A Journal-tab sitting (kind write) lands like any other, shows in

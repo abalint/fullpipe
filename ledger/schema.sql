@@ -256,9 +256,10 @@ CREATE TABLE IF NOT EXISTS journal (
     received_at TEXT NOT NULL,
     -- /journal review (2026-10-11): the entry rewritten the way a native
     -- would say it to a friend, plus plain-English notes on what changed.
-    -- reviewed_text is the entry text the review was written against: the
-    -- review is current while it equals `text`; an edit after the review
-    -- makes the entry unreviewed again (query journal --unreviewed).
+    -- reviewed_at set = reviewed, for good (one review per entry — the user
+    -- rewrites once after reading it and is done; query journal
+    -- --unreviewed lists the rest). reviewed_text is the draft the review
+    -- was written for, display only.
     review_text   TEXT,
     review_notes  TEXT,
     reviewed_at   TEXT,

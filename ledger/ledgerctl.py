@@ -1081,10 +1081,11 @@ def query_journal(conn, unreviewed=False):
     """Every entry, newest first — the phone merges these by id (taking the
     newer updated_at for the text, the newer reviewed_at for the review) so
     a reinstalled app gets its journal back. `unreviewed` keeps only the
-    entries /journal still has to look at: never reviewed, or edited since
-    (reviewed_text no longer equals text)."""
-    where = ("WHERE reviewed_text IS NULL OR reviewed_text != text "
-             if unreviewed else "")
+    entries /journal still has to look at: the ones never reviewed. One
+    review per entry, ever — the user rewrites once after reading it and is
+    done; an edit after the review does not bring it back (reviewed_text
+    only records which draft the review was for)."""
+    where = "WHERE reviewed_at IS NULL " if unreviewed else ""
     return [dict(r) for r in conn.execute(
         f"SELECT {JOURNAL_COLS} FROM journal {where}ORDER BY created_at DESC, id")]
 
@@ -1092,10 +1093,10 @@ def query_journal(conn, unreviewed=False):
 def record_journal_review(conn, eid, review):
     """Attach /journal's review to one entry: `review` = {text, notes} —
     the entry as a native would say it to a friend, and plain-English notes
-    on what changed. Stamps reviewed_text = the entry's current text, which
-    is the "reviewed" marker: the entry drops out of `query journal
-    --unreviewed` until its text changes again. Replaces any earlier review.
-    Returns the stored row."""
+    on what changed. Stamps reviewed_at — the "reviewed" marker: the entry
+    leaves `query journal --unreviewed` for good — and reviewed_text = the
+    draft the review was written for (display only). Replaces any earlier
+    review (`/journal redo`). Returns the stored row."""
     if not isinstance(review, dict):
         raise ValueError("review must be an object {text, notes}")
     text = review.get("text")
@@ -3267,7 +3268,7 @@ def query_media(conn, since_days=30):
     `media.write` (2026-10-11) is the Journal tab — output, so no words are
     met there: its time log (sittings / hours / app_hours) plus `entries`
     (journal rows), `chars_written` (their text, whitespace dropped) and
-    `reviewed` (rows /journal has reviewed at their current text)."""
+    `reviewed` (rows /journal has reviewed)."""
     media = {m: _empty_medium() for m in MEDIA + ("write",)}
     elsewhere = {c: {"marked_known": 0, "marked_unknown": 0, "marked_interest": 0,
                      "became_known": 0, "became_learning": 0, "became_known_30d": 0}
@@ -3333,7 +3334,7 @@ def query_media(conn, since_days=30):
     jr = conn.execute(
         "SELECT COUNT(*) AS n, COALESCE(SUM(LENGTH(REPLACE(REPLACE(REPLACE(text, ' ', ''), "
         "char(10), ''), '　', ''))), 0) AS chars, "
-        "SUM(CASE WHEN reviewed_text = text THEN 1 ELSE 0 END) AS reviewed FROM journal"
+        "SUM(CASE WHEN reviewed_at IS NOT NULL THEN 1 ELSE 0 END) AS reviewed FROM journal"
     ).fetchone()
     media["write"].update({"entries": jr["n"], "chars_written": int(jr["chars"]),
                            "reviewed": jr["reviewed"] or 0})
