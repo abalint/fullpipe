@@ -65,7 +65,7 @@ tools/      dumb CLIs (importable modules + argparse mains)
                   prose at build time); vocab grid word|reading|usage|english
                   with english masked until tapped; honors curate.json
                   "exclude" (misparse/junk filter)
-skills/     /immerse (built) · next: /reconcile · /generate · /replace · /setup
+skills/     /immerse /prepare /recommend /series /manga /ambience /autopilot /journal (built)
   immerse/SKILL.md        pre-watch orchestrator: acquire → coverage → live
                           curation (synopsis/glosses/focal points/picks) →
                           render → deck; discovered via ../.claude/skills/

@@ -1,6 +1,7 @@
 """Ledger state-machine tests: schema, idempotency, watched-gate, promote rules."""
 
 import json
+import sqlite3
 import sys
 import time
 import unittest
@@ -1563,6 +1564,59 @@ MINI_JMDICT = """<?xml version="1.0" encoding="UTF-8"?>
 </entry>
 </JMdict>
 """
+
+
+class JournalReviewTest(unittest.TestCase):
+    """/journal: an entry is unreviewed until a review is stamped at its
+    current text; editing the entry afterwards makes it unreviewed again."""
+
+    def setUp(self):
+        self.conn = lc.open_db(":memory:")
+        self.e = {"id": "j1", "text": "今日は雨。", "created_at": "2026-10-11T09:00:00Z",
+                  "updated_at": "2026-10-11T09:00:00Z"}
+        lc.record_journal_entry(self.conn, self.e)
+
+    def test_review_marks_entry_and_edit_unmarks_it(self):
+        self.assertEqual([e["id"] for e in lc.query_journal(self.conn, unreviewed=True)], ["j1"])
+        row = lc.record_journal_review(self.conn, "j1", {"text": "今日雨だね。", "notes": "- は→ nothing"})
+        self.assertEqual(row["review_text"], "今日雨だね。")
+        self.assertEqual(row["reviewed_text"], "今日は雨。")
+        self.assertTrue(row["reviewed_at"])
+        self.assertEqual(lc.query_journal(self.conn, unreviewed=True), [])
+        # the review rides along in the plain listing (the phone shows it)
+        self.assertEqual(lc.query_journal(self.conn)[0]["review_notes"], "- は→ nothing")
+        # an autosave of the same text keeps the review current…
+        lc.record_journal_entry(self.conn, {**self.e, "updated_at": "2026-10-11T09:05:00Z"})
+        self.assertEqual(lc.query_journal(self.conn, unreviewed=True), [])
+        # …an edit makes it unreviewed again, review kept for display
+        lc.record_journal_entry(self.conn, {**self.e, "text": "今日は雨。寒い。",
+                                            "updated_at": "2026-10-11T09:06:00Z"})
+        un = lc.query_journal(self.conn, unreviewed=True)
+        self.assertEqual([e["id"] for e in un], ["j1"])
+        self.assertEqual(un[0]["review_text"], "今日雨だね。")
+        # a second review replaces the first
+        lc.record_journal_review(self.conn, "j1", {"text": "今日雨で寒い。", "notes": ""})
+        self.assertEqual(lc.query_journal(self.conn, unreviewed=True), [])
+
+    def test_review_validation(self):
+        with self.assertRaises(ValueError):
+            lc.record_journal_review(self.conn, "nope", {"text": "x", "notes": ""})
+        with self.assertRaises(ValueError):
+            lc.record_journal_review(self.conn, "j1", {"text": "", "notes": ""})
+        with self.assertRaises(ValueError):
+            lc.record_journal_review(self.conn, "j1", {"text": "x", "notes": 3})
+
+    def test_migration_adds_review_columns(self):
+        # a db whose journal table predates the review columns (the live
+        # ledger of 2026-10-10): open_db must bolt them on
+        conn = sqlite3.connect(":memory:")
+        conn.execute("CREATE TABLE journal (id TEXT PRIMARY KEY, text TEXT NOT NULL, "
+                     "created_at TEXT NOT NULL, updated_at TEXT NOT NULL, received_at TEXT NOT NULL)")
+        conn.row_factory = sqlite3.Row
+        conn.executescript(lc.SCHEMA_PATH.read_text(encoding="utf-8"))
+        lc._migrate(conn)
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(journal)")}
+        self.assertTrue({"review_text", "review_notes", "reviewed_at", "reviewed_text"} <= cols)
 
 
 class PhraseGrammarTest(unittest.TestCase):

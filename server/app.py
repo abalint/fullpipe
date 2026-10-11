@@ -1201,6 +1201,29 @@ def create_app(cfg, start_worker=True):
         backfill) and renders its own days/weeks."""
         return {"sessions": lc.query_view_sessions(ledger_conn(), since=since)}
 
+    # --- journal (the phone's Journal tab) ---------------------------------------------
+
+    @app.post("/journal", dependencies=[Depends(auth)])
+    def post_journal(body: dict):
+        """Store or update one free-text entry {id, text, created_at,
+        updated_at}. Upsert on the client-minted id (the phone autosaves
+        as you type); an older updated_at than what's stored is ignored."""
+        try:
+            return lc.record_journal_entry(ledger_conn(), body)
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+
+    @app.delete("/journal/{eid}", dependencies=[Depends(auth)])
+    def delete_journal(eid: str):
+        """Drop one entry. Idempotent."""
+        return lc.delete_journal_entry(ledger_conn(), eid)
+
+    @app.get("/journal", dependencies=[Depends(auth)])
+    def get_journal():
+        """Every entry, newest first — the app merges by id into its local
+        copy (reinstall backfill)."""
+        return {"entries": lc.query_journal(ledger_conn())}
+
     # --- ledger reads ---------------------------------------------------------------
 
     FREQ_BANDS = (1000, 2000, 5000, 10000)

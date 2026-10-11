@@ -14,6 +14,7 @@
     presenter-get/-set   ← read/store a channel's presenter fingerprint (SURVEY.md §4c)
     record-curation      ← /immerse curation block (genre/format/topics/difficulty)
     record-view-session  ← phone-recorded playback time (watch|listen) → view_sessions
+    journal-review       ← /journal's native-speech rewrite + notes for one phone journal entry
     query                → coverage %, needs_review queue, evidence audits, ratings
 
 Raw evidence is append-only truth; lemmas.status is a projection — rerunning
@@ -279,6 +280,10 @@ def _migrate(conn):
     gpr_cols = {r["name"] for r in conn.execute("PRAGMA table_info(grammar_proposed)")}
     if gpr_cols and "match" not in gpr_cols:
         conn.execute("ALTER TABLE grammar_proposed ADD COLUMN match TEXT")
+    j_cols = {r["name"] for r in conn.execute("PRAGMA table_info(journal)")}
+    for col in ("review_text", "review_notes", "reviewed_at", "reviewed_text"):
+        if j_cols and col not in j_cols:
+            conn.execute(f"ALTER TABLE journal ADD COLUMN {col} TEXT")
     ev_cols = {r["name"] for r in conn.execute("PRAGMA table_info(evidence)")}
     if "kind" not in ev_cols:
         conn.execute("ALTER TABLE evidence ADD COLUMN kind TEXT NOT NULL DEFAULT 'word'")
@@ -1023,6 +1028,90 @@ def query_view_sessions(conn, since=None):
         d["played"] = json.loads(d["played"]) if d["played"] else None
         out.append(d)
     return out
+
+
+# --- journal (phone Journal tab) ----------------------------------------------------
+
+def record_journal_entry(conn, entry):
+    """Store or update one journal entry: {id, text, created_at, updated_at}.
+    Upsert on the client-minted id — the phone autosaves while you type, so
+    the same id arrives many times with growing text. A replay carrying an
+    older updated_at than what's stored is ignored (the outbox is FIFO, but
+    a flush that died halfway can re-send). Returns {id, updated}."""
+    if not isinstance(entry, dict):
+        raise ValueError("entry must be an object")
+    eid = entry.get("id")
+    if not isinstance(eid, str) or not eid.strip():
+        raise ValueError("entry id required")
+    text = entry.get("text")
+    if not isinstance(text, str):
+        raise ValueError("text must be a string")
+    created = entry.get("created_at")
+    updated = entry.get("updated_at")
+    for key, v in (("created_at", created), ("updated_at", updated)):
+        if not isinstance(v, str) or not v:
+            raise ValueError(f"{key} (ISO timestamp) required")
+    row = conn.execute("SELECT updated_at FROM journal WHERE id = ?", (eid,)).fetchone()
+    if row and row["updated_at"] > updated:
+        return {"id": eid, "updated": False}
+    conn.execute(
+        "INSERT INTO journal (id, text, created_at, updated_at, received_at) "
+        "VALUES (?, ?, ?, ?, ?) "
+        "ON CONFLICT(id) DO UPDATE SET text = excluded.text, "
+        "updated_at = excluded.updated_at, received_at = excluded.received_at",
+        (eid, text, created, updated, now_iso()))
+    conn.commit()
+    return {"id": eid, "updated": True}
+
+
+def delete_journal_entry(conn, eid):
+    """Remove one entry (the app's delete). Idempotent: a missing id is fine."""
+    n = conn.execute("DELETE FROM journal WHERE id = ?", (eid,)).rowcount
+    conn.commit()
+    return {"id": eid, "deleted": n > 0}
+
+
+JOURNAL_COLS = ("id, text, created_at, updated_at, "
+                "review_text, review_notes, reviewed_at, reviewed_text")
+
+
+def query_journal(conn, unreviewed=False):
+    """Every entry, newest first — the phone merges these by id (taking the
+    newer updated_at for the text, the newer reviewed_at for the review) so
+    a reinstalled app gets its journal back. `unreviewed` keeps only the
+    entries /journal still has to look at: never reviewed, or edited since
+    (reviewed_text no longer equals text)."""
+    where = ("WHERE reviewed_text IS NULL OR reviewed_text != text "
+             if unreviewed else "")
+    return [dict(r) for r in conn.execute(
+        f"SELECT {JOURNAL_COLS} FROM journal {where}ORDER BY created_at DESC, id")]
+
+
+def record_journal_review(conn, eid, review):
+    """Attach /journal's review to one entry: `review` = {text, notes} —
+    the entry as a native would say it to a friend, and plain-English notes
+    on what changed. Stamps reviewed_text = the entry's current text, which
+    is the "reviewed" marker: the entry drops out of `query journal
+    --unreviewed` until its text changes again. Replaces any earlier review.
+    Returns the stored row."""
+    if not isinstance(review, dict):
+        raise ValueError("review must be an object {text, notes}")
+    text = review.get("text")
+    notes = review.get("notes", "")
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError("review.text (the rewritten entry) required")
+    if not isinstance(notes, str):
+        raise ValueError("review.notes must be a string")
+    row = conn.execute("SELECT text FROM journal WHERE id = ?", (eid,)).fetchone()
+    if row is None:
+        raise ValueError(f"no journal entry {eid}")
+    conn.execute(
+        "UPDATE journal SET review_text = ?, review_notes = ?, reviewed_at = ?, "
+        "reviewed_text = ? WHERE id = ?",
+        (text, notes, now_iso(), row["text"], eid))
+    conn.commit()
+    return dict(conn.execute(
+        f"SELECT {JOURNAL_COLS} FROM journal WHERE id = ?", (eid,)).fetchone())
 
 
 # --- exposure credit: what the sittings actually played -------------------------
@@ -3629,6 +3718,11 @@ def main(argv=None):
     p = sub.add_parser("record-view-session",
                        help="store one phone-recorded playback session (JSON file)")
     p.add_argument("session_json")
+    p = sub.add_parser("journal-review",
+                       help="attach /journal's review {text, notes} (JSON file) to one "
+                            "entry and mark it reviewed at its current text")
+    p.add_argument("entry_id")
+    p.add_argument("review_json")
     sub.add_parser("backfill-snapshots",
                    help="stamp claim snapshots onto historical ✓/✗/yes/not-yet rows")
     sub.add_parser("backfill-lookup-defers",
@@ -3653,8 +3747,11 @@ def main(argv=None):
     p.add_argument("what", choices=["summary", "needs-review", "confirm-queue",
                                     "why", "unwatched", "ratings", "channels",
                                     "grammar-proposed", "non-vocab", "viewtime",
-                                    "calibration", "media", "status-log", "reading"])
+                                    "calibration", "media", "status-log", "reading",
+                                    "journal"])
     p.add_argument("lemma", nargs="?")
+    p.add_argument("--unreviewed", action="store_true",
+                   help="journal: only entries /journal hasn't reviewed at their current text")
     p.add_argument("--since", help="status-log: only changes at or after this ISO timestamp")
     p.add_argument("--target", type=float, default=0.6,
                    help="calibration: yes-rate a θ bucket must reach (default 0.6)")
@@ -3794,6 +3891,9 @@ def main(argv=None):
     elif args.verb == "record-view-session":
         payload = json.loads(Path(args.session_json).read_text(encoding="utf-8"))
         _json_out(record_view_session(conn, payload))
+    elif args.verb == "journal-review":
+        payload = json.loads(Path(args.review_json).read_text(encoding="utf-8"))
+        _json_out(record_journal_review(conn, args.entry_id, payload))
     elif args.verb == "query":
         if args.what == "summary":
             _json_out(query_summary(conn))
@@ -3832,6 +3932,8 @@ def main(argv=None):
             _json_out(query_status_log(conn, lemma=args.lemma, since=args.since))
         elif args.what == "calibration":
             _json_out(query_calibration(conn, target=args.target))
+        elif args.what == "journal":
+            _json_out(query_journal(conn, unreviewed=args.unreviewed))
 
 
 if __name__ == "__main__":

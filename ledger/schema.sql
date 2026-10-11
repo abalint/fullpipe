@@ -243,6 +243,29 @@ CREATE TABLE IF NOT EXISTS view_sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_view_sessions_day ON view_sessions(day);
 
+-- Journal (2026-10-10): free-text entries typed on the phone's Journal tab.
+-- Plain text, no structure — the phone is the editor, this is the mirror
+-- (and the backup). Client-minted ids; an edit is an upsert on the id that
+-- only wins when its updated_at is at least as new as what's stored, so a
+-- stale outbox replay can't roll an entry back.
+CREATE TABLE IF NOT EXISTS journal (
+    id          TEXT PRIMARY KEY,   -- client-minted (replay dedup / upsert key)
+    text        TEXT NOT NULL,
+    created_at  TEXT NOT NULL,      -- ISO, device clock, first keystroke
+    updated_at  TEXT NOT NULL,      -- ISO, device clock, last edit
+    received_at TEXT NOT NULL,
+    -- /journal review (2026-10-11): the entry rewritten the way a native
+    -- would say it to a friend, plus plain-English notes on what changed.
+    -- reviewed_text is the entry text the review was written against: the
+    -- review is current while it equals `text`; an edit after the review
+    -- makes the entry unreviewed again (query journal --unreviewed).
+    review_text   TEXT,
+    review_notes  TEXT,
+    reviewed_at   TEXT,
+    reviewed_text TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_journal_created ON journal(created_at);
+
 -- The projection's status changes (2026-09-22): one row each time `promote`
 -- moves an item between unknown / learning / known, with the evidence row
 -- that tipped it and the medium that evidence was made in (watch / read /

@@ -979,6 +979,57 @@ class TestRoutes(ServerTestBase):
             {"day": "2026-09-01", "watch": 0.0, "listen": 600.0, "read": 0.0},
         ])
 
+    def test_journal_roundtrip(self):
+        """A journal entry lands, re-POSTs with newer text update it in place,
+        a stale replay is ignored, GET lists newest first, DELETE is
+        idempotent."""
+        e1 = {"id": "j1", "text": "今日は", "created_at": "2026-10-10T09:00:00-06:00",
+              "updated_at": "2026-10-10T09:00:00-06:00"}
+        r = self.client.post("/journal", json=e1, headers=self.auth)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json(), {"id": "j1", "updated": True})
+        # autosave: same id, more text, later updated_at → replaces
+        e1b = {**e1, "text": "今日は雨。", "updated_at": "2026-10-10T09:01:00-06:00"}
+        self.assertEqual(self.client.post("/journal", json=e1b, headers=self.auth).json(),
+                         {"id": "j1", "updated": True})
+        # a stale replay of the first save must not roll it back
+        self.assertEqual(self.client.post("/journal", json=e1, headers=self.auth).json(),
+                         {"id": "j1", "updated": False})
+        e2 = {"id": "j2", "text": "second", "created_at": "2026-10-11T09:00:00-06:00",
+              "updated_at": "2026-10-11T09:00:00-06:00"}
+        self.client.post("/journal", json=e2, headers=self.auth)
+        body = self.client.get("/journal", headers=self.auth).json()
+        self.assertEqual([x["id"] for x in body["entries"]], ["j2", "j1"])
+        self.assertEqual(body["entries"][1]["text"], "今日は雨。")
+        # malformed → 422
+        self.assertEqual(self.client.post("/journal", json={"id": "j3", "text": 5},
+                                          headers=self.auth).status_code, 422)
+        self.assertEqual(self.client.delete("/journal/j1", headers=self.auth).json(),
+                         {"id": "j1", "deleted": True})
+        self.assertEqual(self.client.delete("/journal/j1", headers=self.auth).json(),
+                         {"id": "j1", "deleted": False})
+        self.assertEqual([x["id"] for x in self.client.get("/journal", headers=self.auth)
+                          .json()["entries"]], ["j2"])
+
+    def test_journal_lists_review(self):
+        """/journal's review (stamped through ledgerctl) rides GET /journal so
+        the phone shows it under the entry; a phone re-save never clobbers it."""
+        e = {"id": "j1", "text": "今日は雨。", "created_at": "2026-10-10T09:00:00-06:00",
+             "updated_at": "2026-10-10T09:00:00-06:00"}
+        self.client.post("/journal", json=e, headers=self.auth)
+        conn = lc.open_db(self.cfg["ledger_db"])
+        lc.record_journal_review(conn, "j1", {"text": "今日雨だね。", "notes": "- one"})
+        conn.close()
+        row = self.client.get("/journal", headers=self.auth).json()["entries"][0]
+        self.assertEqual(row["review_text"], "今日雨だね。")
+        self.assertEqual(row["reviewed_text"], "今日は雨。")
+        # the phone POSTs the whole entry back (review fields included) — ignored
+        self.client.post("/journal", json={**e, "review_text": "hacked",
+                                           "updated_at": "2026-10-10T09:01:00-06:00"},
+                         headers=self.auth)
+        row = self.client.get("/journal", headers=self.auth).json()["entries"][0]
+        self.assertEqual(row["review_text"], "今日雨だね。")
+
     def test_viewtime_carries_subtitle_state(self):
         """A sitting's seconds per subtitle state ride along and come back
         decoded; an unknown state is refused."""
