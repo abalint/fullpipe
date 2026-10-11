@@ -789,10 +789,12 @@ def record_curation(conn, episode_id, curation):
 
 
 # Immersion-time log kinds (MOBILE.md — viewing time): active watching in
-# the in-app player, passive listening in the background audio service, and
+# the in-app player, passive listening in the background audio service,
 # reading in the manga reader (2026-09-14) — active like a watch (it credits
-# exposures and the finished marker), tallied on its own.
-VIEW_KINDS = ("watch", "listen", "read")
+# exposures and the finished marker), tallied on its own — and writing on
+# the Journal tab (2026-10-11): output time, wall-clock on the page, no
+# episode and no exposure credit, tallied on its own.
+VIEW_KINDS = ("watch", "listen", "read", "write")
 ACTIVE_VIEW_KINDS = ("watch", "read")
 # Where a session came from: recorded by the app's player/service, typed in
 # by hand on the Progress tab (listening done outside the app), or imported
@@ -1226,7 +1228,8 @@ def query_view_totals(conn):
     for r in conn.execute(
             "SELECT day, kind, SUM(secs) AS secs FROM view_sessions "
             "GROUP BY day, kind ORDER BY day DESC"):
-        out.setdefault(r["day"], {"day": r["day"], "watch": 0.0, "listen": 0.0, "read": 0.0})
+        out.setdefault(r["day"], {"day": r["day"], "watch": 0.0, "listen": 0.0, "read": 0.0,
+                                  "write": 0.0})
         out[r["day"]][r["kind"]] = round(r["secs"], 1)
     return list(out.values())
 
@@ -3259,8 +3262,13 @@ def query_media(conn, since_days=30):
       evidence was made there; became_known_30d = the last since_days days.
 
     `elsewhere` carries the same mark / transition counts for the off-medium
-    channels: a list review, the confirm queue, an import."""
-    media = {m: _empty_medium() for m in MEDIA}
+    channels: a list review, the confirm queue, an import.
+
+    `media.write` (2026-10-11) is the Journal tab — output, so no words are
+    met there: its time log (sittings / hours / app_hours) plus `entries`
+    (journal rows), `chars_written` (their text, whitespace dropped) and
+    `reviewed` (rows /journal has reviewed at their current text)."""
+    media = {m: _empty_medium() for m in MEDIA + ("write",)}
     elsewhere = {c: {"marked_known": 0, "marked_unknown": 0, "marked_interest": 0,
                      "became_known": 0, "became_learning": 0, "became_known_30d": 0}
                  for c in OFF_MEDIUM_CHANNELS}
@@ -3321,6 +3329,14 @@ def query_media(conn, since_days=30):
         media[m]["words_per_hour"] = (round(media[m]["words_seen"] / media[m]["app_hours"])
                                       if media[m]["app_hours"] > 0 else None)
         media[m]["app_hours"] = round(media[m]["app_hours"], 1)
+    media["write"]["app_hours"] = round(media["write"]["app_hours"], 1)
+    jr = conn.execute(
+        "SELECT COUNT(*) AS n, COALESCE(SUM(LENGTH(REPLACE(REPLACE(REPLACE(text, ' ', ''), "
+        "char(10), ''), '　', ''))), 0) AS chars, "
+        "SUM(CASE WHEN reviewed_text = text THEN 1 ELSE 0 END) AS reviewed FROM journal"
+    ).fetchone()
+    media["write"].update({"entries": jr["n"], "chars_written": int(jr["chars"]),
+                           "reviewed": jr["reviewed"] or 0})
     reading = query_reading(conn)
     t = reading["total"]
     media["read"].update({"pages_read": t["pages_read"], "pages_turned": t["pages_turned"],

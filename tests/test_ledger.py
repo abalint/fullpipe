@@ -1598,6 +1598,32 @@ class JournalReviewTest(unittest.TestCase):
         lc.record_journal_review(self.conn, "j1", {"text": "今日雨で寒い。", "notes": ""})
         self.assertEqual(lc.query_journal(self.conn, unreviewed=True), [])
 
+    def test_writing_time_and_output_counts(self):
+        """A Journal-tab sitting (kind write) lands like any other, shows in
+        the per-day totals and as the media table's writing column with the
+        journal's entry / character / reviewed counts; it credits no words."""
+        r = lc.record_view_session(self.conn, {
+            "id": "w1", "episode_id": "journal", "title": "Journal", "kind": "write",
+            "day": "2026-10-11", "start": "2026-10-11T09:00:00Z", "secs": 900})
+        self.assertEqual(r, {"id": "w1", "duplicate": False})
+        self.assertEqual(lc.query_view_totals(self.conn),
+                         [{"day": "2026-10-11", "watch": 0.0, "listen": 0.0, "read": 0.0,
+                           "write": 900.0}])
+        lc.record_journal_entry(self.conn, {
+            "id": "j2", "text": "二つ目　の 日記\nです", "created_at": "2026-10-11T10:00:00Z",
+            "updated_at": "2026-10-11T10:00:00Z"})
+        lc.record_journal_review(self.conn, "j1", {"text": "今日雨だね。", "notes": ""})
+        m = lc.query_media(self.conn)["media"]
+        self.assertEqual(set(m), {"watch", "read", "listen", "write"})
+        w = m["write"]
+        self.assertEqual((w["sittings"], w["hours"], w["app_hours"]), (1, 0.2, 0.2))
+        self.assertEqual((w["entries"], w["chars_written"], w["reviewed"]), (2, 5 + 8, 1))
+        self.assertEqual((w["words_seen"], w["words_per_hour"]), (0, None))
+        with self.assertRaises(ValueError):
+            lc.record_view_session(self.conn, {
+                "id": "w2", "episode_id": "journal", "kind": "speak", "day": "2026-10-11",
+                "start": "2026-10-11T09:00:00Z", "secs": 1})
+
     def test_review_validation(self):
         with self.assertRaises(ValueError):
             lc.record_journal_review(self.conn, "nope", {"text": "x", "notes": ""})

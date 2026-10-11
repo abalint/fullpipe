@@ -975,8 +975,8 @@ class TestRoutes(ServerTestBase):
         # the CLI's per-day totals
         totals = lc.query_view_totals(lconn)
         self.assertEqual(totals, [
-            {"day": "2026-09-02", "watch": 1234.5, "listen": 0.0, "read": 0.0},
-            {"day": "2026-09-01", "watch": 0.0, "listen": 600.0, "read": 0.0},
+            {"day": "2026-09-02", "watch": 1234.5, "listen": 0.0, "read": 0.0, "write": 0.0},
+            {"day": "2026-09-01", "watch": 0.0, "listen": 600.0, "read": 0.0, "write": 0.0},
         ])
 
     def test_journal_roundtrip(self):
@@ -1425,7 +1425,7 @@ class TestRoutes(ServerTestBase):
             self.assertLessEqual(b["known"], b["total"])
         # the per-medium block (2026-09-22): watching / reading / listening
         media = body["media"]["media"]
-        self.assertEqual(set(media), {"watch", "read", "listen"})
+        self.assertEqual(set(media), {"watch", "read", "listen", "write"})
         self.assertEqual(media["read"]["sittings"], 0)
         self.assertIn("became_known", media["watch"])
         self.assertIn("list", body["media"]["elsewhere"])
