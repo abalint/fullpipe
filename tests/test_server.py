@@ -87,6 +87,14 @@ class ServerTestBase(unittest.TestCase):
         if t:
             t.join(timeout=30)
 
+    def join_purge(self, episode_id=EP):
+        """DELETE /jobs hands the ledger unwind to a background thread (the
+        projection recompute outlives the phone's request deadline) — wait
+        for it so assertions see the ledger settled."""
+        t = self.app.state.purges.get(episode_id)
+        if t:
+            t.join(timeout=30)
+
     def stage_episode(self, with_curate=False):
         ep_dir = episode_dir(self.cfg, EP, create=True)
         write_json(ep_dir / "transcript.json", TRANSCRIPT)
@@ -1103,9 +1111,14 @@ class TestRoutes(ServerTestBase):
         # and deleting it later keeps what was played (every exposure here —
         # the fixture's rows carry no occurrence times, so they take the
         # episode's whole-episode plays)
+        before = lconn.execute(
+            "SELECT COUNT(*) FROM evidence WHERE episode_id=?", (EP,)).fetchone()[0]
+        self.assertGreater(before, 0)
         r = self.client.delete(f"/jobs/{EP}", headers=self.auth)
-        self.assertEqual(r.json()["ledger"]["purged"], "played")
-        self.assertEqual(r.json()["ledger"]["evidence"], 0)
+        self.assertEqual(r.json()["ledger"], "pending")
+        self.join_purge()
+        self.assertEqual(lconn.execute(
+            "SELECT COUNT(*) FROM evidence WHERE episode_id=?", (EP,)).fetchone()[0], before)
 
     def test_viewtime_played_ranges_roundtrip(self):
         """The sitting's played media ranges land and come back (they are
@@ -1178,10 +1191,12 @@ class TestRoutes(ServerTestBase):
 
         r = self.client.request("DELETE", f"/jobs/{EP}", headers=self.auth)
         self.assertEqual(r.status_code, 200)
-        self.assertTrue(r.json()["ledger"]["purged"])
+        # files + row go on the request thread; the ledger unwind follows
+        self.assertEqual(r.json()["ledger"], "pending")
         self.assertFalse(ep_dir.exists())
         self.assertEqual(list(dl.iterdir()), [])
         self.assertIsNone(q.get_job(conn, EP))
+        self.join_purge()
         lconn = lc.open_db(self.cfg["ledger_db"])
         self.assertEqual(lconn.execute(
             "SELECT COUNT(*) FROM evidence WHERE episode_id=?", (EP,)).fetchone()[0], 0)
@@ -1201,10 +1216,9 @@ class TestRoutes(ServerTestBase):
 
         r = self.client.request("DELETE", f"/jobs/{EP}", headers=self.auth)
         self.assertEqual(r.status_code, 200)
-        self.assertTrue(r.json()["ledger"]["purged"])
-        self.assertTrue(r.json()["ledger"]["rating_retained"])
         self.assertFalse(ep_dir.exists())
         self.assertIsNone(q.get_job(conn, EP))
+        self.join_purge()
         lconn = lc.open_db(self.cfg["ledger_db"])
         row = lconn.execute(
             "SELECT watched, rating FROM episodes WHERE id=?", (EP,)).fetchone()
@@ -1223,9 +1237,9 @@ class TestRoutes(ServerTestBase):
 
         r = self.client.request("DELETE", f"/jobs/{EP}", headers=self.auth)
         self.assertEqual(r.status_code, 200)
-        self.assertFalse(r.json()["ledger"]["purged"])
         self.assertFalse(ep_dir.exists())  # artifacts still go
         self.assertIsNone(q.get_job(conn, EP))  # queue row still goes
+        self.join_purge()
         lconn = lc.open_db(self.cfg["ledger_db"])
         # earned history stays: watched episode row + activated exposures
         self.assertEqual(lconn.execute(

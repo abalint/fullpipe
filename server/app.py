@@ -427,12 +427,39 @@ def create_app(cfg, start_worker=True):
             for p in downloads_dir(cfg).glob(f"{ep[3:]}.*"):
                 p.unlink()
                 files_removed += 1
-        ledger = lc.purge_episode(ledger_conn(), ep)
         q.delete_job(queue_conn(), job["id"])
         durations.pop(ep, None)
         comps.pop(ep, None)
+        # The ledger unwind ends in promote() — a full projection recompute,
+        # 6–7 s on the live ledger (2026-10-14) — so it runs off the request
+        # thread like the close-out does. The phone cuts every call at 6 s and
+        # was reporting "server unreachable" on deletes that had in fact gone
+        # through (the row and files are already gone by here; the ledger
+        # catches up seconds later).
+        t = threading.Thread(target=_purge_ledger, args=(ep,),
+                             name=f"purge-{ep}", daemon=True)
+        purges[ep] = t
+        t.start()
         return {"deleted": job["id"], "episode_id": ep,
-                "files_removed": files_removed, "ledger": ledger}
+                "files_removed": files_removed, "ledger": "pending"}
+
+    purges = {}  # episode_id → Thread; lets tests join the ledger unwind
+    app.state.purges = purges
+
+    def _purge_ledger(ep):
+        """The slow tail of DELETE /jobs: unwind the episode's ledger footprint
+        on its own thread-bound handle (ledgerctl.purge_episode decides what
+        stays — played exposures, ratings, watched history)."""
+        lconn = lc.open_db(cfg["ledger_db"])
+        try:
+            lc.purge_episode(lconn, ep)
+        except Exception as e:
+            print(f"ledger purge {ep} failed: {str(e)[:200]}", file=sys.stderr)
+        finally:
+            try:
+                lconn.close()
+            except Exception:
+                pass
 
     # --- staged artifacts --------------------------------------------------------
 
