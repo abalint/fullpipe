@@ -141,6 +141,8 @@ def listing(root):
     AppleDouble `._x` twins and dotfiles skipped. os.walk with scandir
     batches SMB directory reads — ~30k files in a few seconds."""
     root = str(root)
+    if os.path.isfile(root):  # a loose file (a movie beside its folder) is a one-item set
+        return [root]
     if not os.path.isdir(root):
         raise FileNotFoundError(f"no such folder: {root}")
     out = []
