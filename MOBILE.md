@@ -323,8 +323,13 @@ section on the queue (2026-09-20), split into two collapsible shelves — **On
 phone** (at least one episode downloaded) and **Not on phone** (nothing
 downloaded; starts folded). Inside a shelf each series keeps its own
 collapsible header (title · n/N watched · m on phone · `▶ EPnn` / `⬇ EPnn`
-for the next unwatched episode · the set's 👎 / 👍 thumbs) over its rows in
-`ep_no` order with an `EPnn` chip; sort/filter still apply per row. Fold state is remembered per section,
+for the next unwatched episode · **`⬇ series (k)`** (2026-10-15: fetches every
+staged episode not yet on the phone through the background download queue;
+hidden offline and once the set is complete) · the set's 👎 / 👍 thumbs) over
+its rows in `ep_no` order with an `EPnn` chip; sort/filter still apply per
+row. **The toolbar's `⬇ all videos` sweep skips series rows** (2026-10-15) —
+it fetches standalone episodes only, so a box set is never pulled in bulk by
+accident; each series downloads from its own header button. Fold state is remembered per section,
 shelf and series (`fp.series.*` in localStorage). When an
 episode ends the player shows an **up next** card and — if the next episode is
 downloaded and Settings → Playback → Autoplay is on — rolls into it after an
