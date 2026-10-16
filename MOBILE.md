@@ -322,15 +322,33 @@ verdict for the whole set (`POST /series/{slug}/rating`, ledger
 section on the queue (2026-09-20), split into two collapsible shelves — **On
 phone** (at least one episode downloaded) and **Not on phone** (nothing
 downloaded; starts folded). Inside a shelf each series keeps its own
-collapsible header (title · n/N watched · m on phone · `▶ EPnn` / `⬇ EPnn`
-for the next unwatched episode · **`⬇ series (k)`** (2026-10-15: fetches every
-staged episode not yet on the phone through the background download queue;
-hidden offline and once the set is complete) · the set's 👎 / 👍 thumbs) over
-its rows in `ep_no` order with an `EPnn` chip; sort/filter still apply per
-row. **The toolbar's `⬇ all videos` sweep skips series rows** (2026-10-15) —
-it fetches standalone episodes only, so a box set is never pulled in bulk by
-accident; each series downloads from its own header button. Fold state is remembered per section,
-shelf and series (`fp.series.*` in localStorage). When an
+collapsible header (title · n/N watched · m on phone · the set's 👎 / 👍
+thumbs — nothing else) over an **action strip** and its rows in `ep_no`
+order with an `EPnn` chip; sort/filter still apply per row. The strip
+(2026-10-16 — these used to be header buttons) is the first thing under the
+header, above the first episode: **`▶ EPnn` / `⬇ EPnn`** resumes or fetches
+the next unwatched episode (a finished set offers `↺` from the top); **`⬇ series (k)`**
+fetches every episode with a video on the server that isn't on the phone —
+**watched ones included** (a box set is pulled to be watched or rewatched
+as a whole; the server keeps or restores a watched series episode's video) —
+through the background download queue, hidden offline and once the set is
+complete; **`🗑 series (m)`** removes every downloaded episode from the
+phone after a confirm — the swipe-delete of a series row in bulk: phone-local,
+taps / cached prep / ledger history untouched, works offline, `⬇` brings
+them back. **Seasons** (2026-10-16): a show whose files carried season
+numbers (`ep_no` ≥ 100 = season × 100 + episode, the `SnEnn` chip — Dorohedoro,
+Solo Leveling) gets one collapsible per season inside the series block, each
+with its own `⬇ Sn (k)` / `🗑 Sn (m)` on its header, and **only the season
+you're in starts open** — the one holding the next episode to watch (a
+finished show rests on its last) — so a show on the phone lists the season
+being watched, not every episode that exists; the other seasons fold to one
+line each. A show ingested without season numbers (EP01…) is one list, no
+season headers. **The toolbar's `⬇ all videos` sweep skips series rows**
+(2026-10-15) — it fetches standalone episodes only, so a box set is never
+pulled in bulk by accident; each series downloads from its own strip or
+season buttons. Fold state is remembered per section, shelf, series and
+season (`fp.series.*` in localStorage; a season with no remembered state
+opens iff it is the current one). When an
 episode ends the player shows an **up next** card and — if the next episode is
 downloaded and Settings → Playback → Autoplay is on — rolls into it after an
 8 s countdown. Watched follows from play time (`POST /viewtime`), no tap.
