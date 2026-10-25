@@ -83,22 +83,42 @@ pass skips them — rather than hand-fixed.
 ## The AI read (2026-09-14, later the same day)
 
 mokuro's text is only a **draft**. The real transcription is done by Opus
-subagents reading the pages (`/manga read <id>` — skills/manga/READ_PROMPT.md):
+subagents reading the lettering (`/manga read <id>` — skills/manga/READ_PROMPT.md):
 
 ```
-tools.manga read-prep   → ocr/read/pages/<stem>.png (every mokuro box outlined +
-                          numbered) + ocr/read/manifest.json (boxes + drafts)
+tools.manga read-prep   → ocr/read/sheets/<stem>.png (every mokuro box cut out of
+                          the clean scan, upscaled 2–3×, tiled on white in reading
+                          order under its number — the default read, 2026-10-18)
+                          ocr/read/pages/<stem>.png (the page with every box
+                          outlined + numbered — the "page read", on request)
+                          ocr/read/manifest.json (boxes + drafts + order + both renders)
 Opus agents (5–6 in parallel, ~45 pages each, 10–15 min)
-                        → ocr/read/<stem>.json  {blocks: {k: {lines, gloss}}, missed}
+                        → ocr/read/<stem>.json  {blocks: {k: {lines, gloss, speaker, say}}, cast, missed}
 tools.manga read-apply  → transcript.json / manga.json rebuilt from the read
                           (empty boxes dropped: watermarks, logos), read/lines.json
                           (bubble gloss → every sentence idx of the bubble),
                           coverage re-run; manga.json read_by = "opus"
 ```
 
-The reading agent sees the whole page, so it transcribes **and writes the
-bubble's plain-English meaning in the same pass** — glosses reflect who is
-talking to whom, puns, references. `/transcript` serves `read/lines.json`
+The reading agent transcribes **and writes the bubble's plain-English
+meaning in the same pass** — glosses reflect the conversation on the page,
+puns, references.
+
+**Why sheets (2026-10-18).** Measured over the eleven volumes read so far
+(~14,000 bubbles with both a mokuro draft and an Opus read), the draft is
+content-exact on 82–93 % of bubbles, so a text-only pass over it would ship
+7–14 % wrong bubbles (同収 for 回収, 聖城 for 聖域, whole bubbles swapped for
+other sentences) that no text model can see — the lettering has to be read.
+But it does not have to be read *in the artwork*: the full-page read stalled
+on fanservice pages (Dragon Ball v1 044–045, Nagatoro's teasing chapters)
+and needed per-box crops anyway for dense lettering. A sheet is the crops
+alone — nothing on it to decline, every tile already zoomed, the furigana
+still visible for the `say` names. The cost: no panels, so no speaker
+attribution — a sheet-read volume is voiced by one **narrator**
+(`manga.voice.default_voices.narration`, Kaori — a confident adult woman,
+conversational rather than story-narration, and no character's voice), and
+glosses that would need the picture stay literal. The page read remains for
+a volume the user wants voiced per character. `/transcript` serves `read/lines.json`
 glosses under the curate pass's `lines` (overrides only). The `/immerse`
 manga pass now requires `read-status … applied: true` and does defs +
 synopsis; it keys on sentence idxs, which the read rewrites, so order matters.
@@ -177,9 +197,30 @@ tools.manga voice tts <id> [--dry-run] [--pages a-b]   one request per bubble (e
                                language ja, neighbours as previous/next_text), 3 in
                                flight; clips.json keeps a signature per clip so a
                                re-run renders only bubbles whose text/voice/model
-                               changed; usage checked against the account first
+                               changed; usage checked against the account first;
+                               each clip levelled as it lands (below)
+tools.manga voice normalize <id> [--force]   re-level clips/ from raw/ — a track
+                               rendered before the step or after a target change;
+                               no ElevenLabs traffic
 voice/index.json               what the phone fetches: clips with sentence idxs
+                               (+ the loudness the track was levelled to)
 ```
+
+**Loudness (2026-10-14).** ElevenLabs returns each bubble at whatever level
+the voice happened to produce: vol 3 of Nagatoro measured −40 to −9 LUFS
+across its 995 clips (p10 −24.7, median −19.5, p90 −15.3), and most clips
+already peak within a few dB of full scale — so the track was quiet overall
+and uneven bubble to bubble, and turning it up alone would have clipped half
+of it. Every clip now gets one measured gain to
+`manga.voice.loudness.target_lufs` (−16 LUFS, the podcast/phone norm)
+through a lookahead limiter at `true_peak_db` (−1 dBTP): quiet, dynamic
+bubbles simply get louder, peaky ones lose a few dB of transients. The
+render as returned stays in `voice/raw/`, the levelled copy in
+`voice/clips/` is what the server serves; `clips.json` records the measured
+in/out loudness and gain per clip. Both directories are mirrored by the
+archive. On the vol 3 sample the spread went from 14.5 dB to ~2.5 dB
+(levelled clips land at −16.4…−18.8; the limiter's gain reduction accounts
+for the low end). Set `loudness` to null in config.json to ship raw.
 
 Phone: `downloadMangaVoice` (mobile `manga.ts`) pulls the index (404 = no
 track) and the clips not on disk, in the background on every reader open,

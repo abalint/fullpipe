@@ -374,6 +374,18 @@ class TestMangaStage1(ServerTestBase):
         todo = [p["stem"] for p in man["pages"] if p["blocks"] and not p["done"]]
         self.assertEqual(todo, ["001", "002"])  # page 3 has no boxes
         self.assertTrue((ep_dir / "ocr" / "read" / "pages" / "001.png").exists())
+        # the default read: every box cut out and tiled on one sheet, in reading order
+        sheet = ep_dir / "ocr" / "read" / "sheets" / "001.png"
+        self.assertTrue(sheet.exists())
+        self.assertEqual(man["pages"][0]["sheet"], str(sheet))
+        self.assertEqual(sorted(man["pages"][0]["order"]), [0, 1, 2, 3])
+        self.assertEqual(man["pages"][0]["order"],
+                         [b["k"] for b in MG.sort_blocks([{"k": b["k"], "box": b["box"]}
+                                                          for b in man["pages"][0]["blocks"]])])
+        self.assertIsNone(man["pages"][2]["sheet"])  # no boxes, no sheet
+        w, h = Image.open(sheet).size
+        self.assertEqual(w, MG.SHEET_WIDTH)
+        self.assertGreater(h, 100)
         self.assertEqual(man["pages"][0]["blocks"][2]["draft"], ["犬が走る。", "速いね。"])
         with self.assertRaises(RuntimeError):  # nothing read yet
             MG.read_apply(self.cfg, VOL_EP, log=lambda m: None)
@@ -396,6 +408,30 @@ class TestMangaStage1(ServerTestBase):
         self.assertNotIn("gloss", t["sentences"][2])
         self.assertFalse(t["curated"])  # the pass (defs, synopsis) hasn't run
         self.assertTrue(MG.read_status(self.cfg, VOL_EP)["applied"])
+        # a later re-read renumbers the sentences; curated glosses follow their text
+        t_before = t["sentences"]
+        owari = next(s_["idx"] for s_ in t_before if "".join(x["s"] for x in s_["tokens"]) == "終わり")
+        write_json(ep_dir / "curate.json", {"lines": [{"idx": owari, "gloss": "The end (curated)."},
+                                                      {"idx": 999, "gloss": "gone"}], "defs": []})
+        write_json(ep_dir / "ocr" / "read" / "001.json", {"blocks": {
+            "2": {"lines": ["犬が走る。", "速いね。", "本当に。"], "gloss": None},  # one more sentence on page 1
+            "1": {"lines": ["公園へ", "行く。"], "gloss": None},
+            "3": {"lines": ["行こう"], "gloss": None},
+            "0": {"lines": ["猫のほうが", "速い！"], "gloss": None}}})
+        MG.read_apply(self.cfg, VOL_EP, log=lambda m: None)
+        t2 = self.client.get(f"/transcript/{VOL_EP}", headers=self.auth).json()
+        owari2 = next(s_["idx"] for s_ in t2["sentences"] if "".join(x["s"] for x in s_["tokens"]) == "終わり")
+        self.assertEqual(owari2, owari + 1)
+        self.assertEqual(read_json(ep_dir / "curate.json")["lines"], [{"idx": owari2, "gloss": "The end (curated)."}])
+
+    def test_remap_sentence_idxs(self):
+        old = [{"idx": 0, "start": 0.0, "text": "あ"}, {"idx": 1, "start": 0.1, "text": "い"},
+               {"idx": 2, "start": 0.2, "text": "い"}, {"idx": 3, "start": 30.0, "text": "う"}]
+        new = [{"idx": 0, "start": 0.0, "text": "あ"}, {"idx": 1, "start": 0.1, "text": "え"},
+               {"idx": 2, "start": 0.2, "text": "い"}, {"idx": 3, "start": 0.3, "text": "い"},
+               {"idx": 4, "start": 30.0, "text": "う"}]
+        self.assertEqual(MG.remap_sentence_idxs(old, new, {0, 1, 2, 3}), {0: 0, 1: 2, 2: 3, 3: 4})
+        self.assertEqual(MG.remap_sentence_idxs(old, [], {0}), {})
 
     def test_library_and_ingest_routes(self):
         self.cfg["library"], series_dir = make_library(self.tmp.name)

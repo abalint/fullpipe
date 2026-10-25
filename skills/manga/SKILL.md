@@ -32,14 +32,25 @@ the JSON back and deletes the parked copy. This skill drives
    and `manga.json` (the reader's page + bubble structure); `tokenizing` =
    coverage; then **`prepared`** — readable on the phone right away.
 4. **The AI read (this skill, `/manga read <episode_id>`)** — mokuro's text is a
-   draft (it merges furigana into words, misreads katakana, swaps rare kanji).
-   Opus subagents read the pages themselves: `read-prep` renders every page
-   with its boxes numbered + a manifest, agents write `ocr/read/<stem>.json`
-   (printed lines per box **and the bubble's plain-English meaning**, one
-   pass — READ_PROMPT.md), `read-apply` rebuilds transcript/manga.json from
-   the read (empty boxes dropped) and re-runs coverage. The bubble glosses
-   land on `/transcript` sentences right away (the reader shows them at the
-   popup's foot).
+   draft (it merges furigana into words, misreads katakana, swaps rare kanji;
+   measured 2026-10-18 against 14k Opus-read bubbles: 7–14 % of bubbles carry
+   a real content error). Opus subagents read the lettering themselves:
+   `read-prep` cuts every box out of the clean scan and tiles them, upscaled,
+   on one **sheet per page** (`ocr/read/sheets/<stem>.png` — lettering only,
+   no artwork, in reading order under the box numbers) + a manifest; agents
+   write `ocr/read/<stem>.json` (printed lines per box **and the bubble's
+   plain-English meaning**, one pass — READ_PROMPT.md); `read-apply` rebuilds
+   transcript/manga.json from the read (empty boxes dropped) and re-runs
+   coverage. The bubble glosses land on `/transcript` sentences right away
+   (the reader shows them at the popup's foot). **The sheet read is the
+   default** (2026-10-18): a sheet is already zoomed, and it carries nothing
+   a reader can decline to look at (the futon pages of Dragon Ball, the
+   teasing chapters of Nagatoro stalled the page readers). Nobody is
+   attributed on a sheet, so the volume's voice track is a **narrator**
+   (`manga.voice.default_voices.narration`). The **page read**
+   (`ocr/read/pages/<stem>.png`, the whole page with numbered boxes) is still
+   there for a volume you want voiced per character: say "page read" in the
+   agents' launch message.
 5. **`/immerse` manga pass (Step 1.6)** takes it to `staged`: defs for what JMdict
    lacks (names, sound words, slang) + a short synopsis. No cards, no prep doc.
 6. **The voice track (`/manga voice <episode_id>`, 2026-10-04)** — every bubble as
@@ -47,8 +58,12 @@ the JSON back and deletes the parked copy. This skill drives
    The reading agents already wrote who speaks and what the voice should read
    (READ_PROMPT.md `speaker` / `say` / `cast`); `tools.manga voice` compiles the
    script, keeps the series cast → voice map, renders the clips once
-   (`tools/manga_voice.py`, MANGA.md "The voice track") and the phone pulls them
-   with the volume.
+   (`tools/manga_voice.py`, MANGA.md "The voice track"), **levels every clip**
+   (2026-10-14: raw renders come back anywhere from −10 to −40 LUFS — each
+   is gained to `manga.voice.loudness.target_lufs`, −16 by default, behind a
+   true-peak limiter; `voice normalize` re-levels an older track from
+   `voice/raw/` without spending credits) and the phone pulls them with the
+   volume.
 
 Exposure credit is per **page viewed**: the reader's sittings carry played
 ranges in page pseudo-seconds, so the words on the pages you actually read are
@@ -103,11 +118,14 @@ $PY -m tools.manga read-apply  manga_dandadan_v01     # refuses under 95 % read
 1. `read-prep`, then split `to_read` into batches of ~40–45 pages and launch
    one **Opus** subagent per batch (general-purpose, in parallel, 5–6 at a
    time): "Read `skills/manga/READ_PROMPT.md` and follow it for episode
-   `<id>` (EPISODE_DIR = `~/immersion/episodes/<id>`), pages: <stems>." Each
-   agent reads ~45 pages in 10–15 min.
+   `<id>` (EPISODE_DIR = `~/immersion/episodes/<id>`), pages: <stems>." That
+   is the sheet read. For a per-character voice track add "page read" to
+   the message (the agents then read the full pages and name the speakers;
+   expect a declined page now and then — re-run those as a sheet read).
+   Each agent reads ~45 pages in 10–15 min.
 2. When all report done, `read-status` → `read` should equal
    `pages_with_text` (re-launch an agent over any stems still missing), then
-   `read-apply`. Skim a few pages' JSON against their PNG.
+   `read-apply`. Skim a few pages' JSON against their sheet.
 3. Hand off to `/immerse` Step 1.6 (defs + synopsis; its `lines` are
    overrides only now).
 
@@ -124,6 +142,7 @@ $PY -m tools.manga voice cast   dandadan              # the series cast; --set �
 $PY -m tools.manga voice voices --language ja         # the account's voices (add library voices on the site)
 $PY -m tools.manga voice tts    manga_dandadan_v02 --dry-run   # clips / chars / credits by voice
 $PY -m tools.manga voice tts    manga_dandadan_v02 [--pages 1-10]
+$PY -m tools.manga voice normalize manga_dandadan_v02 [--force]   # re-level clips/ from raw/ (no credits)
 $PY -m tools.manga voice status manga_dandadan_v02
 ```
 
@@ -138,9 +157,17 @@ $PY -m tools.manga voice status manga_dandadan_v02
    `female`, …) and, for a main character, its own `voice_id` (`cast --set`).
 3. `tts --dry-run`, then `tts`. A 200-page volume is ~1,500 requests, 5–10
    min at 3 in flight; `--pages` for a taste first. Re-running after a cast
-   or script change renders only what changed.
-4. The phone picks the track up on the next reader open (status line
-   "voice n/N" while it pulls); a re-render replaces it.
+   or script change renders only what changed. Each clip is levelled as it
+   lands (raw render in `voice/raw/`, the levelled copy in `voice/clips/`;
+   `tts` reports `levelled`, and `clips.json` keeps the measured in/out
+   loudness per clip).
+4. **Level check**: a track rendered before 2026-10-14, or after a change to
+   `manga.voice.loudness`, needs `voice normalize <id>` — it moves the old
+   clips into `raw/` if need be, re-levels only the clips off the current
+   target, rebuilds the index (new `built_at`, so the phone replaces its
+   copy) and mirrors the track. Nothing goes to ElevenLabs.
+5. The phone picks the track up on the next reader open (status line
+   "voice n/N" while it pulls); a re-render or re-level replaces it.
 
 ## Procedure
 

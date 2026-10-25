@@ -47,7 +47,7 @@ CLI:
     python -m tools.manga archive dandadan|--all               # mirror reads/voice/coverage onto the media server (t7)
     python -m tools.manga restore dandadan [--volumes 2]       # back onto the Mac (artifacts + pages + queue rows)
     python -m tools.manga remove dandadan [--remote] [--force] # Mac (+ PC OCR cache); never the scans; needs a current archive
-    python -m tools.manga voice  prep|status|apply|tts|… <id>  # the voice track (tools/manga_voice.py)
+    python -m tools.manga voice  prep|status|apply|tts|normalize|… <id>  # the voice track (tools/manga_voice.py)
 """
 
 import argparse
@@ -678,15 +678,80 @@ def annotate_page(image_path, blocks, out_path):
     im.save(out_path, "PNG", optimize=True)
 
 
+SHEET_WIDTH = 1600      # px — the contact sheet wraps its tiles at this width
+SHEET_PAD = 6           # px of page around each box (the detector clips tails of columns)
+SHEET_GAP = 18          # px between tiles
+SHEET_LABEL = 30        # px band above each tile for its number
+
+
+def render_sheet(image_path, blocks, out_path, order=None, width=SHEET_WIDTH):
+    """The page's text boxes cut out of the clean scan, upscaled and tiled
+    onto one white sheet in reading order, each under its raw block index —
+    lettering only, no artwork. What a reading agent looks at by default
+    (2026-10-18): a crop is already zoomed, and a sheet carries nothing a
+    reader can decline to look at. Returns the reading order (block
+    indices) the tiles are laid in."""
+    from PIL import Image, ImageDraw, ImageFont
+    im = Image.open(image_path).convert("RGB")
+    try:
+        font = ImageFont.truetype(LABEL_FONT, 24)
+    except OSError:
+        font = ImageFont.load_default()
+    if order is None:
+        order = [b["k"] for b in sort_blocks([{"k": k, "box": b["box"]} for k, b in enumerate(blocks)])]
+    tiles = []
+    for k in order:
+        x1, y1, x2, y2 = [float(v) for v in blocks[k]["box"]]
+        crop = im.crop((max(0, int(x1) - SHEET_PAD), max(0, int(y1) - SHEET_PAD),
+                        min(im.width, int(x2) + SHEET_PAD), min(im.height, int(y2) + SHEET_PAD)))
+        scale = 3 if min(crop.size) * 2 < 90 else 2
+        crop = crop.resize((crop.width * scale, crop.height * scale), Image.LANCZOS)
+        if crop.width > width - 2 * SHEET_GAP:          # a banner wider than the sheet
+            r = (width - 2 * SHEET_GAP) / crop.width
+            crop = crop.resize((int(crop.width * r), max(1, int(crop.height * r))), Image.LANCZOS)
+        tiles.append((k, crop))
+    rows, row, x = [], [], SHEET_GAP
+    for k, crop in tiles:
+        if row and x + crop.width + SHEET_GAP > width:
+            rows.append(row)
+            row, x = [], SHEET_GAP
+        row.append((k, crop))
+        x += crop.width + SHEET_GAP
+    if row:
+        rows.append(row)
+    height = SHEET_GAP + sum(max(c.height for _, c in r) + SHEET_LABEL + SHEET_GAP for r in rows)
+    sheet = Image.new("RGB", (width, max(height, SHEET_GAP * 2 + SHEET_LABEL)), "white")
+    draw = ImageDraw.Draw(sheet)
+    y = SHEET_GAP
+    for r in rows:
+        x = SHEET_GAP
+        for k, crop in r:
+            label = str(k)
+            tw = draw.textlength(label, font=font)
+            draw.rectangle([x, y, x + tw + 10, y + SHEET_LABEL - 4], fill=(230, 30, 30))
+            draw.text((x + 5, y), label, fill="white", font=font)
+            ty = y + SHEET_LABEL
+            sheet.paste(crop, (x, ty))
+            draw.rectangle([x - 1, ty - 1, x + crop.width, ty + crop.height], outline=(170, 170, 170), width=1)
+            x += crop.width + SHEET_GAP
+        y += max(c.height for _, c in r) + SHEET_LABEL + SHEET_GAP
+    sheet.save(out_path, "PNG", optimize=True)
+    return order
+
+
 def read_prep(cfg, episode_id, log=print):
-    """Stage the AI read: ocr/read/pages/<stem>.png (numbered boxes) and
-    ocr/read/manifest.json — per page: file, raw blocks (index, box,
+    """Stage the AI read: ocr/read/sheets/<stem>.png (the page's boxes cut
+    out and tiled, lettering only — what the agents read by default),
+    ocr/read/pages/<stem>.png (the whole page with numbered boxes — the
+    page read, when speakers are wanted) and ocr/read/manifest.json — per
+    page: file, both renders, the reading order, raw blocks (index, box,
     vertical, mokuro's draft lines) — for the /manga skill's agents.
     Pages already read (ocr/read/<stem>.json) are listed as done."""
     ep_dir = episode_dir(cfg, episode_id)
     ocr_dir, pages_dir = ep_dir / "ocr", ep_dir / "pages"
     read_dir = ocr_dir / "read"
     (read_dir / "pages").mkdir(parents=True, exist_ok=True)
+    (read_dir / "sheets").mkdir(parents=True, exist_ok=True)
     files = page_files_in(pages_dir)
     if not files:
         raise RuntimeError(f"no pages under {pages_dir} — run Stage 1 first")
@@ -703,11 +768,17 @@ def read_prep(cfg, episode_id, log=print):
         ocr = read_json(p) if p.exists() else {"blocks": []}
         raw = ocr.get("blocks") or []
         png = read_dir / "pages" / f"{stem}.png"
+        sheet = read_dir / "sheets" / f"{stem}.png"
+        order = [b["k"] for b in sort_blocks([{"k": k, "box": b["box"]} for k, b in enumerate(raw)])]
         if raw and not png.exists():
             annotate_page(pages_dir / file, raw, png)
+        if raw and not sheet.exists():
+            render_sheet(pages_dir / file, raw, sheet, order=order)
         manifest["pages"].append({
             "n": n, "file": file, "stem": stem,
+            "sheet": str(sheet) if raw else None,
             "image": str(png) if raw else None,
+            "order": order,
             "done": (read_dir / f"{stem}.json").exists(),
             "blocks": [{"k": k, "box": [round(float(v)) for v in b["box"]],
                         "vertical": bool(b.get("vertical", True)),
@@ -735,6 +806,46 @@ def read_status(cfg, episode_id):
             "read": len(done), "applied": (read_dir / "applied.json").exists()}
 
 
+def remap_sentence_idxs(old_sents, new_sents, idxs, page_secs=PAGE_SECS):
+    """{old idx → new idx} for sentence idxs that survive a rebuild of the
+    sentence track: a sentence is matched on the same page by its text, nth
+    occurrence to nth occurrence. Idxs whose text is gone from the page are
+    left out (the caller drops what hangs on them)."""
+    def key(s_):
+        return (int(float(s_.get("start") or 0) // page_secs), s_.get("text") or "")
+    new_by_key = {}
+    for s_ in new_sents:
+        new_by_key.setdefault(key(s_), []).append(int(s_["idx"]))
+    seen, out = {}, {}
+    old_by_idx = {int(s_["idx"]): s_ for s_ in old_sents}
+    for s_ in old_sents:           # walk in order so the nth occurrence lines up
+        k = key(s_)
+        n = seen.get(k, 0)
+        seen[k] = n + 1
+        i = int(s_["idx"])
+        if i in idxs and n < len(new_by_key.get(k, [])):
+            out[i] = new_by_key[k][n]
+    return out
+
+
+def _carry_curation(ep_dir, old_sents, new_sents, log=print):
+    """read_apply renumbers every sentence; curate.json's `lines` are keyed
+    by idx, so without this a re-read of a curated volume (two declined
+    pages read later, say) would hang every gloss on the wrong bubble."""
+    cur_p = ep_dir / "curate.json"
+    if not cur_p.exists():
+        return
+    cur = read_json(cur_p)
+    lines = cur.get("lines") or []
+    if not lines:
+        return
+    m = remap_sentence_idxs(old_sents, new_sents, {int(l["idx"]) for l in lines if "idx" in l})
+    kept = [{**l, "idx": m[int(l["idx"])]} for l in lines if "idx" in l and int(l["idx"]) in m]
+    cur["lines"] = kept
+    write_json(cur_p, cur)
+    log(f"curate.json: {len(kept)}/{len(lines)} glossed lines carried onto the new sentence idxs")
+
+
 def read_apply(cfg, episode_id, log=print, min_fraction=0.95):
     """Rebuild the volume from the agents' reads (ocr/read/<stem>.json) and
     re-run coverage. Refuses while fewer than min_fraction of the pages
@@ -749,7 +860,12 @@ def read_apply(cfg, episode_id, log=print, min_fraction=0.95):
     meta = {"slug": doc["slug"], "vol_no": doc["vol_no"], "label": doc.get("label"),
             "title": doc["title"], "series_title": doc["series_title"]}
     files = [p["file"] for p in doc["pages"]]
+    tr_p = ep_dir / "transcript.json"
+    old_sents = (read_json(tr_p).get("sentences") or []) if tr_p.exists() else []
     record = build_volume(cfg, episode_id, meta, ep_dir / "ocr", files, log=log)
+    _carry_curation(ep_dir, old_sents, record["sentences"], log=log)
+    if (ep_dir / "voice" / "script.json").exists():
+        log("voice track on file: run `voice apply` then `voice tts` (new clips only) to re-index it")
     from tools.coverage import run_coverage
     run_coverage(cfg, episode_id)
     write_json(ep_dir / "ocr" / "read" / "applied.json",
@@ -1100,7 +1216,7 @@ def main(argv=None):
     p.add_argument("slug")
     p.add_argument("--volumes")
     p.add_argument("--overwrite", action="store_true")
-    p = sub.add_parser("read-prep", help="numbered-box page renders + manifest for the AI read")
+    p = sub.add_parser("read-prep", help="bubble contact sheets (+ numbered-box page renders) + manifest for the AI read")
     p.add_argument("episode_id")
     p = sub.add_parser("read-status")
     p.add_argument("episode_id")

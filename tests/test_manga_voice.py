@@ -3,6 +3,8 @@ voice fields / the agents' pages / the lettered text, cast merging and
 voice resolution, the render plan + an idempotent render against a fake
 ElevenLabs, the phone's index, and the server routes."""
 
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest.mock
@@ -187,6 +189,15 @@ class TestScript(unittest.TestCase):
         self.assertEqual(MV.resolve_voice(cast, "unknown", vcfg), ("N", "default:neutral"))
         self.assertEqual(MV.resolve_voice(cast, "モモ", {"default_voices": {}}), ("MOMO", "モモ"))
         self.assertEqual(MV.resolve_voice(cast, None, {"default_voices": {}}), (None, None))
+        # a narrator on offer takes every unattributed bubble (a sheet-read volume
+        # is all of them) and any speaker the cast doesn't know — a cast member
+        # without a gender still gets neutral
+        nv = {"default_voices": {"narration": "NAR", "neutral": "N", "female": "F"}}
+        self.assertEqual(MV.resolve_voice(cast, None, nv), ("NAR", "default:narration"))
+        self.assertEqual(MV.resolve_voice(cast, "unknown", nv), ("NAR", "default:narration"))
+        self.assertEqual(MV.resolve_voice(cast, "？", nv), ("N", "default:neutral"))
+        self.assertEqual(MV.resolve_voice(cast, "モモ", nv), ("MOMO", "モモ"))
+        self.assertEqual(MV.default_voice_keys(None), ["narration", "neutral", "default"])
         # age / dialect pick the most specific default on offer
         dv = {"default_voices": {"female": "F", "female:old": "FO", "male:kansai": "MK",
                                  "kansai": "K", "male:old:kansai": "MOK"}}
@@ -353,6 +364,89 @@ class TestRoutes(ServerTestBase):
         self.assertEqual(self.client.get(f"/manga/{EP}/voice/001_2.mp3").status_code, 401)
         self.assertEqual(self.client.get(f"/manga/{EP}/voice/..%2Fscript.json?t=sekrit").status_code, 404)
         self.assertEqual(self.client.get(f"/manga/{EP}/voice/nope.mp3?t=sekrit").status_code, 404)
+
+
+@unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg not installed")
+class TestLoudness(unittest.TestCase):
+    """The loudness step (2026-10-14): every clip levelled to the target
+    behind a true-peak limiter; `normalize` re-levels a rendered track
+    from raw/ without ElevenLabs."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.work = Path(self.tmp.name)
+        self.cfg = {"work_dir": str(self.work), "ledger_db": str(self.work / "ledger.db"),
+                    "manga": {"voice": {"default_voices": {"female": "F", "male": "M", "neutral": "N"}}}}
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def tone(self, name, amplitude, spikes=0.0, secs=1.5):
+        """A 440 Hz mp3 at the given amplitude (0.025 ≈ -32 dBFS peak), with
+        2 ms full-scale-ish spikes every half second when `spikes` is set —
+        a peaky clip the way speech is (loudness well under the peak)."""
+        path = self.work / name
+        expr = f"{amplitude}*sin(2*PI*440*t)"
+        if spikes:
+            expr += f"+(lt(mod(t,0.5),0.002)*{spikes})"
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi",
+                        "-i", f"aevalsrc='{expr}':s=44100:d={secs}",
+                        "-c:a", "libmp3lame", "-b:a", "64k", str(path)], check=True)
+        return path
+
+    def test_quiet_clip_is_gained_and_a_hot_clip_is_limited(self):
+        quiet = self.tone("quiet.mp3", 0.025)
+        hot = self.tone("hot.mp3", 0.1, spikes=0.9)
+        out = self.work / "out"
+        q = MV.normalize_clip(quiet, out / "quiet.mp3", -16.0, -1.0)
+        self.assertGreater(q["gain_db"], 10)
+        self.assertAlmostEqual(q["out_lufs"], -16.0, delta=1.5)
+        self.assertLessEqual(q["out_peak"], -0.5)
+        h = MV.normalize_clip(hot, out / "hot.mp3", -16.0, -1.0)
+        self.assertTrue(h["limited"])
+        self.assertLessEqual(h["out_peak"], -0.5)
+        self.assertGreater(h["out_lufs"], h["lufs"])  # louder, the spikes shaved, not clipped
+        # garbage in → copied as is, no record
+        (self.work / "junk.mp3").write_bytes(b"MP3:not audio")
+        self.assertIsNone(MV.normalize_clip(self.work / "junk.mp3", out / "junk.mp3", -16.0, -1.0))
+        self.assertEqual((out / "junk.mp3").read_bytes(), b"MP3:not audio")
+
+    def test_normalize_relevels_a_track_from_raw(self):
+        stage_volume(self.cfg)
+        MV.voice_prep(self.cfg, EP, log=lambda m: None)
+        MV.voice_apply(self.cfg, EP, log=lambda m: None)
+        MV.synthesize(self.cfg, EP, client=FakeClient(), log=lambda m: None)
+        vdir = MV.voice_dir(self.cfg, EP)
+        # the fake renders are not audio: shipped as is, raw/ beside clips/
+        done = read_json(vdir / "clips.json")
+        self.assertEqual(sorted(p.name for p in (vdir / "raw").iterdir()), sorted(done))
+        self.assertTrue(all(rec["norm"] is None for rec in done.values()))
+        built = read_json(vdir / "index.json")["built_at"]
+        # a track rendered before the step: raw/ missing, real audio in clips/
+        shutil.rmtree(vdir / "raw")
+        for name in done:
+            shutil.copyfile(self.tone("t.mp3", 0.025), vdir / "clips" / name)
+        import time
+        time.sleep(1.1)  # built_at has second resolution
+        out = MV.normalize(self.cfg, EP, log=lambda m: None)
+        self.assertEqual((out["to_level"], out["levelled"], out["untouched"]), (3, 3, 0))
+        self.assertAlmostEqual(out["out_lufs_mean"], -16.0, delta=1.5)
+        done = read_json(vdir / "clips.json")
+        self.assertTrue(all(rec["norm"]["target_lufs"] == -16.0 for rec in done.values()))
+        self.assertTrue((vdir / "raw" / "001_0.mp3").exists())
+        idx = read_json(vdir / "index.json")
+        self.assertNotEqual(idx["built_at"], built)  # the phone re-pulls on a new built_at
+        self.assertEqual(idx["loudness"], {"target_lufs": -16.0, "true_peak_db": -1.0})
+        # on target already → nothing to do; a new target → everything again
+        self.assertEqual(MV.normalize(self.cfg, EP, log=lambda m: None)["to_level"], 0)
+        self.cfg["manga"]["voice"]["loudness"] = {"target_lufs": -20.0, "true_peak_db": -1.0}
+        out = MV.normalize(self.cfg, EP, log=lambda m: None)
+        self.assertEqual(out["levelled"], 3)
+        self.assertAlmostEqual(out["out_lufs_mean"], -20.0, delta=1.5)
+        # loudness off → a render ships the raw bytes
+        self.cfg["manga"]["voice"]["loudness"] = None
+        with self.assertRaises(RuntimeError):
+            MV.normalize(self.cfg, EP, log=lambda m: None)
 
 
 if __name__ == "__main__":

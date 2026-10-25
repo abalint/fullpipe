@@ -34,7 +34,17 @@ Stages under <work_dir>/episodes/manga_<slug>_vNN/voice/:
     pages/<stem>.json agents — {blocks: {k: {speaker, say}}, cast: [...]}
     script.json       apply — the compiled script: clips [{page, stem, k,
                               sents, speaker, say}] + the merged cast
-    clips/<stem>_<k>.mp3  tts — one clip per bubble
+    raw/<stem>_<k>.mp3    tts — one clip per bubble, as ElevenLabs returned it
+    clips/<stem>_<k>.mp3  tts — the same clip at the track's loudness (what the
+                              phone plays): every bubble gained to
+                              manga.voice.loudness.target_lufs (default −16 LUFS)
+                              behind a true-peak limiter at true_peak_db (−1 dBTP).
+                              Raw renders sit anywhere between −10 and −40 LUFS
+                              with peaks already near full scale, so a plain gain
+                              can't level them — the limiter catches the peaks
+                              of the loud-but-quiet ones. `normalize` redoes
+                              clips/ from raw/ (new target, or a track rendered
+                              before 2026-10-14) without touching ElevenLabs
     clips.json        tts   — what was generated (signature per clip, so a
                               re-run only re-renders bubbles whose text,
                               voice or model changed)
@@ -44,7 +54,9 @@ Stages under <work_dir>/episodes/manga_<slug>_vNN/voice/:
                               age, dialect, note, voice_id}; voice_id null =
                               the most specific default voice (config.json →
                               manga.voice.default_voices: "female:old",
-                              "male:kansai", "female", "neutral", …)
+                              "male:kansai", "female", "neutral", …);
+                              speaker null = default_voices.narration (the
+                              narrator — every bubble of a sheet-read volume)
 
 The API key is ELEVENLABS_API_KEY (.env), the same one the ASR path uses.
 
@@ -53,6 +65,7 @@ CLI (also reachable as `python -m tools.manga voice …`):
     python -m tools.manga_voice status manga_nagatoro_v01
     python -m tools.manga_voice apply  manga_nagatoro_v01        # pages/*.json → script.json (+ cast merge)
     python -m tools.manga_voice tts    manga_nagatoro_v01 [--dry-run] [--pages 1-20] [--force] [--model eleven_v4]
+    python -m tools.manga_voice normalize manga_nagatoro_v01 [--force]   # re-level clips/ from raw/ (no credits)
     python -m tools.manga_voice cast   nagatoro [--set 長瀞=<voice_id>] [--unset 長瀞]
     python -m tools.manga_voice voices [--language ja] [--search Kyoko]  # the account's voices
     python -m tools.manga_voice usage                                    # characters left this period
@@ -86,13 +99,15 @@ DEFAULTS = {
     "context": True,                 # previous_text / next_text = the neighbouring bubbles
     "seed": None,
     "voice_settings": None,          # e.g. {"stability": 0.5}; None = the voice's own
-    "default_voices": {},            # {"female": id, "male": id, "neutral": id, "female:old": id, "male:kansai": id, …}
+    "loudness": {"target_lufs": -16.0, "true_peak_db": -1.0},  # every clip levelled here (None = ship the raw render)
+    "default_voices": {},            # {"narration": id, "female": id, "male": id, "neutral": id, "female:old": id, "male:kansai": id, …}
     "timeout": 120,
     "retries": 6,
 }
 # credits per character by model family (ElevenLabs pricing page, 2026-10)
 HALF_CREDIT = ("flash", "turbo")
 VOICE_DIR = "voice"
+RAW_DIR = "raw"      # voice/raw/ — the renders as returned; clips/ is what the phone plays
 
 
 def now_iso():
@@ -351,7 +366,12 @@ def default_voice_keys(entry):
     """The default_voices keys tried for an uncast speaker, most specific
     first: gender:age:dialect, gender:dialect, gender:age, dialect, gender,
     then neutral / narration / default. So `"female:old"` catches every
-    ばあさん, `"male:kansai"` every Kansai man, with no per-character work."""
+    ばあさん, `"male:kansai"` every Kansai man, with no per-character work.
+    No entry at all (speaker null — narration, or a volume read from the
+    bubble sheets, where nobody is attributed) → the narrator first:
+    narration / neutral / default."""
+    if entry is None:
+        return ["narration", "neutral", "default"]
     g, a, d = ((entry or {}).get(k) or None for k in ("gender", "age", "dialect"))
     keys = []
     if g and a and d:
@@ -479,6 +499,189 @@ def clip_name(stem, k):
     return f"{stem}_{k}.mp3"
 
 
+# --- loudness ---------------------------------------------------------------------------
+# Raw ElevenLabs clips land anywhere from -10 to -40 LUFS (vol 3 of Nagatoro:
+# p10 -24.7, median -19.5, p90 -15.3) and most already peak within a few dB of
+# full scale, so "turn it up" alone can't level them: half the bubbles would
+# clip before reaching the target. Each clip gets one measured gain to the
+# target loudness through a lookahead limiter at the true-peak ceiling — the
+# quiet, dynamic ones just get louder; the peaky ones get a few dB of their
+# transients shaved. Short clips are fine for ebur128 (anything over ~0.4 s
+# measures); silence / failure to decode = the raw clip is copied as is.
+
+_LUFS_RE = re.compile(r"^\s+I:\s+(-?[\d.]+) LUFS", re.M)
+_PEAK_RE = re.compile(r"^\s+Peak:\s+(-?[\d.]+) dBFS", re.M)
+
+
+def loudness_cfg(vcfg):
+    """{"target_lufs", "true_peak_db"} or None when the track ships raw."""
+    lc = vcfg.get("loudness")
+    if not lc:
+        return None
+    return {"target_lufs": float(lc.get("target_lufs", -16.0)),
+            "true_peak_db": float(lc.get("true_peak_db", -1.0))}
+
+
+def measure_loudness(path):
+    """{"lufs": integrated loudness, "peak": true peak dBFS} via ffmpeg's
+    ebur128, or None when ffmpeg is missing or can't read the file."""
+    exe = shutil.which("ffmpeg")
+    if not exe:
+        return None
+    try:
+        r = subprocess.run([exe, "-nostats", "-hide_banner", "-i", str(path),
+                            "-af", "ebur128=peak=true", "-f", "null", "-"],
+                           capture_output=True, text=True, timeout=60)
+    except (subprocess.SubprocessError, OSError):
+        return None
+    lufs, peak = _LUFS_RE.findall(r.stderr), _PEAK_RE.findall(r.stderr)
+    if r.returncode or not lufs or not peak:
+        return None
+    return {"lufs": float(lufs[-1]), "peak": float(peak[-1])}
+
+
+def _mp3_bitrate(output_format):
+    m = re.fullmatch(r"mp3_\d+_(\d+)", output_format or "")
+    return f"{m.group(1)}k" if m else "64k"
+
+
+def normalize_clip(src, dst, target_lufs, true_peak_db, bitrate="64k"):
+    """src → dst at the target loudness. Returns the record for clips.json
+    ({lufs, peak, gain_db, limited, out_lufs, out_peak, target_lufs,
+    true_peak_db}) or None when the clip was copied untouched (ffmpeg
+    missing, undecodable, or silence)."""
+    src, dst = Path(src), Path(dst)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    m = measure_loudness(src)
+    if not m or m["lufs"] < -60:  # ebur128 says -70 for silence / nothing measurable
+        shutil.copyfile(src, dst)
+        return None
+    gain = max(-36.0, min(36.0, target_lufs - m["lufs"]))
+    rec = {**m, "target_lufs": target_lufs, "true_peak_db": true_peak_db,
+           "gain_db": round(gain, 2), "limited": m["peak"] + gain > true_peak_db}
+    if abs(gain) < 0.25 and not rec["limited"]:
+        shutil.copyfile(src, dst)
+        rec.update({"gain_db": 0.0, "out_lufs": m["lufs"], "out_peak": m["peak"]})
+        return rec
+    af = (f"alimiter=level_in={10 ** (gain / 20):.5f}:limit={10 ** (true_peak_db / 20):.5f}"
+          ":attack=5:release=50:level=false:latency=true")
+    tmp = dst.with_name(dst.name + ".part.mp3")
+    try:
+        r = subprocess.run([shutil.which("ffmpeg"), "-y", "-nostats", "-hide_banner", "-loglevel", "error",
+                            "-i", str(src), "-af", af, "-c:a", "libmp3lame", "-b:a", bitrate, str(tmp)],
+                           capture_output=True, text=True, timeout=120)
+    except (subprocess.SubprocessError, OSError):
+        r = None
+    if r is None or r.returncode or not tmp.exists():
+        tmp.unlink(missing_ok=True)
+        shutil.copyfile(src, dst)
+        return None
+    tmp.replace(dst)
+    out = measure_loudness(dst) or {}
+    rec.update({"out_lufs": out.get("lufs"), "out_peak": out.get("peak")})
+    return rec
+
+
+def finish_clip(raw, clip, vcfg):
+    """raw/<file> → clips/<file>: levelled when the config asks for it, a
+    copy otherwise. Returns the loudness record (or None)."""
+    lc = loudness_cfg(vcfg)
+    if not lc:
+        Path(clip).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(raw, clip)
+        return None
+    return normalize_clip(raw, clip, lc["target_lufs"], lc["true_peak_db"],
+                          bitrate=_mp3_bitrate(vcfg.get("output_format")))
+
+
+def normalize(cfg, episode_id, force=False, log=print, workers=4):
+    """Re-level a rendered track from voice/raw/ — every clip whose record
+    lacks the current target (a track rendered before the step existed, a
+    changed target), or all of them with --force. A clip with no raw copy
+    (rendered before 2026-10-14) is moved into raw/ first: what sat in
+    clips/ was the raw render. No ElevenLabs traffic. Rebuilds index.json
+    (new built_at → the phone replaces its copy) and mirrors the track."""
+    vcfg = voice_cfg(cfg)
+    lc = loudness_cfg(vcfg)
+    if not lc:
+        raise RuntimeError("manga.voice.loudness is off in config.json — nothing to level to")
+    if not shutil.which("ffmpeg"):
+        raise RuntimeError("ffmpeg not found — the loudness step needs it")
+    vdir = voice_dir(cfg, episode_id)
+    done_p = vdir / "clips.json"
+    if not done_p.exists():
+        raise RuntimeError("no rendered track (run tts first)")
+    done = read_json(done_p)
+    todo, moved = [], 0
+    for file, rec in done.items():
+        clip, raw = vdir / "clips" / file, vdir / RAW_DIR / file
+        if not raw.exists():
+            if not clip.exists():
+                continue
+            raw.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(clip), str(raw))
+            moved += 1
+        n = rec.get("norm")
+        current = bool(n) and n.get("target_lufs") == lc["target_lufs"] \
+            and n.get("true_peak_db") == lc["true_peak_db"]
+        if force or not current or not clip.exists():
+            todo.append(file)
+    if moved:
+        log(f"{moved} clip(s) had no raw copy — kept as raw/")
+    lock = threading.Lock()
+    out = {"episode_id": episode_id, "to_level": len(todo), "levelled": 0, "untouched": 0,
+           "limited": 0, "target_lufs": lc["target_lufs"], "true_peak_db": lc["true_peak_db"]}
+    bitrate = _mp3_bitrate(vcfg.get("output_format"))
+
+    def one(file):
+        return file, normalize_clip(vdir / RAW_DIR / file, vdir / "clips" / file,
+                                    lc["target_lufs"], lc["true_peak_db"], bitrate=bitrate)
+
+    n_done = 0
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
+        for f in as_completed([ex.submit(one, file) for file in todo]):
+            file, rec = f.result()
+            with lock:
+                done[file]["norm"] = rec
+                done[file]["bytes"] = (vdir / "clips" / file).stat().st_size
+                if rec:
+                    out["levelled"] += 1
+                    out["limited"] += bool(rec.get("limited"))
+                else:
+                    out["untouched"] += 1
+                n_done += 1
+                if n_done % 100 == 0 or n_done == len(todo):
+                    write_json(done_p, done)
+                    log(f"  {n_done}/{len(todo)} clips")
+    write_json(done_p, done)
+    lufs = [r["norm"]["out_lufs"] for r in done.values() if r.get("norm") and r["norm"].get("out_lufs") is not None]
+    if lufs:
+        out["out_lufs_mean"] = round(sum(lufs) / len(lufs), 1)
+        out["out_lufs_min"], out["out_lufs_max"] = min(lufs), max(lufs)
+    idx = write_index(cfg, episode_id)
+    out["indexed"] = len(idx["clips"])
+    log(f"levelled {out['levelled']}/{len(todo)} clips to {lc['target_lufs']} LUFS "
+        f"({out['limited']} through the limiter, {out['untouched']} left as is)")
+    if out["levelled"]:
+        out.update(_archive_track(cfg, episode_id, log))
+    return out
+
+
+def _archive_track(cfg, episode_id, log):
+    """Mirror the volume onto the media server now (the clips cost money)."""
+    try:
+        from tools import library as lib
+        if lib.archive_dir(cfg):
+            script = read_json(voice_dir(cfg, episode_id) / "script.json")
+            a = MG.archive(cfg, script["slug"], vol_nos={int(episode_id.rsplit("_v", 1)[1])},
+                           log=lambda m: None)
+            log(f"archived: {a['copied']} file(s) mirrored to the media server")
+            return {"archived": a["copied"]}
+    except Exception as e:  # noqa: BLE001 — the nightly pass retries
+        log(f"(archive skipped: {str(e)[:120]})")
+    return {}
+
+
 def clip_sig(model, voice_id, say, output_format):
     return hashlib.sha1(f"{model}|{voice_id}|{say}|{output_format}".encode("utf-8")).hexdigest()[:12]
 
@@ -588,9 +791,13 @@ def synthesize(cfg, episode_id, client=None, dry_run=False, model=None, force=Fa
             previous_text=c.get("previous_text"), next_text=c.get("next_text"),
             output_format=vcfg["output_format"], seed=vcfg.get("seed"),
             voice_settings=vcfg.get("voice_settings"))
+        raw = vdir / RAW_DIR / c["file"]
+        raw.parent.mkdir(parents=True, exist_ok=True)
+        raw.write_bytes(audio)
         path = vdir / "clips" / c["file"]
-        path.write_bytes(audio)
-        return c, {"sig": c["sig"], "chars": c["chars"], "bytes": len(audio),
+        norm = finish_clip(raw, path, vcfg)
+        return c, {"sig": c["sig"], "chars": c["chars"], "bytes": path.stat().st_size,
+                   "raw_bytes": len(audio), "norm": norm,
                    "ms": clip_ms(path), "voice_id": c["voice_id"], "voice": c["voice"],
                    "speaker": c.get("speaker"), "model": model, "request_id": rid,
                    "at": now_iso()}
@@ -619,26 +826,18 @@ def synthesize(cfg, episode_id, client=None, dry_run=False, model=None, force=Fa
     if pages is None:
         for file in [f for f in done if f not in wanted]:
             done.pop(file)
-            try:
-                (vdir / "clips" / file).unlink()
-            except FileNotFoundError:
-                pass
+            (vdir / "clips" / file).unlink(missing_ok=True)
+            (vdir / RAW_DIR / file).unlink(missing_ok=True)
         write_json(done_p, done)
     idx = write_index(cfg, episode_id, model=model)
+    levelled = sum(1 for c in todo if c["file"] in done and done[c["file"]].get("norm"))
     summary.update({"rendered": rendered, "errors": errors, "indexed": len(idx["clips"]),
+                    "levelled": levelled, "loudness": loudness_cfg(vcfg),
                     "chars_sent": sum(done[c["file"]]["chars"] for c in todo if c["file"] in done)})
-    log(f"rendered {rendered}/{len(todo)} clips ({len(errors)} errors); "
+    log(f"rendered {rendered}/{len(todo)} clips ({len(errors)} errors, {levelled} levelled); "
         f"index: {len(idx['clips'])} clips")
     if rendered:  # the clips cost money: mirror them onto the media server now, not tonight
-        try:
-            from tools import library as lib
-            if lib.archive_dir(cfg):
-                a = MG.archive(cfg, pl["script"]["slug"], vol_nos={int(episode_id.rsplit("_v", 1)[1])},
-                               log=lambda m: None)
-                summary["archived"] = a["copied"]
-                log(f"archived: {a['copied']} file(s) mirrored to the media server")
-        except Exception as e:  # noqa: BLE001 — the nightly pass retries
-            log(f"(archive skipped: {str(e)[:120]})")
+        summary.update(_archive_track(cfg, episode_id, log))
     return summary
 
 
@@ -658,7 +857,7 @@ def write_index(cfg, episode_id, model=None):
                       "speaker": c.get("speaker"), "voice": rec.get("voice"),
                       "ms": rec.get("ms"), "bytes": rec.get("bytes")})
     idx = {"episode_id": episode_id, "built_at": now_iso(),
-           "model": model or voice_cfg(cfg)["model"],
+           "model": model or voice_cfg(cfg)["model"], "loudness": loudness_cfg(voice_cfg(cfg)),
            "clips": clips, "bytes": sum(c.get("bytes") or 0 for c in clips)}
     write_json(vdir / "index.json", idx)
     return idx
@@ -694,6 +893,9 @@ def main(argv=None):
     p.add_argument("--force", action="store_true", help="re-render everything; ignore the usage check")
     p.add_argument("--model")
     p.add_argument("--pages", help="1-based page range, e.g. 1-20")
+    p = sub.add_parser("normalize", help="re-level clips/ from raw/ at manga.voice.loudness (no ElevenLabs traffic)")
+    p.add_argument("episode_id")
+    p.add_argument("--force", action="store_true", help="every clip, not just the ones off the current target")
     p = sub.add_parser("cast", help="show / set the series cast's voices")
     p.add_argument("slug")
     p.add_argument("--set", action="append", default=[], metavar="NAME=VOICE_ID")
@@ -721,6 +923,8 @@ def main(argv=None):
     elif args.cmd == "tts":
         out = synthesize(cfg, args.episode_id, dry_run=args.dry_run, model=args.model,
                          force=args.force, pages=parse_pages(args.pages), log=log)
+    elif args.cmd == "normalize":
+        out = normalize(cfg, args.episode_id, force=args.force, log=log)
     elif args.cmd == "cast":
         doc = load_cast(cfg, args.slug)
         for s in args.set:
