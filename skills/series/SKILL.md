@@ -43,11 +43,18 @@ taps, marks watched, rates.
 
 Subtitle discovery when the folder has none — **always do this before
 letting Stage 1 ASR anything, no matter how old or obscure the show is**
-(user rule, 2026-10-04): the show-graph repo's kitsunekko mirror
-(`~/Documents/code/graphs/japaneseShowGraph/subs`, only a handful of shows),
-then the two full index pages, which are one curl each and grep in seconds:
+(user rule, 2026-10-04): **our own database first** — the show-graph
+repo's local subs store under `~/Documents/code/graphs/japaneseShowGraph/subs`
+(a full kitsunekko mirror of ~3,200 anime_tv shows plus drama, normalized
+per-episode text in `minSubs/`, and the `shows` table of
+`japaneseShowGraph.db`; bitmap-only entries are present as a folder with a
+`.kitsuignore` and no files) — then the two online index pages, one curl
+each, grep in seconds. Say what was checked **before** launching anything:
 
 ```sh
+S=~/Documents/code/graphs/japaneseShowGraph/subs
+find $S/kitsunekko-mirror-main $S/minSubs -maxdepth 3 -iname '*<title fragment>*'
+sqlite3 $S/japaneseShowGraph.db "select id,title,episode_count from shows where title like '%<title fragment>%'"
 curl -s -A Mozilla/5.0 https://jimaku.cc/ | grep -i -o -E 'href="/entry/[0-9]+"[^>]*>[^<]*<title fragment>[^<]*'
 curl -s -A Mozilla/5.0 'https://kitsunekko.net/dirlist.php?dir=subtitles%2Fjapanese%2F' | grep -i '<title fragment>'
 ```

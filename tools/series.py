@@ -363,14 +363,22 @@ def _pick_streams(probe):
         if (s.get("tags", {}).get("language") or "").lower() in ("jpn", "ja", "japanese"):
             a_idx = i
             break
-    sub = None
+    # A "Forced" track carries only the on-screen signs (Netflix rips list it
+    # first — Edgerunners S2E02 shipped 3 lines); SDH adds sound tags. Rank:
+    # plain dialogue track, then SDH, never forced.
+    ranked = []
     for s in streams:
         if s.get("codec_type") != "subtitle":
             continue
-        lang = (s.get("tags", {}).get("language") or "").lower()
-        if lang in ("jpn", "ja", "japanese") and s.get("codec_name") in ("subrip", "ass", "ssa", "webvtt", "mov_text"):
-            sub = s["index"]
-            break
+        tags = s.get("tags", {})
+        lang = (tags.get("language") or "").lower()
+        if lang not in ("jpn", "ja", "japanese") or s.get("codec_name") not in ("subrip", "ass", "ssa", "webvtt", "mov_text"):
+            continue
+        title = (tags.get("title") or "").lower()
+        if s.get("disposition", {}).get("forced") or "forced" in title or "sign" in title:
+            continue
+        ranked.append((1 if "sdh" in title else 0, s["index"]))
+    sub = min(ranked)[1] if ranked else None
     return video, a_idx, sub
 
 

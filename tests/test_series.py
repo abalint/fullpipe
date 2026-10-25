@@ -108,6 +108,20 @@ class GroupFilesTest(unittest.TestCase):
         self.assertEqual(a_idx, 1)  # second audio stream = jpn
         self.assertEqual(sub, 4)  # bitmap subs skipped
 
+    def test_pick_streams_skips_forced_and_prefers_plain_over_sdh(self):
+        def sub(i, title=None, forced=0):
+            tags = {"language": "jpn", **({"title": title} if title else {})}
+            return {"index": i, "codec_type": "subtitle", "codec_name": "subrip",
+                    "tags": tags, "disposition": {"forced": forced}}
+        probe = {"streams": [
+            {"index": 0, "codec_type": "video", "codec_name": "h264"},
+            {"index": 3, "codec_type": "subtitle", "codec_name": "subrip",
+             "tags": {"language": "eng"}},
+            sub(6, "Forced", forced=1), sub(7, "SDH"), sub(8)]}
+        self.assertEqual(S._pick_streams(probe)[2], 8)
+        probe["streams"] = probe["streams"][:3]  # forced only
+        self.assertIsNone(S._pick_streams(probe)[2])
+
     def test_transcode_cmd_scales_only_when_taller(self):
         v = {"height": 1080}
         cmd = S.transcode_cmd("/Volumes/library/Japanese/a b/x.mkv", "/w/x.mp4", v, 1, cap=480)
