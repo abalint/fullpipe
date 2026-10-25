@@ -764,8 +764,10 @@ class GpuTranscriber:
                 try:
                     part_words = self._transcribe_one(part, language_code)
                 except TranscriptionError as ex:
-                    if "returned no words" in str(ex):
-                        continue  # a silent stretch is not a failure
+                    # a silent stretch (credits, music) is not a failure — the
+                    # service says so as a 422 "no speech detected"
+                    if "returned no words" in str(ex) or "no speech detected" in str(ex):
+                        continue
                     raise
                 for w in part_words:
                     w = dict(w)
