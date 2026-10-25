@@ -136,8 +136,9 @@ Substitute FULLPIPE, EPISODE_ID, TITLE, EPISODE_DIR per job.
 >   videos; nothing under 8 min unless it's exceptional.
 > - **No questions.** Never call AskUserQuestion. Every pick is taken:
 >   `$PY -m server.jobqueue enqueue "https://www.youtube.com/watch?v=<id>"`
->   then `$PY -m tools.harvest set-status <id> queued`. Skip Step 6
->   (taste.md rewrite offer).
+>   then `$PY -m tools.harvest set-status <id> queued`. Run in
+>   **enqueue-only mode**: stop after Step 5 — skip Step 6 and Step 7
+>   (autopilot's curate lane owns staging).
 > - Every gate stands: synthetic-TTS voices are dropped, `gate-speech` runs
 >   on the shortlist and only `ja` picks are enqueued, `estimate-coverage`
 >   runs and is shown, `blocked_channel_ids` are vetoed, no videos already in

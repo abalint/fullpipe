@@ -140,6 +140,22 @@ clean-turn-taking variant; never drop the cluster.
   sampled 荻上チキ vein at ★4. Risk: 4-5 voice panels, 3-4 h full shows — take
   the 45-min 特集 cuts.
 
+- **芸人の論考ラジオ（東京ポッド許可局）** — three comedian-essayists build one
+  "〜論" per week (進化論, 人柄論, 意見が違う論): a thesis argued for an hour, not
+  free talk. Official channel posts only announcements; full shows are listener
+  re-uploads (うたラジ, JP FMRadio), CM-cut. `東京ポッド許可局 論` — hybrid.
+  Risk: trio crosstalk at the laughs; re-upload audio varies. First offered 2026-10-14.
+- **本を読む朝ラジオ（武田鉄矢 今朝の三枚おろし）** — a host reads one nonfiction
+  book across a week of 10-min segments and riffs on it, with an announcer
+  feeding him lines (失敗の本質, 旧約聖書, 確証バイアス). Posted as week-long
+  compilations by fans. `今朝の三枚おろし` · `武田鉄矢 三枚おろし 歴史` — edu.
+  Risk: archival 2010s rips (audio cap); the show ended 2024. First offered 2026-10-14.
+- **思考系鼎談ポッドキャスト（超相対性理論）** — three thinkers (深井龍之介 of
+  COTEN, 渡邉康太郎 of Takram, 荒木博行) chase one abstract question with no host
+  and no script; the award-winning "ideas" podcast. Spotify-native, so YouTube
+  carries only 公開収録 and homages. `超相対性理論` · `思考 ポッドキャスト 鼎談` —
+  edu. Risk: unhosted three-voice abstraction at difficulty 4–5. First offered 2026-10-14.
+
 ## The してみた economy (challenge & experiment)
 
 - **検証してみた** — "we actually tested it" — urban claims, products, physics.
@@ -501,3 +517,102 @@ the record rates highest; none of it sits near a rated vein.
   **古着屋巡り・ファッション** — both measured near 26 tokens/min on their
   highest-view uploads (BGM-over-footage), so gate on density before spending a
   pick. Dismissed 2026-09-21 on that mechanism, not on taste.
+
+---
+
+## Audio-native II (first mapped 2026-10-18, "looking for audio content" pass)
+
+By 2026-10-18 every audio-native cluster in *Radio & podcast* had been sampled
+or offered, so this section maps a second audio region: **formats that are
+audio-first by mechanics** (a sermon, a record show, a reading, a tabletop
+session), not just a conversation with the camera off.
+
+- **法話・説法（お坊さんの一問一答）** — a monk answering one listener's letter
+  for 25-30 min, or giving a dharma talk to a hall: 大愚和尚の一問一答 (福厳寺,
+  300k+/upload), H1法話グランプリ (a contest stage), 築地本願寺 ひとくち法話.
+  `大愚和尚 一問一答` · `法話 お坊さん 説法` · `H1法話グランプリ` — edu/hybrid.
+  One calm, projected, unhurried voice; everyday problems in plain register
+  (measured ~50 tokens/min, est 76-81 %). Risk: the 7-min 説法チャンネル tier is
+  clickbait; and the 浄土真宗 sermon archive is 60-100 min at <1k views.
+  First offered 2026-10-18.
+- **ミュージシャンDJ番組（山下達郎 / 坂本龍一 / 佐野元春）** — a working musician
+  hosting a weekly record show: 山下達郎 Sunday Song Book (TOKYO FM, running since
+  1992), 坂本龍一 サウンドストリート (NHK-FM 1981-86) and 音楽の美術館, 佐野元春
+  元春レイディオショー. `山下達郎 サンデーソングブック` · `坂本龍一 サウンドストリート
+  ゲスト` · `元春レイディオショー` — hybrid. Risk (measured): the songs take half
+  the hour — 20-32 tokens/min on a regular Sunday Song Book, 38-42 on the
+  guest/talk specials (新春放談, 坂本×細野); the uploads are fan air-checks, some
+  with captions off (two of five gated `silent` with speech plainly present);
+  pre-1990 air-checks carry audio-fidelity risk. Take the talk specials.
+  First offered 2026-10-18.
+- **占いラジオ（ゲッターズ飯田 ラジオで占いまSHOW）** — ニッポン放送's weekly show: an
+  announcer reads listeners' worries and a celebrity fortune-teller reads them
+  back with 五星三心 types and jokes. `ゲッターズ飯田 ラジオで占いまSHOW` ·
+  `占い ラジオ 鑑定` — fun. Two clean voices, ~60 tokens/min, est 84 %. Re-skin
+  note: letter-and-answer like テレフォン人生相談 (★3), but the experience is
+  entertainment-astrology, not counselling — counted, flagged. Reposts only.
+  First offered 2026-10-18.
+- **TRPG実卓リプレイ（肉声・役者）** — a real-voice tabletop session (クトゥルフ
+  神話TRPG): a GM narrating, players role-playing in character, posted as a
+  series of 15-20 min parts (しぐれなお 役者が全力で演じる, チキン＆ポテトMovies,
+  ウチの卓がすみません！). `TRPG リプレイ 実卓 肉声` · `クトゥルフ神話TRPG 役者` —
+  fun. Risk: the cluster's bulk is ゆっくり/VOICEROID-voiced replay (blocklist
+  catches labeled ones; ear-check the rest), and 3-5 players = crosstalk at the
+  dice rolls — take the 役者/声優 tables. Improvised, not scripted, so distinct
+  from audio drama. First offered 2026-10-18.
+- **ニュース読み（ラジオニュース）** — mapped, not offered. Official TBS Podcast
+  posts the day's radio news as a 2-min cut; NHK bulletins exist only as 2014-17
+  fan reruns. Est 41-46 % (names, policy nouns) on 130-1,300 tokens. Nothing to
+  listen to at length. `TBSラジオニュース` · `NHKラジオニュース`.
+- near-box, for the exploit lane: **漫談（綾小路きみまろ）** — a solo stand-up
+  monologue to a hall of 中高年 (3-7 M views, est 81 %, slow and enunciated) is
+  the performed-comedian shape already rated via 漫才/コント/落語. Fine pick on
+  merit, does not count. `綾小路きみまろ 漫談`. First offered 2026-10-18.
+- mapped, dropped: **ラジオNIKKEI 市況** (archival 2015-17 at <500 views; the
+  live guest shows mix English), **Voicy ソロ音声** (YouTube carries only
+  interviews about Voicy, not the talks), **TBS「ニュースのブタイウラ」** (journalists
+  on reporting — the 新聞社ニュースポッドキャスト shape, near-box).
+
+## Chill conversation (first mapped 2026-10-19, "chill podcast style conversations" pass)
+
+Angles on the hosted-talk vein that change the *setting*, not the shape. All
+three keep a steering voice or a craft topic, because unsteered 雑談 is the
+record's floor.
+
+- **スナック設定ラジオ（リリー・フランキー スナック ラジオ）** — ニッポン放送's weekly
+  show framed as a late-night snack bar: リリー as the regular, a rotating ママ
+  guest (中野信子 etc.), slow and smoky. `リリー・フランキー スナック ラジオ` ·
+  `スナック ママ 対談` — fun. Reposts only (kuni3984). est 82 %. Risk: the
+  YouTube スナック tier is mostly short clickbait or bar-crawl video.
+  First offered 2026-10-19.
+- **焚き火対談（テレ朝「動画、はじめてみました」#焚き火で語る）** — two comedians
+  at a campfire talking craft (漫談 vs エピソードトーク, M-1 vs THE SECOND), 35-45
+  min, 50k-750k views. `#焚き火で語る` · `焚き火 対談 芸人` — fun/hybrid. est
+  78-83 %. Risk: unhosted duo, the shape that rated ★2 as riffing; here a set
+  craft topic does the steering. First offered 2026-10-19.
+- **建築家・デザイナー対談** — architects in conversation (IMAGINE大学 藤本壮介×
+  山田紗子, MBS radio 安藤忠雄, 武田砂鉄 × 吉田研介) and the design-studio podcast
+  (Takram Cast, low views). `建築家 対談` · `Takram Cast` — edu/hybrid. est
+  71-78 %. Risk: abstract register; Takram Cast is a 1k-view tier.
+  First offered 2026-10-19.
+
+## Broadcast & commerce (first mapped 2026-10-25, open pass — the earlier atlas was fully offered)
+
+- **ビジネスピッチ審査（令和の虎）** — one applicant pitches a business to a panel of
+  investors ("tigers") who grill, haggle and fund or reject; FULL episodes 30–50 min, huge
+  native audience. `令和の虎 志願者` · `令和の虎 プレゼン 審査` — fun/edu. Crosstalk when the
+  panel argues; the pitch and Q&A are clean. First offered 2026-10-25 (yt_UDIV67cnk88, est 73 %).
+- **通販番組・実演販売（ジャパネットたかた / 実演販売士）** — TV-shopping broadcasts and live
+  product demos: one performer selling hard in a famous voice, crystal-clear, repetitive by
+  design. `ジャパネットたかた テレビショッピング` · `実演販売士 実演` — fun. Full archival
+  programs are fan uploads (may vanish); official clips run short. First offered 2026-10-25
+  (yt_ELbCCtOBMCI, 2002 broadcast, est 67 %).
+- **テレビドラマ 第1話（公式無料配信）** — scripted live-action TV drama, episode 1 posted
+  free by ABEMA / TV networks / 松竹. `ドラマ 第1話 公式 無料` — fun. AVOID the `ショートドラマ
+  一気見` / `全話フル` results: overwhelmingly dubbed Chinese short dramas and AI-generated
+  ones. First offered 2026-10-25 (yt_8fLbPBcsJLg, ABEMA スキャンダルイブ, est 74 %).
+- **昭和の記録映像・ニュース映画** — narrated archival films and newsreels (東京都's official
+  昭和の東京シリーズ, 中日映画社, compilations): period narrator register, old audio, hard.
+  `昭和の東京シリーズ` · `ニュース映画 昭和` — edu. near-box-ish to the urban-history walks
+  (same subject, different experience: a 1950s narrator, no presenter). First offered
+  2026-10-25 (yt_W-5oKMg3tCs, est 59 %).

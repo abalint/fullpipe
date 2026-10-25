@@ -1,6 +1,6 @@
 ---
 name: recommend
-description: Curiosity engine for the fullPipe Immersion Workstation — "what should I watch next?" Harvests candidate Japanese videos from YouTube's unauthenticated graph (related-video rails around what you loved, JP-native search, fresh uploads from your channels), then YOU (this session — no cloud LLM) judge, rank, and diversify them in two lanes — an exploit lane ranked against the taste on record, and a taste-blind explore lane drawn from ATLAS.md's unsampled clusters under a hard quota — and hand the picks to the worker / `/immerse`. Bare `/recommend` does an open curiosity pass (breadth across genres, novelty-weighted); `/recommend about <topic>` narrows the region but keeps the variety. Reads the ledger's rated history + channels as seeds; writes nothing to the ledger (the crawl pool is a separate discovery store). Use for "/recommend", "/recommend about X", "recommend me videos", "what should I watch", "find me something new to immerse in", "discover Japanese channels".
+description: Curiosity engine for the fullPipe Immersion Workstation — "what should I watch next?" Harvests candidate Japanese videos from YouTube's unauthenticated graph (related-video rails around what you loved, JP-native search, fresh uploads from your channels), then YOU (this session — no cloud LLM) judge, rank, and diversify them in two lanes — an exploit lane ranked against the taste on record, and a taste-blind explore lane drawn from ATLAS.md's unsampled clusters under a hard quota — then runs the whole pipeline unattended — enqueue, Stage 1, and parallel Opus subagents curating each pick to `staged` — with no questions asked. Bare `/recommend` does an open curiosity pass (breadth across genres, novelty-weighted); `/recommend about <topic>` narrows the region but keeps the variety. Reads the ledger's rated history + channels as seeds; writes nothing to the ledger (the crawl pool is a separate discovery store). Use for "/recommend", "/recommend about X", "recommend me videos", "what should I watch", "find me something new to immerse in", "discover Japanese channels".
 ---
 
 # /recommend — curiosity orchestrator
@@ -18,8 +18,17 @@ of `gpt-4o-mini` (the user prefers CLI/agent over cloud API).
   seeds ─► run(related+search+rss) ──────► [YOU: expand · judge · rank · diversify] ─► picks
             │                                        │                                    │
       YouTube graph, unauth              taste.md + rated history                enqueue → worker
-      → discover.db (NOT the ledger)     → JP queries, scoring, clustering       or /immerse <url>
+      → discover.db (NOT the ledger)     → JP queries, scoring, clustering             │
+                                                                                          ▼
+                     Stage 1 (server worker) ─► prepared ─► N × Opus subagent (/immerse Stage 2) ─► staged
 ```
+
+**One command, end to end, no input.** The user types `/recommend` (optionally
+`about <topic>`, `comprehensible`, a count) and walks away: you pick, enqueue,
+wait for Stage 1, curate every pick with parallel Opus subagents, and finish
+with a report. Never call AskUserQuestion; every place this skill used to offer
+a choice now has a default (below). The only hard stops are the Step 0.1 cold
+start (no config / no ratings) and a broken toolchain you can't route around.
 
 Why independent, not "harvest YouTube's algorithm": the personalized home feed
 is unreachable unauthenticated (returns empty), and it optimizes watch-time /
@@ -168,6 +177,14 @@ rated veins. Atlas entries flagged `near-box` resemble an existing vein in
 experience shape — they're fine picks but do **not** satisfy a novelty ask or
 the quota. The sampled/unsampled call comes from the ledger + log at runtime,
 never from memory of past passes.
+
+**When the atlas runs dry, map new clusters yourself.** If fewer than 3
+unsampled, un-offered clusters fit the pass, invent new ones on the spot —
+native Japanese YouTube formats the atlas doesn't list yet (e.g. 2026-10-25:
+ビジネスピッチ審査, 通販番組, テレビドラマ 第1話, 昭和の記録映像), chosen far from
+the rated veins and passing the re-skin test in experience shape. Write their
+search strings into the explore pool and add them to `ATLAS.md` in Step 5. Don't
+stop to ask, and don't backfill the quota from the exploit lane.
 
 ## Step 2 — expand taste into JP-native queries (your highest-leverage job)
 
@@ -395,62 +412,126 @@ How to use it:
   keep novelty the ranker — a fascinating 55% wildcard belongs in an open pass;
   it just belongs *labelled*.
 
-## Step 5 — present + hand off
+## Step 5 — take the picks (no questions)
 
-Present the ranked picks as one compact block — per pick: **title · channel**,
-the **lane** (an explore pick names its atlas cluster: "explore: 魚捌き — first
-sample of this cluster"; an exploit pick names its evidence: "same walking-vlog
-neighborhood as ★5 ガマランド"), the **est. coverage** (`~NN%` from Step 4.6, or
-"coverage unknown" for a `no_caption`), a one-line *why*, and the URL
-`https://www.youtube.com/watch?v=<video_id>`. Show the % even in an open pass;
-in comprehensibility mode it's the sort key so lead with it. Frame explore picks
-honestly as **experiments**: there is no taste evidence for them by design, and
-their post-watch survey ratings are the highest-value signal the system can
-collect — they're what grow the map.
-
-Then offer the handoff (AskUserQuestion when interactive — which to take):
-
-- **Enqueue for the worker** so Stage 1 preps them overnight and they're waiting
-  in `/immerse`: `$PY -m server.jobqueue enqueue "https://www.youtube.com/watch?v=<id>"`
-  (idempotent; the worker drains the queue — MOBILE.md).
-- **Or curate one now**: `/immerse https://www.youtube.com/watch?v=<id>` end to end.
-
-Record the outcome on each candidate so nothing re-surfaces next run:
+Every pick is taken — the user typed `/recommend` to get watchable episodes, not
+a menu. **Never call AskUserQuestion anywhere in this skill.** For each pick:
 
 ```sh
-$PY -m tools.harvest set-status <video_id> queued        # taken → enqueued/curated
-$PY -m tools.harvest set-status <video_id> dismissed     # user rejected it
-$PY -m tools.harvest set-status <video_id> presented     # pitched, no decision
+$PY -m server.jobqueue enqueue "https://www.youtube.com/watch?v=<id>"   # idempotent
+$PY -m tools.harvest set-status <id> queued
 ```
 
-(Leave un-mentioned candidates `new` — they stay in the pool for next time.
-`presented` keeps a pitched-but-undecided pick out of the next pass's pool —
-re-pitching the same video is convergence too — while staying retrievable via
-`list --status presented`.)
+(Leave everything else `new` — it stays in the pool for next time. `dismissed`
+/ `presented` exist for passes where the user rejects or defers a pick later.)
 
 Then **append the pass to the log** so Step 1.5 can rotate next time — one JSON
 line to `<work_dir>/recommend-log.jsonl`:
 
 ```json
-{"date": "YYYY-MM-DD", "ask": "<the user's words>", "mode": "open|topic|comprehensible",
+{"date": "YYYY-MM-DD", "ask": "<the user's words, or \"bare /recommend\">", "mode": "open|topic|comprehensible",
  "explore_quota": "N of M", "explore_clusters": ["魚捌き", "クイズ対決", ...],
- "exploit_veins": ["singular-person doc", ...],
- "picks": [{"id": "...", "lane": "explore|exploit", "cluster": "...", "outcome": "queued|dismissed|presented"}]}
+ "exploit_veins": ["singular-person doc", ...], "atlas_added": ["<new clusters, if any>"],
+ "picks": [{"id": "...", "lane": "explore|exploit", "cluster": "...", "est": 0.73, "outcome": "queued"}]}
 ```
 
-## Step 6 — refresh taste.md (offer, when useful)
+**Grow the atlas in the same step.** If you mapped new clusters this pass (Step
+1.5 found too few unsampled ones), append them to `ATLAS.md` under a dated
+heading: name, one-line description of the experience, the search strings that
+worked (and any that returned junk — e.g. `ショートドラマ 一気見` is dubbed
+Chinese/AI drama), mood tag, and "First offered <date> (<episode_id>, est NN %)".
 
-If `taste.md` was missing or the rated set has grown a lot since it was written,
-offer to (re)write it from the rated history — the legible digest ("you reliably
-rate high: …; you bail on: …; ambiguous: …"). Three jobs: it feeds your next
-ranking pass, it's **editable** so the user corrects you, and it answers "I don't
-know what I'm looking for" by reflecting taste back. Keep it short and honest to
-the data; don't invent preferences the ratings don't show. Any rewrite must keep
-the **"What this file cannot see"** section (the recommendation-loop caveat):
+Print the picks block for the user (it's informational now, not a question) —
+per pick: **title · channel**, the **lane** (explore names its atlas cluster;
+exploit names its evidence), **est. coverage** `~NN%`, a one-line *why*, and the
+URL. Frame explore picks as **experiments** whose ratings grow the map.
+
+**Enqueue-only mode.** When this skill runs as a subagent (e.g. /autopilot's
+recommend lane) or the ask says "just enqueue" / "don't curate", stop here and
+report — the caller owns curation. Otherwise continue to Step 7.
+
+## Step 6 — taste.md (no offer; just do the cheap part)
+
+Don't stop to offer a taste.md rewrite. If `taste.md` is missing or its "as of"
+count is far behind `harvest seeds` (≥ ~60 new ratings), say so in one line of
+the final report so the user can ask for a refresh; never rewrite it unasked.
+Any rewrite (when asked) must keep the **"What this file cannot see"** section:
 taste.md describes the interior of the loop that produced it, its jurisdiction
 is the exploit lane only, and it must never be cited against an explore pick.
-Also offer to fold newly-rated explore clusters into `ATLAS.md` markers and the
-digest — that's how the map grows.
+
+## Step 7 — stage + curate (parallel Opus subagents, unattended)
+
+The pass ends with the picks **staged on the phone**, not merely queued. This is
+`/immerse` Stage 2 for each pick, delegated one episode per Opus subagent.
+
+**7.1 Stage 1 executor.** If the sync server is up (`pgrep -fl server.app`), its
+worker thread is already draining the queue — do nothing. If it is down, start
+`$PY -m server.worker` with Bash `run_in_background` (it drains the queue
+serially and exits). Stage 1 runs ~5–20 min per job; GPU ASR is the slow case.
+
+**7.2 Briefing.** Copy `CURATE_BRIEFING.md` (this skill's directory) to
+`<scratchpad>/BRIEFING.md`, replacing every `<SCRATCH>` with the scratchpad's
+absolute path. It is the full curate procedure (gates inline, card bar,
+verify_picks, presenter merge, render, staged) plus every known gate hazard.
+
+**7.3 Watch → claim → spawn, per episode.** Arm a Monitor (max timeout, re-arm on
+expiry) that polls `$PY -m server.jobqueue list` every 30 s and emits one line
+when any of this pass's ids (`yt_<video_id>`) reaches `prepared` or a failure
+state; exit when all are terminal. On each `prepared` event:
+
+```sh
+$PY -m server.jobqueue set-state yt_<id> curating     # claim it first
+```
+
+then launch one Agent — `subagent_type: "general-purpose"`, `model: "opus"`,
+`run_in_background: true` — with this prompt:
+
+> You are curating ONE episode for the fullPipe Immersion Workstation,
+> unattended. Episode id: `<EPISODE_ID>` — title «<TITLE>» (<CHANNEL>,
+> <format/length>). The job is already in state `curating`.
+> Read your full instructions first, in this order, and follow them exactly
+> (the briefing overrides the skill where they differ):
+> 1. `<SCRATCH>/BRIEFING.md`  2. `<FULLPIPE>/CLAUDE.md`
+> 3. `<FULLPIPE>/skills/immerse/SKILL.md` (Steps 2.5, 2.6, 3, 4, 6)
+> <EPISODE NOTES — 1–3 lines you write from what you know of the pick: e.g.
+> "this channel has a presenter profile — merge, don't overwrite"; "panel
+> crosstalk: card only clean single-speaker lines"; "radio drama: mark every
+> speaker change"; "archival film, period register, old audio";
+> "speaker-label junk expected (GOLDNRUSH)"; "may contain English stretches —
+> never card them">
+> Never call AskUserQuestion. Do gate work inline (no helper subagents). Work
+> only in `<SCRATCH>/<EPISODE_ID>/` for temp files. If a step fails twice, stop
+> and report — do NOT mark staged. End with the compact report the briefing
+> specifies.
+
+Launch each agent as soon as its episode is prepared — don't wait for the
+whole batch; agents run concurrently while Stage 1 keeps going. A job that
+fails in Stage 1 is that source's problem: `set-status <id> dismissed`, note it
+in the report, don't replace it mid-batch.
+
+**7.4 Review each report as it lands** (one or two lines to the user per
+episode: coverage, card count, anything notable). Act on red flags yourself:
+- **Registry audit.** Names flagged into the cross-episode `non_vocab` registry
+  hide that key from every future episode. After each report, check the keys
+  it added: `sqlite3 <work_dir>/ledger.db "select key,kind from non_vocab where
+  origin='<EPISODE_ID>'"`. Any ordinary word (a JMdict vocabulary item used as a
+  name, or a component split off a name — 鶴 from 鶴橋, 真言 from 真言宗) →
+  `$PY -m ledger.ledgerctl non-vocab-remove <KEY>`.
+- A pick the agent kept although the GPU re-listen heard a **different sound**
+  (not just a different spelling of the same reading) → tell the user it's the
+  first one to prune on the phone.
+- Pool density well above ~1 card / 5 min → name it as a phone-prune candidate.
+
+**7.5 Close.** When every agent has reported:
+1. Confirm all jobs are `staged` (`jobqueue list`) and every picks.json entry
+   has english, notes, context and sentence_furigana (a quick Python check).
+2. Final report to the user: a table (episode · lane · coverage · cards), then
+   only what changes how they watch — the hardest episode (read its prep doc
+   first), missing-dialogue / unfixable-ASR warnings, the shakiest cards, a
+   reminder that explore ratings are the high-value signal, and anything left
+   uncommitted. No questions at the end.
+3. If the batch taught a new gate hazard, add it to `CURATE_BRIEFING.md` so the
+   next pass inherits it.
 
 ## Notes
 
@@ -483,9 +564,11 @@ digest — that's how the map grows.
 | `harvest run` → `0 new` on every edge | pool exhausted / all already seen or in ledger | widen the JP queries (new clusters), or re-run `--related` (additive); or rank what's already in `list` |
 | `related` returns nothing for a seed | InnerTube `/next` shape changed or bot-checked | fine — search + rss still carry the run; if persistent, bump `INNERTUBE_CLIENT_VERSION` in `tools/harvest.py` |
 | `search` empty for a query | yt-dlp bot-check or too-narrow query | broaden the query; if all queries fail, the IP may be flagged — try later |
-| `gate-speech` → most picks `silent`/`unknown` | yt-dlp bot-check / IP flagged (extraction failing), not genuinely silent | verify one by hand; if extraction is broken, gate can't vouch — say so and lean on judgment, don't drop everything |
+| `gate-speech` → most picks `silent`/`unknown` | yt-dlp bot-check ("Sign in to confirm you're not a bot") — probes pass config `youtube.cookie_browser` (Firefox's live jar) since 2026-10-25, so this now means the jar is stale/logged out or extraction broke | run one by hand: `.venv/bin/yt-dlp --cookies-from-browser firefox --list-subs <url>`; if it works, re-run the gate with `--recheck`; if not, say so, lean on judgment, don't drop everything |
 | `estimate-coverage` → all `no_caption` | yt-dlp bot-check / IP flagged (caption fetch failing), not genuinely caption-less | same as above — the estimate can't vouch; fall back to judgment and say the number's missing, don't drop everything |
 | `estimate-coverage` `pct` reads implausibly low | raw-ASR bias (names/ASR-garble counted unknown) on a name-dense or noisy-audio video | expected floor behavior — the real coverage.json lands higher; note it, don't treat the estimate as the verdict |
+| a pick fails Stage 1 (`failed` in the queue) | source gone / region-locked / download error | `set-status <id> dismissed`, report it, carry on with the rest of the batch — don't re-pick mid-batch |
+| a curate subagent reports a failure / didn't stage | gate tool error, ledger lock, GPU down | read its report; retry that one episode with a fresh agent once; if it fails again, leave it `curating` and name it in the final report |
 | a pick fails in `/immerse` later | source gone / region-locked / needs cookies | that's `/immerse`'s failure path, not this one — `set-status <id> dismissed` and move on |
 | the picks look like the last pass despite a novelty ask | taste leaked into the explore lane — taste-scored prefilter, taste-worded explore queries, or re-skins counted toward the quota | re-run Steps 1.5–4 explore-only: unsampled atlas clusters, verbatim atlas queries, taste-blind triage, re-skin test; check `recommend-log.jsonl` for cluster repeats |
 | explore picks keep rating ★1–2 on *mechanism* notes (silent, TTS, crosstalk) | the global gates are leaking, not taste failing | fix the gate (blocklist term, harder speech-gate), don't shrink the quota |
