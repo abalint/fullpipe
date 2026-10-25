@@ -38,6 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import requests  # noqa: E402  (already a project dependency)
 
 from engine.paths import ytdlp_path, ytdlp_extra_args, _NOWWIN  # noqa: E402
+from engine.downloader import default_cookie_browser  # noqa: E402
 from lib_config import load_config  # noqa: E402
 
 # InnerTube WEB client. clientVersion drifts; bump it if /next starts returning
@@ -398,6 +399,13 @@ def store_candidates(conn, cands, exclude_ids, blocklist=None):
     return new_rows, n_filtered
 
 
+def _cookie_args():
+    """`--cookies-from-browser` from config youtube.cookie_browser, so probes get
+    past the "Sign in to confirm you're not a bot" wall the same way downloads do."""
+    browser = default_cookie_browser()
+    return ["--cookies-from-browser", browser] if browser else []
+
+
 def probe_speech(video_id, timeout=90):
     """Ask yt-dlp what the video's spoken language is — the deterministic speech
     gate under /recommend. A pick is only useful for immersion if it contains
@@ -422,7 +430,7 @@ def probe_speech(video_id, timeout=90):
     url = f"https://www.youtube.com/watch?v={video_id}"
     # `-t sleep` throttles to stay under YouTube's rate limiter — gate_speech
     # calls this once per candidate, so the per-request sleep matters at volume.
-    cmd = [ytdlp_path(), *ytdlp_extra_args(), "-t", "sleep", "-j", "--skip-download",
+    cmd = [ytdlp_path(), *ytdlp_extra_args(), *_cookie_args(), "-t", "sleep", "-j", "--skip-download",
            "--no-warnings", url]
     try:
         r = subprocess.run(cmd, capture_output=True, text=True,
@@ -508,7 +516,7 @@ def caption_text(video_id, timeout=120):
     url = f"https://www.youtube.com/watch?v={video_id}"
     with tempfile.TemporaryDirectory() as td:
         out = str(Path(td) / "cap.%(ext)s")
-        cmd = [ytdlp_path(), *ytdlp_extra_args(), "-t", "sleep",
+        cmd = [ytdlp_path(), *ytdlp_extra_args(), *_cookie_args(), "-t", "sleep",
                "--skip-download", "--write-auto-subs", "--sub-langs", "ja-orig",
                "--sub-format", "vtt", "--no-warnings", "-o", out, url]
         try:

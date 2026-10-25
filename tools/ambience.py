@@ -47,6 +47,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from engine.downloader import default_cookie_browser  # noqa: E402
 from engine.paths import (  # noqa: E402
     _NOWWIN, ffmpeg_path, ffprobe_path, ytdlp_extra_args, ytdlp_path)
 from lib_config import load_config  # noqa: E402
@@ -203,12 +204,21 @@ def search(query, n=10, min_minutes=None):
     return out
 
 
+def _cookie_args():
+    """`--cookies-from-browser <browser>` when config.json names one
+    (youtube.cookie_browser) — YouTube 403s anonymous audio pulls behind
+    its bot wall; the live browser jar is what gets through."""
+    browser = default_cookie_browser()
+    return ["--cookies-from-browser", browser] if browser else []
+
+
 def expand_source(source):
     """One video → [id]; a playlist/channel URL → its video ids."""
     vid = video_id_of(source)
     if vid:
         return [vid]
-    cmd = [ytdlp_path(), *ytdlp_extra_args(), "--flat-playlist", "--dump-json", source]
+    cmd = [ytdlp_path(), *ytdlp_extra_args(), *_cookie_args(),
+           "--flat-playlist", "--dump-json", source]
     r = subprocess.run(cmd, capture_output=True, text=True, **_NOWWIN)
     if r.returncode != 0:
         raise RuntimeError(f"could not expand {source}: {r.stderr.strip()[-400:]}")
@@ -234,7 +244,7 @@ def fetch_audio(video_id, tmp, section=None, log=print):
     about realtime, so for anything over a minute the full download is
     faster (see add_sound). Returns (path, info), info = video metadata."""
     url = f"https://www.youtube.com/watch?v={video_id}"
-    cmd = [ytdlp_path(), *ytdlp_extra_args(),
+    cmd = [ytdlp_path(), *ytdlp_extra_args(), *_cookie_args(),
            "-f", "bestaudio/best", "--no-playlist", "--no-overwrites",
            "--write-info-json", "--no-progress",
            "-o", str(tmp / "%(id)s.%(ext)s")]

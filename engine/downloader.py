@@ -3,12 +3,30 @@
 import json
 import re
 import subprocess
+from functools import lru_cache
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from .paths import ytdlp_path, ytdlp_extra_args, _NOWWIN
 from .local_file import is_local_file
 from .transcriber import TranscriptionError, transcribe_audio_to_srt, words_sidecar_path
+
+
+@lru_cache(maxsize=1)
+def default_cookie_browser():
+    """config.json `youtube.cookie_browser` (e.g. "firefox"), or None.
+
+    YouTube intermittently puts the home IP behind a "Sign in to confirm
+    you're not a bot" wall; reading the browser's *live* cookie jar on every
+    call (not an exported cookies.txt, which the browser's session rotation
+    silently stales) is the only thing that gets through it. Every yt-dlp
+    call here falls back to this when no cookie_browser is passed."""
+    try:
+        from lib_config import load_config
+        cfg = load_config(required=False) or {}
+    except Exception:
+        return None
+    return (cfg.get("youtube") or {}).get("cookie_browser") or None
 
 
 def _resolve_transcription_engine(sub_lang: str, engine_pref: str = "auto",
@@ -131,6 +149,7 @@ def fetch_full_metadata(url, cookie_browser=None, logger=None, process_tracker=N
     Raises:
         RuntimeError: If metadata extraction fails
     """
+    cookie_browser = cookie_browser or default_cookie_browser()
     # Use JSON output to get reliable metadata from any site
     cmd = [
         ytdlp_path(),
@@ -241,6 +260,7 @@ def download_youtube(url, output_dir, progress_callback=None, cookie_browser=Non
         ValueError: If URL is invalid, video is private, or no subtitles found
         RuntimeError: If download fails
     """
+    cookie_browser = cookie_browser or default_cookie_browser()
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -405,6 +425,7 @@ def download_video(url, output_dir, progress_callback=None, cookie_browser=None,
     Raises:
         RuntimeError: If download fails
     """
+    cookie_browser = cookie_browser or default_cookie_browser()
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -503,6 +524,7 @@ def _fetch_video_id_from_ytdlp(url, cookie_browser=None, process_tracker=None):
     Raises:
         RuntimeError: If ID extraction fails or returns empty
     """
+    cookie_browser = cookie_browser or default_cookie_browser()
     cmd = [ytdlp_path(), "--print", "id", "--no-playlist"]
     if cookie_browser:
         cmd.extend(["--cookies-from-browser", cookie_browser])
@@ -564,6 +586,7 @@ def resolve_urls(raw_urls, cookie_browser=None, progress_callback=None, logger=N
     Raises:
         ValueError: If yt-dlp fails to resolve a URL
     """
+    cookie_browser = cookie_browser or default_cookie_browser()
     seen_ids = set()
     resolved = []
     total = len(raw_urls)

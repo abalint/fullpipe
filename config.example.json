@@ -3,6 +3,10 @@
   "work_dir": "~/immersion",
   "ledger_db": "~/immersion/ledger.db",
   "sub_lang": "ja",
+  "youtube": {
+    "_comment": "cookie_browser: browser whose live cookie jar yt-dlp reads on every call (firefox/chrome/safari); needed when YouTube walls the IP with 'Sign in to confirm you're not a bot'. Empty = anonymous.",
+    "cookie_browser": ""
+  },
   "server": {
     "_comment": "sync server (MOBILE.md). host 'tailscale' binds to the tailnet IP (falls back to 127.0.0.1 when tailscale is absent); set a random token and put the same one in the phone app's Settings.",
     "host": "tailscale",
@@ -105,13 +109,14 @@
     "remote_python": "I:/transcribe/mokuro/.venv/Scripts/python.exe",
     "remote_script": "I:/transcribe/ocr_volume.py",
     "voice": {
-      "_comment": "tools.manga_voice: the volume's voice track — one ElevenLabs clip per bubble, rendered once on the Mac after the AI read and played by the phone's reader (long-press a bubble / ▶ in the popup). Key: ELEVENLABS_API_KEY in .env or the macOS keychain (security add-generic-password -a \"$USER\" -s ELEVENLABS_API_KEY -w). default_voices = the voice_id used for a cast member without one of their own, by gender (female / male / neutral; neutral also voices narration). Per-series voices live in <work_dir>/manga/<slug>/cast.json (tools.manga_voice cast <slug> --set NAME=VOICE_ID).",
+      "_comment": "tools.manga_voice: the volume's voice track — one ElevenLabs clip per bubble, rendered once on the Mac after the AI read and played by the phone's reader (long-press a bubble / ▶ in the popup). Key: ELEVENLABS_API_KEY in .env or the macOS keychain (security add-generic-password -a \"$USER\" -s ELEVENLABS_API_KEY -w). default_voices = the voice_id used for a cast member without one of their own, by gender (female / male / neutral); narration = the narrator, who reads every bubble nobody is attributed to — all of them in a volume read from the bubble sheets (the default read). Per-series voices live in <work_dir>/manga/<slug>/cast.json (tools.manga_voice cast <slug> --set NAME=VOICE_ID).",
       "model": "eleven_v4",
       "output_format": "mp3_44100_64",
       "language": "ja",
       "concurrency": 3,
       "context": true,
       "default_voices": {
+        "narration": "",
         "female": "",
         "male": "",
         "neutral": ""
