@@ -79,8 +79,10 @@ pulls on demand, so size on the Mac ≠ size on the phone.
 ## `/ambience add music <mood> <what>` — e.g. "add a jazz mood", "more lo-fi"
 
 1. If the mood is new: `mood add <slug> --title "<Title>" --emoji <e>`.
-   Existing moods (2026-10-08 seed): focus 🎧 · calm 🌙 · jazz ☕ ·
-   ghibli 🍃 · citypop 🌆 · upbeat ⚡ · classical 🎻 · game 🎮.
+   Existing moods: `dnb` 🥁 Drum and bass only (2026-10-15 — the eight
+   seed moods were removed; the user builds lanes one at a time from
+   links they supply). A **user-supplied link is the pick** — no judging
+   pass, just `music add`.
 2. **Search** `作業用BGM <genre> 1時間`, `<genre> mix 作業用`, `<genre>
    playlist` with `--min-minutes 40`. Judge: **continuous mixes** (one
    video = one track of 1–4 h; the phone shuffles tracks, so three mixes a
