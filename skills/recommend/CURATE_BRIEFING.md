@@ -169,3 +169,31 @@ any hazard hit or anything the user should know. No file dumps.
 - Dubbed/foreign-language stretches: whisper invents Japanese "translations" and
   "ご視聴ありがとうございました" over them — never card those lines; exclude them.
 - Your prompt may carry episode-specific notes from the orchestrator — they override this file.
+
+- **Creator captions carry on-screen telop text (2026-10-26, BMSG THE LAST PIECE).** Uploader
+  subs on TV/audition shows paste caption-card text into the speech — `[TRAINEE歴 約2年]`,
+  `プレゼンス（存在感）` — and a telop spanning two blocks can swallow a spoken line. Delete the
+  telop via repair edits (recover any speech hidden inside it); never card a telop-only sentence.
+- **Phone-in and venue audio (2026-10-27).** Children's phone lines (こども電話相談) come out of whisper as
+  junk — card only the host/expert side and expect a pile of nonwords for the registry. Reverb-heavy hall
+  recordings (詩のボクシング) can lose the first minutes entirely (one 9-min block with 2 lines): report the
+  gap, don't splice. University-posted speech subs ran 0.5–2 s late — tighten spans before verify_picks.
+  The 〜てやる matcher fires on plain やる — form_note it.
+- **Whisper all-hiragana drift (2026-10-31, Koto☆Hana / 窪田等 朗読).** On narration-heavy audio, GPU whisper can emit
+  long stretches with no kanji (ごねん, ほんにん) that Sudachi mis-segments (→ごねる, ほんに), skewing coverage. Restore
+  kanji only where meaning is verifiable — for 青空文庫 readings, align against the Aozora text (reliable); otherwise leave
+  them and never card a kana-garbled line. Dialect (遠野弁): never "repair" dialect into standard; card host/standard lines.
+- **ASMR roleplay subs are a script, not a transcript (2026-11-03, BlueKatie).** Creator subs pass the punctuation
+  check legitimately but the voice improvises around them — only ~1/3 of lines matched on GPU re-listen (11 of 14
+  first picks failed). They also carry the listener's imagined replies as `あなた（…）`, stage directions `（先生に向かって）`
+  and IME typos — delete those via repair edits. Whisper may return "no speech detected" on the whisper voice. Run
+  verify_picks EARLY and pick replacements from re-heard lines; a small pool is the right outcome.
+- **"曲入り" radio re-uploads (2026-11-03, スナック ラジオ).** Full songs left in: whisper can drop a whole song
+  (237 s gap, nothing transcribed) or transcribe English lyrics — never card lyrics; report the gap, don't splice.
+- **Short repair keys match inside longer names (2026-11-03, 気象通報).** A repair edit on a short
+  string (海西→快晴) also rewrote it inside an unrelated longer token (上海西南西 → 上快晴南西). Before
+  applying, grep the transcript for every occurrence of each short (≤2-char) key and anchor it with its
+  neighbours (海西、 / 海西で) or list the longer name first; re-apply with the full name list, never a
+  second partial apply (that wipes the first's record).
+- **Leading-dash episode ids (2026-11-03, yt_-LtWqBAw0NU).** YouTube ids can start with `-`; pass them
+  after `--` or as `--episode=yt_-…` so the CLI doesn't read a flag.

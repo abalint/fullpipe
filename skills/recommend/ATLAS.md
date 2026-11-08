@@ -579,7 +579,7 @@ Angles on the hosted-talk vein that change the *setting*, not the shape. All
 three keep a steering voice or a craft topic, because unsteered 雑談 is the
 record's floor.
 
-- **スナック設定ラジオ（リリー・フランキー スナック ラジオ）** — ニッポン放送's weekly
+- **スナック設定ラジオ（リリー・フランキー スナック ラジオ）** — TOKYO FM's weekly
   show framed as a late-night snack bar: リリー as the regular, a rotating ママ
   guest (中野信子 etc.), slow and smoky. `リリー・フランキー スナック ラジオ` ·
   `スナック ママ 対談` — fun. Reposts only (kuni3984). est 82 %. Risk: the
@@ -616,3 +616,220 @@ record's floor.
   `昭和の東京シリーズ` · `ニュース映画 昭和` — edu. near-box-ish to the urban-history walks
   (same subject, different experience: a 1950s narrator, no presenter). First offered
   2026-10-25 (yt_W-5oKMg3tCs, est 59 %).
+
+## Reality & story TV (first mapped 2026-10-26, "podcast + news broadcast" pass)
+
+- **恋愛リアリティ（ABEMA 恋愛 第1話フル）** — dating/marriage-hunt reality shows posted
+  ep 1 in full by ABEMA: confessional interviews cut against group scenes, studio
+  commentators (霜降りせいや etc.) reacting. `恋愛リアリティ 1話` · `ガールオアレディ 第1話フル`
+  · `ラブパワーキングダム 1話フル` — fun. Risk: group-date crosstalk; the confessionals are
+  the mineable part. First offered 2026-10-26 (yt_tawzERC3pp8, est 84 %).
+- **まんが日本昔ばなし（公式）** — the official channel posts the 1975– anime folktales,
+  ~10 min each: one narrating pair (市原悦子・常田富士男) voicing everything, rural/old
+  register. `まんが日本昔ばなし 公式` — hybrid. Avoid the reupload compilations
+  (Vietnamese-named channels, "2026 VOL nnnn") and learner-dub channels (ボンボンアカデミー).
+  First offered 2026-10-26 (yt_9qXYjDKcMuY 『死神』, est 75 %).
+- **はじめてのおつかい（子どもの冒険密着）** — toddlers sent on a first errand, hidden
+  cameras, narration; Netflix posts only 1-min clips, so the full ones are local
+  imitations (みらいもりやま21, 商店街 channels). `はじめてのおつかい` — fun. Kid speech is
+  sparse and mumbled; narration carries it. First offered 2026-10-26 (yt_zb-JvGyM1os, est 89 %).
+- **オーディション番組（BMSG / LDH 本編）** — idol/artist audition documentaries posted
+  in full: trainee interviews, judge feedback (SKY-HI), rehearsal talk.
+  `オーディション番組 第1話` · `THE LAST PIECE 本編` · `THE FIRST 本編` — fun.
+  `No No Girls` Ep.01 gated `silent` (captions off) — the 本編 of other seasons pass.
+  First offered 2026-10-26 (yt_cLJv2L-RSYY, est 84 %).
+- **大相撲 親方生解説（日本相撲協会 親方ちゃんねる）** — two retired wrestlers commentating
+  a full day of bouts, ~100 min. `親方ちゃんねる 取組解説` — hybrid. **near-box**: live
+  sport + two commentators is the rated baseball-radio shape. Mapped, not offered
+  (czEm_AhJQJw est 74 %). Dead ends: `紙芝居 上演` and `腹話術 ネタ` return 1–5 min
+  news clips; `警察24時 密着` is spam reuploads.
+
+## Audio-native III (first mapped 2026-10-27, "give me audio content" pass)
+
+Audio-native I and II were fully offered by 2026-10-26; these are audio-first
+formats outside the hosted-talk / drama / reading shapes.
+
+- **こども電話相談（TBS 全国こども電話相談室 / NHK 子ども科学電話相談）** — children
+  phone in a question, a panel of experts answers it for a child: curiosity Q&A
+  in the simplest native register, kid voices on the line. `全国こども電話相談室` ·
+  `子ども科学電話相談` — fun/edu. Re-skin note: call-in like テレフォン人生相談 (★3),
+  but the experience is a child's curiosity, not counselling — counted. NHK uploads
+  are fan air-checks, many with captions off (DCa0-VsOwqo gated unknown); the TBS
+  2020 air-checks pass. First offered 2026-10-27 (yt_ClWv9JhmgvQ, est 82 %).
+- **式典スピーチ・祝辞** — a celebrity or scholar's 10–20 min address at a university
+  entrance/graduation ceremony, posted by the university (東京大学 来賓祝辞, 近畿大学
+  卒業式 — 村上信五, 上野千鶴子 2019). `入学式 祝辞 全文` · `卒業式 スピーチ 大学` — hybrid.
+  One projected voice, rhetorical structure. Avoid the 泉チャン PTA-会長 tier and
+  English-speech-with-JP-subs channels (Vox Nova, Eigo No Sensei). 弔辞 searches are
+  1–4 min clips and narrated "全文" re-readings (some synthetic) — dead end.
+  First offered 2026-10-27 (yt_r-kybBosSIg, est 81 %).
+- **詩のボクシング（朗読対戦）** — poets and amateurs reading their own poems head to
+  head in a ring, judges scoring (1998 ねじめ正一 vs 谷川俊太郎 in 7 parts; regional
+  全国大会 archives). `詩のボクシング` — hybrid. Risk: poetic register, venue audio.
+  `ポエトリーリーディング` / `スポークンワード 日本語` return <1k-view art clips.
+  First offered 2026-10-27 (yt_B_yKl2JRErI, est 73 %).
+- **ひとり語りラジオ（個人ラジオ）** — an ordinary person alone at a mic for 30–50 min
+  about their week, worries, small joys (hiro33-radio, 家事とままラジオ). `ひとりしゃべり
+  ラジオ 雑談 主婦` — hybrid. Not the two-friend 雑談 shape: one voice, no partner.
+  `stand.fm 一人ラジオ` returns how-to-start-a-podcast videos — junk.
+  First offered 2026-10-27 (yt_bdw7XolmrzU, est 77 %).
+- Dead end: **美術館 音声ガイド** — 1–3 min samples and apps only.
+
+## Stage & studio TV (first mapped 2026-10-28, "include the latest cozy up" pass)
+
+- **吉本新喜劇（舞台喜劇 全編）** — the Osaka stage farce: a stock 座長 company, one set,
+  running gags (ずっこけ, お決まりのギャグ), Kansai dialect throughout. Official full shows on
+  BSよしもと公式チャンネル (sponsor-tie-in specials run 50 min; 花の駐在さん 90+). `吉本新喜劇 公式 フル` ·
+  `吉本新喜劇 ノーカット` — fun. Risk: Kansai-ben, audience laughter over punchlines. Not コント:
+  a full plotted play. First offered 2026-10-28 (yt_qm6Kfh3XP5U, est 85 %).
+- **記者会見 ノーカット** — a whole press conference uncut: prepared statement, then reporters'
+  questions and the answers, formal register both ways. TBS NEWS DIG / 日テレスポーツ / フジ報道 post
+  them. `記者会見 ノーカット` · `会見 全編 ノーカット 質疑` — edu/hybrid. Big-view ones are sports
+  appointments and imperial-family firsts; the 閣議後 minister pressers are dry. First offered
+  2026-10-28 (yt_p0roxBe0mWs, 松井秀喜 巨人監督就任, est 76 %).
+- **料理対決バラエティ** — comedian/celebrity cooking battles with judges (宮迫 有頂天レストラン,
+  ノンラビ, idol-group kitchen episodes). `料理対決 番組` · `料理 対決 プロ 番組 公式` — fun.
+  Risk: studio crosstalk at the tasting. Distinct from 料理研究家 (instruction): it's a competition.
+  First offered 2026-10-28 (yt_2tj19GyEGgc, est 66 %).
+- **県民性バラエティ（ケンミンSHOW）** — regional-habit studio variety: a prefecture's local
+  food, words and customs, VTR + studio reactions. 【公式】秘密のケンミンSHOW極 posts 10–15 min
+  segments. `ローカルバラエティ 公式` found it; `ローカル番組 公式 フル` returns junk (Pokémon,
+  albums). fun. First offered 2026-10-28 (yt_gqWR30daUpg, est 85 %).
+- Dead ends this pass: `鳥人間コンテスト` official uploads are 1–13 min highlight clips.
+
+## Audio-native IV (first mapped 2026-10-31, "audio content" pass)
+
+Audio-native I–III were fully offered by 2026-10-28; these are spoken-word *contests and oral
+tradition* — formats where one voice holds the floor for a set turn.
+
+- **ビブリオバトル（書評プレゼン対戦）** — students each pitch a favourite book for 5 min, 2–3 min of
+  audience Q&A, then a vote for the チャンプ本. 活字文化推進会議 posts the 全国高校/中学 finals in full
+  (90–200 min, 17k–315k views); single winners' pitches run 10–16 min. `ビブリオバトル 決勝` ·
+  `全国高等学校ビブリオバトル` — hybrid. One projected teen voice per turn, everyday register.
+  First offered 2026-10-31 (yt_KsxUUoy52LM, est 75 %).
+- **ディベート大会（高校生ディベート）** — two teams on a resolution, timed constructive / cross-exam /
+  rebuttal speeches. NewsPicks 高校生ディベート選手権 is the 15-min produced cut with commentary (270k
+  views); 全国教室ディベート連盟 posts the full ディベート甲子園 finals (50 min, very fast 立論, est
+  56 %). `ディベート甲子園 決勝` · `高校生ディベート選手権` — edu/hybrid. Risk: speed in the full finals.
+  First offered 2026-10-31 (yt_09Se9CAFjo0, est 73 %).
+- **民話の語り部（方言語り）** — an elder telling a local folktale in the home dialect (遠野弁 座敷わらし,
+  南部弁, 南三陸, 魚沼). `遠野 語り部 昔話` · `民話 語り部 方言` · `南部弁 民話語り` — hybrid. Risk:
+  2–17 min clips, low views; heavy dialect. Junk tier: 睡眠導入 朗読 compilations (standard-language
+  readings, not 語り) and 遠野物語 解説 channels. First offered 2026-10-31 (yt_E2xv0oMZZk0, est 71 %).
+
+## Current affairs & non-fiction audio (first mapped 2026-11-01, "sick of audio dramas — non-fiction, podcasts, current events" pass)
+
+The news-radio / news-explainer veins are sampled (Cozy up, Session, 池上彰, TBS Podcast); these
+are the non-fiction audio shapes around them that the record hasn't touched.
+
+- **ノンフィクション著者が語る事件** — the author of an investigative non-fiction book walks a
+  host through the case they reported (BIBLIO JAM, SlowNews 生配信, TBS Podcast 特集 with 藤井誠二).
+  A true story unfolding in the reporter's own voice. `ノンフィクション作家 インタビュー ポッドキャスト` ·
+  `著者インタビュー ノンフィクション 新刊` — edu/hybrid. Risk: tiny view counts; the 若葉文庫 tier is
+  1–4 min clips. First offered 2026-11-01 (yt_aGuExEFXtyc 『岐山の女』, est 74 %).
+- **株式市況 引け解説（日経CNBC）** — the daily market-close wrap: an anchor plus an analyst on
+  why the index moved, sector by sector, 12–15 min, 40–90k views. `東京株式市場 日経平均 解説` ·
+  `経済 ニュース 解説 今週` — edu. Dense numbers and company names (est 58 %). TBS
+  「知っておきたい経済ニュース1週間」 is the gentler weekly variant. First offered 2026-11-01
+  (yt_oM7N-Zkk2WU, est 58 %).
+- near-box (news-explainer shape): **経済ニュース ソロ解説（後藤達也・経済チャンネル）** — an
+  ex-Nikkei reporter alone, explaining the week's rates / yen / stocks, 15–35 min.
+  `後藤達也 経済チャンネル 解説 日銀`. His ReHacQ / PIVOT collabs are the ★3 talk-show tier.
+  First offered 2026-11-01 (yt_IRgciOtV3-k, est 67 %).
+- near-box (Session 特集 panel shape): **ネット報道 鼎談（マル激トーク・オン・ディマンド）** —
+  videonews.com's weekly hour: 神保哲生 + 宮台真司 + one expert guest on a current issue. Full
+  episodes are member-only; YouTube has 4–6 min ダイジェスト and the 5金スペシャル full talks.
+  `マル激トーク・オン・ディマンド` · `5金スペシャル`. First offered 2026-11-01 (yt_YAO0_Viz99g, est 67 %).
+- mapped, not offered: **新聞社ポッドキャスト（朝ポキTV 朝日新聞）** — reporters talking about their
+  own scoops, 70–130 min with a 12–16 min preamble (`朝日新聞ポッドキャスト`); **ながら日経** (7-min
+  daily headline read, テレ東BIZ); **安住紳一郎の日曜天国** (official full shows, 80–90 min, 400k views —
+  announcer radio, closer to 芸能人ラジオ). Dead ends: `視点・論点 NHK` (old reposts),
+  `NHKカルチャーラジオ` (one gospel series), `JAM THE PLANET` (English music).
+
+---
+
+## Bodies, ads & roleplay (first mapped 2026-11-03, open pass — atlas fully offered again)
+
+Shapes nobody had sampled because none of them is "a show": being instructed, being
+sold to, being role-played at. All single-voice or clean two-voice.
+
+- **懐かしCM集（昭和・平成 CM compilations）** — fan-cut montages of old TV ads,
+  20–40 min, millions of views (たんぱつ, 三成殿, Cabinandhilight's 12-hour runs).
+  `懐かしCM 平成` · `昭和 CM集` · `CMで振り返る` — fun. Short repeatable lines and
+  slogans, many voices, nostalgia natives watch for pleasure. Risk: jingle/music
+  share is high — the gate called `三成殿 BEST100` silent; Cabinandhilight runs are
+  7–12 h (too long). First offered 2026-11-03 (yt_eL8CxHyWCGE, est 75 %).
+- **ASMRロールプレイ** — a performer acting out a second-person scene to the
+  listener (classmate, clinic, office senior, bureaucrat), close-mic.
+  `ASMR ロールプレイ` · `ASMR 雑談` — fun/chill. Risk (measured): true whisper tracks
+  read `silent` at the gate (きのかぜ, Carm 手続き, sachitono all failed — YouTube's ASR
+  can't hear whispers, and our GPU ASR likely can't either); take soft-spoken, not
+  whispered, uploads. Second risk (measured on the first sample): creator subs are a script the voice
+  improvises around — ~1/3 of lines survive a GPU re-listen, so the deck yield is small (5 cards / 27 min).
+  First offered 2026-11-03 (yt_6wOWqpDhSvA BlueKatie, est 80 %, whispered after all).
+- **接客ロールプレイング大会** — retail staff perform a judged customer-service scene
+  (アパレル, イオンモール 館内決勝, STAFF OF THE YEAR) plus coach breakdowns
+  (ワンスアラウンド, ぬまチャンネル). `接客ロールプレイング 実践` · `ロールプレイング大会
+  決勝` — edu/hybrid. Clean two-person keigo service dialogue. Risk: clips are
+  7–12 min (low yield); the STAFF START finals are a 6-h live. First offered
+  2026-11-03 (yt_tcYTEPUDXrU, est 82 %).
+- **ヨガ・ストレッチ フルレッスン** — one instructor talking you through a full
+  session (Marina Takewaki, B-Flow, Misa Yoga). `ヨガ 初心者 フルレッスン` ·
+  `ストレッチ 一緒に` — hybrid. Continuous imperative instruction, body-part
+  vocabulary, the picture shows every word. Risk: the エイブラハム／引き寄せ 誘導瞑想
+  tier is spiritual preaching (法話 ★2 "don't care for preaching"). First offered
+  2026-11-03 (yt_KDGOpJcmCwU, est 67 %).
+- mapped, not offered: **バスガイド 名調子** — a tour guide's set patter on the bus
+  (みったんyw 京都案内 ×5, 30 min each, est 70 %, but ~500 views; はとバス 1日密着 is
+  the doc re-skin). `バスガイド 名調子` · `バスガイド 案内 七五調`.
+
+## News & broadcast rituals (first mapped 2026-11-03, "news and radio content" pass)
+
+News radio (Cozy up, Session, ズーム, ええなぁ!) is the sampled vein; these are the broadcast
+*rituals* around the news that no rating has touched.
+
+- **政見放送** — the statutory campaign broadcast: one candidate, one fixed shot, 5–18 min of
+  unedited appeal; natives watch the eccentric ones for fun (外山恒一 970k, 立花孝志 NHK党 6.6 M,
+  都知事選 2024 河合/内野 400k–1.2 M). `政見放送 都知事選` · `政見放送 面白い` — fun/edu. Formal
+  rhetorical register, one voice. Risk: `政見放送 まとめ` returns ゆっくり TTS summaries; the
+  KADOKAWA 貞子vs伽椰子 "政見放送" are film ads. Not 式典スピーチ: campaigning, not ceremony.
+  First offered 2026-11-03 (yt_iRi4od_Thus, est 56 %).
+- **気象通報（NHKラジオ第2）** — the 20-min weather-map readout: station by station, wind
+  direction, 風力, weather, 気圧, 気温, then ship reports and the isobars — the ritual people drew
+  天気図 to. Fan air-checks 1984–2019 (11–44k views). `気象通報 NHK ラジオ` — hybrid/chill.
+  Risk: place-name dense (est 42–47 %, ~25 tokens/min); a wildcard for listening, few cards.
+  First offered 2026-11-03 (yt_SLjVB4j2Ihw 1988, est 47 %).
+- near-box (コント shape): **時事風刺コント（ザ・ニュースペーパー）** — the satire troupe doing
+  the prime minister and cabinet as stand-up impressions and sketches (公式 channel 蔵出し映像,
+  東京新聞 紙上LIVE, 広島ホームテレビ). `ザ・ニュースペーパー 時事コント` · `ザ・ニュースペーパー 公演`
+  — fun. Clips are 5–14 min; the LIVE2021 digest runs 23 min with songs (723 tokens).
+  First offered 2026-11-03 (yt_TrbH8Nd2fig, est 75 %).
+- mapped, not offered: **海外の日本語放送（KBSワールドラジオ / 中国国際放送）** — foreign state
+  radio's Japanese service; YouTube has only shortwave air-checks at <1k views, poor audio.
+  **BSフジ プライムニュース** — 2-h TV news debate (anchor + 2–3 guests), 45–135k views, posted in
+  前編/後編 parts; near-box to the Session panel. `週刊こどもニュース` returns 1–6 min clips (石川テレビ
+  こどもニュース segments); `時論公論` is old reposts and attack edits — dead ends.
+
+## Witness, launch & case (first mapped 2026-11-07, "audio content" pass)
+
+Non-fiction audio outside the news-radio / panel / interview shapes: someone who was *there*
+telling it, a live event narrated as it happens, an insider reading the day's cases.
+
+- **戦争体験 証言・被爆体験講話** — an elder survivor telling their war in their own voice:
+  広島平和文化センター's 被爆体験講話 (45–60 min hall talks), 平和祈念展示資料館 帰還者たちの記憶
+  (ex-soldier one-on-ones, 30–40 min), 昭和館 オーラルヒストリー, municipal 語り部 series
+  (宮崎県, 上越市, 大田区). `戦争体験 証言 語り部` · `空襲 体験談 講話` · `被爆体験講話` — edu.
+  One slow, elderly voice, period vocabulary. Risk: news-channel cuts (日テレNEWS 山田洋次 証言,
+  ANN) are narrated packages, some caption-less (38QD8L-VBxY gated silent); the ex-soldier
+  interviews are slow (~35 tokens/min). First offered 2026-11-07 (yt_GQQh2tajjJU 新井俊一郎, est 75 %).
+- **ロケット打ち上げ 生中継 解説** — a launch broadcast: casters and an engineer narrating the
+  countdown, the flight events and the separation. JAXA official live streams (1.5–2.5 h,
+  0.3–1.4 M views) gate `silent` (no ASR on live archives); ウェザーニュース and MBC南日本放送
+  キャスター解説 streams pass. `H3ロケット 打ち上げ ライブ中継` · `JAXA 打ち上げ 生中継 解説` — hybrid.
+  JAXA 打上げ経過記者会見 is the 記者会見 shape. First offered 2026-11-07 (yt_Sq0pCJMuEOA, est 72 %).
+- near-box (news-explainer shape): **元刑事 事件解説（元警視庁刑事・小比類巻文隆【最後の取調室】）**
+  — an ex-detective alone walking through this week's cases and how the 捜査 works, 60–80 min.
+  `元刑事 事件 解説` · `元刑事が語る`. 丸山ゴンザレス's insider interviews are the sampled ★3
+  shape; OB刑事チャンネル panels gated silent. First offered 2026-11-07 (yt_14792eo_9hw, est 74 %).
+- mapped, not offered: **NIKKEI PODCAST** — a Nikkei reporter on one stock/industry story,
+  25–30 min (`日経 ポッドキャスト 解説`, est 60 %); 朝ポキTV episodes carry a 12–16 min preamble.
