@@ -191,6 +191,33 @@ class MarkupStripTest(unittest.TestCase):
         self.assertEqual(SP.strip_sub_markup("せめて６：４(ろくよん)にならない？"), "せめて６：４にならない？")
         self.assertEqual(SP.strip_sub_markup("MaxTac()に任せて"), "MaxTacに任せて")  # Netflix leaves empty glosses
 
+    def test_broadcast_caption_markup(self):
+        # 字幕放送 (TV captions, the kitsunekko ＃NN sets): continuation arrows,
+        # [TEL]-style source tags, 《》 voice-over — words kept, markup gone
+        cases = {
+            "（水野）人間の脳には 約１４０億の神経細胞と→": "人間の脳には 約１４０億の神経細胞と",
+            "[TEL]（瑞生）いやあ　俺さ": "いやあ 俺さ",
+            "《(富美子)桃子！ はやく歩くの！➡》": "桃子！ はやく歩くの！",
+            "でも何一つ→ 無駄なことなんて": "でも何一つ 無駄なことなんて",
+            "A→Bに行く": "A→Bに行く",  # an arrow inside the text is not a continuation mark
+            "((わたしの病気って　なあに？))": "わたしの病気って なあに？",  # off-screen voice is speech
+            "（真田才悟）\n〈これが僕の家族です〉": "これが僕の家族です。",
+            "《もう行かなきゃ》 (潤子)待って": "もう行かなきゃ。 待って",  # voice-over end kept as a boundary
+            "〈僕は　この中に→〉": "僕は この中に",  # continued narration: no mark
+            "ﾗｽﾄｽﾊﾟｰﾄだ｡ ｢行くぞ｣": "ラストスパートだ。 「行くぞ」",  # half-width caption forms
+            "｟悲鳴｠ ｟知らない｠": "知らない",  # sound label dropped, off-screen line kept
+            "[ 音声を早送りしている ] 何だよ": "何だよ",
+            "☎(小林)もしもし 金八先生？": "もしもし 金八先生？",
+            "＜私は 35歳＞ ⦅ざわめき⦆ ⦅先生!⦆": "私は 35歳。 先生!",  # 35歳の高校生 caption style
+        }
+        for src, want in cases.items():
+            self.assertEqual(SP.strip_sub_markup(src), want, src)
+
+    def test_quoted_line_is_speech(self):
+        # a cue that is one quotation (an article/letter read aloud) is speech
+        self.assertFalse(SP._is_non_speech("「中学生の時 私は少年院にいた」"))
+        self.assertTrue(SP._is_non_speech("（足音）"))
+
     def test_strip_markup_drops_emptied_cues(self):
         subs = [(0, 1, "（足音）"), (1, 2, "\u202aそっか\u202c")]
         self.assertEqual(SP.strip_markup(subs), [(1, 2, "そっか")])
@@ -321,6 +348,46 @@ class QueueAndLedgerTest(unittest.TestCase):
         with unittest.mock.patch.object(S, "_ffmpeg") as ff:
             S.materialize(self.cfg, "hotspot", 1, log=lambda m: None)
             ff.assert_not_called()
+
+    def test_transcode_never_exceeds_the_source_bitrate(self):
+        v = {"height": 396}
+        argv = S.transcode_cmd("in.mkv", "out.mp4", v, 0, src_kbps=480)
+        self.assertEqual(argv[argv.index("-b:v") + 1], "480k")
+        argv = S.transcode_cmd("in.mkv", "out.mp4", {"height": 1080}, 0, src_kbps=8000)
+        self.assertEqual(argv[argv.index("-b:v") + 1], "1500k")
+        argv = S.transcode_cmd("in.mkv", "out.mp4", v, 0)  # unknown → the old fixed rate
+        self.assertEqual(argv[argv.index("-b:v") + 1], "1500k")
+        self.assertEqual(S.source_video_kbps({"format": {"bit_rate": "501352"}}, v), 341)
+        self.assertEqual(S.source_video_kbps({}, {"bit_rate": "900000"}), 900)
+
+    def test_video_on_server_keeps_only_the_stage_copy(self):
+        """series.video_on_server: the Mac's transcode is dropped once the
+        stage copy on t7 is verified; materialize hands back the stage path
+        (Stage 1 reads the audio off the share), and the resolver finds it."""
+        from tools._staging import video_file
+        lib_dir, stage = self._library()
+        self.cfg["series"] = {"video_on_server": True}
+        probe = {"streams": [{"index": 0, "codec_type": "video", "codec_name": "h264", "height": 1080},
+                             {"index": 1, "codec_type": "audio", "tags": {"language": "jpn"}}],
+                 "format": {"duration": "2755.07"}}
+        with unittest.mock.patch.object(S, "probe", return_value=probe), \
+                unittest.mock.patch.object(S, "_ffmpeg", side_effect=self._fake_ffmpeg):
+            got = S.materialize(self.cfg, "hotspot", 1, log=lambda m: None)
+        staged = stage / "hotspot" / "hotspot-e01.mp4"
+        self.assertEqual(Path(got), staged)
+        self.assertEqual(staged.read_bytes(), b"v")
+        self.assertFalse(S.video_path(self.cfg, "hotspot", 1).exists())
+        self.assertTrue(S.local_subs_path(self.cfg, "hotspot", 1).exists())
+        ep = S.load_manifest(self.cfg, "hotspot")["episodes"][0]
+        self.assertEqual((ep["subs"], ep["size"]), ("sidecar", 1))
+        self.assertEqual(video_file(self.cfg, "ser_hotspot_e01"), staged)
+        # again: no transcode, still the stage path
+        with unittest.mock.patch.object(S, "_ffmpeg") as ff:
+            self.assertEqual(Path(S.materialize(self.cfg, "hotspot", 1, log=lambda m: None)), staged)
+            ff.assert_not_called()
+        # flag off: the resolver ignores the stage tier (no local copy → None)
+        self.cfg["series"]["video_on_server"] = False
+        self.assertIsNone(video_file(self.cfg, "ser_hotspot_e01"))
 
     def test_materialize_extracts_embedded_subs_and_survives_no_stage(self):
         lib_dir, stage = self._library()
@@ -595,6 +662,20 @@ class ServerRoutesTest(unittest.TestCase):
         self.assertEqual(calls, [("hotspot", 1)])
         r = self.client.get("/video/ser_hotspot_e01?t=t")
         self.assertEqual(r.status_code, 200)
+
+    def test_video_on_server_streams_the_stage_copy(self):
+        stage = Path(self.tmp.name) / "t7" / "stage"
+        (stage / "hotspot").mkdir(parents=True)
+        (stage / "hotspot" / "hotspot-e01.mp4").write_bytes(b"\x00" * 32)
+        self.cfg["library"] = {"mounts": {}, "series_root": str(Path(self.tmp.name) / "library"),
+                               "stage_dir": str(stage), "legacy_roots": {}}
+        self.cfg["series"] = {"video_on_server": True}
+        with unittest.mock.patch.object(S, "materialize") as mat:
+            r = self.client.get("/video/ser_hotspot_e01?t=t", headers={"Range": "bytes=0-7"})
+            mat.assert_not_called()  # no copy back to the Mac
+        self.assertEqual(r.status_code, 206)
+        self.assertEqual(len(r.content), 8)
+        self.assertFalse((episode_dir(self.cfg, "ser_hotspot_e01") / "video.mp4").exists())
 
     def test_restore_503_carries_retry_after(self):
         with unittest.mock.patch.object(S, "materialize", lambda *a, **k: None):

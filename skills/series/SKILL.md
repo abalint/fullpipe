@@ -66,6 +66,55 @@ curl -s -A Mozilla/5.0 'https://kitsunekko.net/dirlist.php?dir=subtitles%2Fjapan
 pre-placement note in memory). Only after all of that comes up empty is GPU
 ASR the answer — report the search as done, with what was checked.
 
+## Found subs: align before pre-placing (the drama workflow)
+
+Store subs are rarely timed to our rip — TV-broadcast captions (＃NN sets)
+carry the CM breaks, D-Addicts/Netflix files follow another cut. Never
+pre-place one unchecked. Per episode, after the stage copy exists:
+
+```sh
+$PY -m tools.subalign check <video> <candidate.srt>            # quick: ~10 ASR windows
+$PY -m tools.subalign fix   <video> <candidate.srt> --out <slug>-eNN.ja.srt --cache <slug>-eNN.subalign_asr.json
+```
+
+`check` fails a candidate whose cues step backwards (wrong episode or wrong
+cut) — when a show has several store sets, try each and keep the best match
+rate. `fix` goes piecewise on the full ASR (CM cuts found by a changepoint
+pass, each cut placed at the largest caption gap); keep the `--cache` file —
+the QA scripts below reuse it. `--drift` only for a frame-rate mismatch you
+have measured. `retime` re-applies an alignment to an already curated
+episode. Then ingest with `--stage-only` (videos are not kept on the Mac,
+see `series.video_on_server`) and let Stage 1 run.
+
+Curating a show: one Opus agent per episode on the shared briefing and a
+per-show NOTES file (cast, setting, sub source). Give them **no name
+readings** — they take readings from the audio; four orchestrator-supplied
+readings were wrong in the 2026-11-07 batch. Once a show's episodes are all
+staged:
+
+```sh
+$PY tools/series_qa/integrity.py <slug> ...     # every candidate glossed or excluded, pick fields, furigana = text, span 1.5–15 s, prep.html
+$PY tools/series_qa/timing_audit.py <slug> ...  # 5-min buckets whose median offset vs the ASR cache is > 3 s
+$PY tools/series_qa/timing_fix.py <slug>:<ep>   # dry run; --apply shifts a consistent misplaced stretch (picks never move, backup kept)
+```
+
+Fix what they flag (re-render any episode whose `curate.json` changed), set
+the series presenter profile (`ledgerctl presenter-set series:<slug> …`),
+then `archive <slug>`. Caption markup Stage 1 does not yet strip (a new
+bracket style, a sound label) shows up as dropped or merged lines in the
+agents' reports — fix `engine/srt_parser.strip_sub_markup` and requeue
+rather than patching transcripts one by one.
+
+## Messy file names
+
+If a folder's episode names are a mess of release-group styles (the scan
+shows unparsed files or duplicates), the library can be normalized to the
+`Show - NN` / `Show - S01E01` pattern with `tools/library_rename/` — but the
+library is read-only, so only with the user's explicit OK for that run;
+the procedure (dry-run plan → review → apply with undo log + manifest
+update) is in `tools/library_rename/README.md`. `Japanese/drama` was done
+2026-11-07.
+
 ## Commands
 
 Folders can be given as they are on the Mac, relative to the series root, or

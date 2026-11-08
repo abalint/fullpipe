@@ -1,6 +1,7 @@
 """SRT parsing, sentence merging, and subtitle alignment."""
 
 import re
+import unicodedata
 
 # Minimum ratio of punctuation marks to blocks.  Well-punctuated scrolling
 # subs typically have ~0.9 marks per block; anything below this threshold
@@ -209,8 +210,10 @@ def deduplicate_scrolling_subs(subs, logger=None):
 # - One or more bracketed groups: [Music], (拍手), 【音楽】, （笑）, etc.
 # - Music symbols: ♪ ♫ 🎵 🎶 (alone or repeated, with optional whitespace)
 # - Combinations of the above
-_BRACKET_GROUP = r'(?:[\[\(（【〔〈《「『].*?[\]\)）】〕〉》」』])'
-_MUSIC_SYMBOLS = r'[♪♫🎵🎶～〜]+'
+# (「」『』 are quotation marks, not annotations: a cue that is one long
+# quotation — a letter or article read aloud — is speech and must stay)
+_BRACKET_GROUP = r'(?:[\[\(（【〔〈《].*?[\]\)）】〕〉》])'
+_MUSIC_SYMBOLS = r'[♪♫♬🎵🎶～〜]+'
 _NON_SPEECH_RE = re.compile(
     r'^\s*(?:' + _BRACKET_GROUP + r'|' + _MUSIC_SYMBOLS + r')(?:\s*(?:' + _BRACKET_GROUP + r'|' + _MUSIC_SYMBOLS + r'))*\s*$'
 )
@@ -226,13 +229,29 @@ def _is_non_speech(text):
 # a BOM, dialogue dashes ("-（父親）もう治ったか？ -（男の子）うん"), speaker /
 # sound-source tags at the start of a line ("（テレビ:キャスター）戦後…"),
 # reading glosses after a name ("富士浅田(ふじあさだ)"), and continuation
-# dashes ("住民によって⸺"). Stripped per segment; a block left empty is dropped.
+# dashes ("住民によって⸺"). Japanese broadcast captions (字幕放送) add
+# continuation arrows ("神経細胞と→", "歩くの！➡"), a sound-source tag in
+# square brackets ("[TEL]（瑞生）いやあ") and 《…》 around voice-over / inner
+# monologue (fan transcripts write it ((like this))) — the arrow and the tag
+# go, the voice-over keeps its words (a fully wrapped block is speech, not a
+# sound effect for filter_non_speech).
+# Stripped per segment; a block left empty is dropped.
 _BIDI_CTRL_RE = re.compile('[\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]')
 _DIALOGUE_DASH_RE = re.compile(r'(?:^|(?<=\s))[\-‐－–—]\s*')
 _ANNOTATION_RE = re.compile(r'(?:^|(?<=\s))[\(（][^\(\)（）]{1,20}[\)）]\s*')
 _READING_GLOSS_RE = re.compile(
     r'(?<=[\u4e00-\u9fff々A-Za-zＡ-Ｚａ-ｚ0-9０-９])[\(（][\u3040-\u309f\u30a0-\u30ffー・ 　]{0,12}[\)）]')
-_CONTINUATION_RE = re.compile(r'[⸺―]+(?=\s|$)')
+_CONTINUATION_RE = re.compile(r'[⸺―→➡⇒]+(?=\s|$|[》≫」])')
+_SOURCE_TAG_RE = re.compile(r'(?:^|(?<=\s))[\[［][^\[\]［］]{1,20}[\]］]\s*')
+# some broadcast caption sets are written in half-width forms (｡｢｣ and ｶﾀｶﾅ):
+# the sentence splitter only knows 。, so fold U+FF61–FF9F to full width.
+# ｟…｠ wraps either a sound label (｟悲鳴｠ — no kana: drop) or an off-screen
+# line (｟知らない｠ — speech: keep the words).
+_HALFWIDTH_RE = re.compile('[\uff61-\uff9f]+')
+_SOUND_LABEL_RE = re.compile(r'(音|声|ざわめき|拍手|悲鳴|笑い|ため息|咳|せき|鳴き|サイレン|チャイム|着信)\s*$')
+_WHITE_PAREN_RE = re.compile('[｟⦅]([^｟｠⦅⦆]*)[｠⦆]')
+_PHONE_RE = re.compile(r'☎\s*(?:[\(（][^\)）]{0,12}[\)）])?\s*')  # ☎(小林) phone-call label
+_VOICEOVER_RE = re.compile(r'[《》≪≫〈〉＜＞]|\(\(|\)\)|（（|））')  # fan transcripts: ((off-screen voice))
 # SRT styling tags (<i>, <b>, <font …>) and ASS override blocks ({\an8}) that
 # ffmpeg keeps when converting .ass sidecars — pure presentation
 _TAG_RE = re.compile(r'<[^<>]{0,80}>|\{\\[^{}]*\}')
@@ -242,6 +261,15 @@ def strip_sub_markup(text):
     """One cue's text without presentation markup (see above). Pure."""
     t = _TAG_RE.sub(' ', text)  # first: tags hide line starts from the rules below
     t = _BIDI_CTRL_RE.sub('', t)
+    t = _PHONE_RE.sub(' ', t)
+    t = _HALFWIDTH_RE.sub(lambda m: unicodedata.normalize('NFKC', m.group(0)), t)
+    t = _WHITE_PAREN_RE.sub(lambda m: ' ' if _SOUND_LABEL_RE.search(m.group(1)) else ' ' + m.group(1) + ' ', t)
+    # a closing voice-over bracket is a sentence end the strip would erase
+    # (the 〈narration〉 then runs into the next speaker) — keep it as 。
+    # unless the line already ends in a mark or continues (→/➡)
+    t = re.sub(r'([^。！？!?…→➡⇒\s])\s*[》〉≫＞]', r'\1。', t)
+    t = _VOICEOVER_RE.sub(' ', t)
+    t = _SOURCE_TAG_RE.sub('', t)
     t = _DIALOGUE_DASH_RE.sub('', t)
     t = _READING_GLOSS_RE.sub('', t)  # before tags: （遠藤(えんどう)） nests one
     t = _ANNOTATION_RE.sub('', t)

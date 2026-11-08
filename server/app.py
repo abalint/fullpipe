@@ -38,7 +38,7 @@ from tools import series as series_tool
 from tools import manga as manga_tool  # noqa: E402
 from tools import ambience as ambience_tool  # noqa: E402
 from tools._staging import (  # noqa: E402
-    downloads_dir, episode_dir, load_coverage, load_transcript, read_json)
+    downloads_dir, episode_dir, load_coverage, load_transcript, read_json, video_file)
 from tools.render import build_prep_data  # noqa: E402
 
 
@@ -273,8 +273,8 @@ def create_app(cfg, start_worker=True):
         if episode_id in durations:
             return durations[episode_id]
         dur = None
-        video = episode_dir(cfg, episode_id) / "video.mp4"
-        if video.exists():
+        video = video_file(cfg, episode_id)
+        if video is not None:
             try:
                 out = subprocess.run(
                     [ffprobe_path(), "-v", "error", "-show_entries",
@@ -946,8 +946,8 @@ def create_app(cfg, start_worker=True):
     @app.get("/video/{episode_id}")
     def get_video(episode_id: str, request: Request, t: str | None = None):
         media_auth(request, t)
-        path = episode_dir(cfg, episode_id) / "video.mp4"
-        if not path.exists():
+        path = video_file(cfg, episode_id)  # series: straight off the media server
+        if path is None:
             job = q.get_job(queue_conn(), episode_id)
             if job and job.get("series"):
                 raise _restoring(job, "the video", video=True)

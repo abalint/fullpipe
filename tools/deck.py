@@ -67,7 +67,7 @@ from engine.transcriber import (  # noqa: E402
 from lib_config import load_config  # noqa: E402
 from ledger import ledgerctl as lc  # noqa: E402
 from ledger.anki_known import anki_request  # noqa: E402
-from tools._staging import episode_dir, load_transcript, read_json  # noqa: E402
+from tools._staging import episode_dir, load_transcript, read_json, video_file  # noqa: E402
 from tools.select import MIN_CLIP, MAX_CLIP  # noqa: E402
 
 CLIP_PAD = 0.5
@@ -253,8 +253,8 @@ def _resolve_video(cfg, episode_id, transcript):
     falls back to a local video source. Audio-only episodes have no video, so
     the caller simply mints cards without an image.
     """
-    staged = episode_dir(cfg, episode_id) / "video.mp4"
-    if staged.exists():
+    staged = video_file(cfg, episode_id)
+    if staged is not None:
         return staged
     ep = transcript.get("episode", {})
     if ep.get("kind") == "local":

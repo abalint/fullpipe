@@ -37,6 +37,21 @@ def episode_dir(cfg, episode_id, create=False):
     return d
 
 
+def video_file(cfg, episode_id):
+    """The episode's 480p video: <episode_dir>/video.mp4 when the Mac holds
+    it, else — for a series episode — the stage copy on the media server's
+    t7 share, which is where series videos live (series.video_on_server).
+    None when neither is there (or the share is down)."""
+    local = episode_dir(cfg, episode_id) / "video.mp4"
+    if local.exists():
+        return local
+    if str(episode_id).startswith("ser_"):
+        from tools import series as series_tool  # lazy: series imports this module
+        if series_tool.video_on_server(cfg):
+            return series_tool.stage_video(cfg, episode_id)
+    return None
+
+
 def downloads_dir(cfg):
     d = Path(cfg["work_dir"]).expanduser() / "downloads"
     d.mkdir(parents=True, exist_ok=True)

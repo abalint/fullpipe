@@ -44,7 +44,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from engine.paths import ffprobe_path  # noqa: E402
 from lib_config import load_config  # noqa: E402
 from server import jobqueue as q  # noqa: E402
-from tools._staging import episode_dir, load_transcript  # noqa: E402
+from tools._staging import episode_dir, load_transcript, video_file  # noqa: E402
 
 DEFAULTS = {
     "min_hours": 10.0,          # below this the autopilot acts
@@ -89,8 +89,8 @@ def _ledger_durations(cfg):
 
 
 def _probe_duration(cfg, episode_id):
-    video = episode_dir(cfg, episode_id) / "video.mp4"
-    if video.exists():
+    video = video_file(cfg, episode_id)
+    if video is not None:
         try:
             out = subprocess.run(
                 [ffprobe_path(), "-v", "error", "-show_entries",

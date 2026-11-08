@@ -112,6 +112,23 @@ def series_cfg(cfg):
     return lib.library_cfg(cfg)
 
 
+def video_on_server(cfg):
+    """series.video_on_server (config opt-in): a series' 480p copies live only
+    as the stage copies on the t7 share — ingest drops the Mac's transcode
+    once the stage copy is verified, Stage 1 reads the audio off the share,
+    and the server streams the phone's download straight from it."""
+    return bool(cfg.get("series", {}).get("video_on_server", False))
+
+
+def stage_video(cfg, episode_id):
+    """Path of a series episode's stage copy on t7 if it is there, else None."""
+    m = re.match(r"^ser_([a-z0-9][a-z0-9-]*)_e(\d+)$", str(episode_id))
+    if not m:
+        return None
+    stage_mp4, _ = remote_stage_paths(series_cfg(cfg), m.group(1), int(m.group(2)))
+    return Path(stage_mp4) if _stage_has(cfg, stage_mp4) else None
+
+
 def series_root(cfg):
     return Path(cfg["work_dir"]).expanduser() / "series"
 
@@ -382,19 +399,38 @@ def _pick_streams(probe):
     return video, a_idx, sub
 
 
-def transcode_cmd(src, dst, video, a_idx, cap=DEFAULT_CAP, encoder="videotoolbox"):
+MAX_VIDEO_KBPS = 1500
+
+
+def source_video_kbps(pr, video):
+    """The original's video bitrate in kbit/s: the stream's own figure, else
+    the container's minus a typical audio track; None when unknown."""
+    try:
+        if video.get("bit_rate"):
+            return int(video["bit_rate"]) // 1000
+        fmt = int(pr.get("format", {}).get("bit_rate") or 0) // 1000
+        return max(fmt - 160, 0) or None
+    except (TypeError, ValueError):
+        return None
+
+
+def transcode_cmd(src, dst, video, a_idx, cap=DEFAULT_CAP, encoder="videotoolbox", src_kbps=None):
     """ffmpeg argv: 480p H.264 + stereo AAC, faststart. VideoToolbox is the
     Mac's hardware encoder (far faster than realtime, the SMB read is the
-    bottleneck); libx264 is the software fallback."""
+    bottleneck); libx264 is the software fallback. The video bitrate never
+    exceeds the original's (`src_kbps`): re-encoding a 0.5 Mbit/s rip at
+    1.5 Mbit/s triples the file for no visible gain."""
     height = int(video.get("height") or 0)
+    kbps = MAX_VIDEO_KBPS if not src_kbps else max(250, min(MAX_VIDEO_KBPS, int(src_kbps)))
     vf = ["format=yuv420p"]
     if cap and height > cap:
         vf.insert(0, f"scale=-2:{cap}")
     if encoder == "videotoolbox":
-        venc = ["-c:v", "h264_videotoolbox", "-b:v", "1500k", "-maxrate", "2500k",
-                "-bufsize", "5000k", "-profile:v", "high", "-allow_sw", "1"]
+        venc = ["-c:v", "h264_videotoolbox", "-b:v", f"{kbps}k", "-maxrate", f"{kbps * 5 // 3}k",
+                "-bufsize", f"{kbps * 10 // 3}k", "-profile:v", "high", "-allow_sw", "1"]
     else:
-        venc = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-profile:v", "high"]
+        venc = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-profile:v", "high",
+                "-maxrate", f"{kbps}k", "-bufsize", f"{kbps * 2}k"]
     return ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(src),
             "-map", "0:v:0", "-map", f"0:a:{a_idx}", "-sn", "-dn",
             "-vf", ",".join(vf), *venc,
@@ -435,7 +471,8 @@ def stage_copies(cfg, slug, ep_no, dest, subs, log=print, label=None):
             lib.copy_file(dest, stage_mp4)
         if subs.exists() and not os.path.isfile(stage_srt):
             lib.copy_file(subs, stage_srt)
-        return True
+        # verified = same size as the Mac's copy (copy_file renames .part → final)
+        return os.path.getsize(stage_mp4) == dest.stat().st_size
     except (OSError, RuntimeError) as ex:
         log(f"  stage copy skipped ({ex})")
         return False
@@ -505,10 +542,11 @@ def prepare_episode(cfg, man, ep, log=print):
         tmp = dest.with_name(dest.name + ".part.mp4")
         log(f"  {ep['label']}: transcoding {video.get('height')}p → {cap}p on the Mac (VideoToolbox)…")
         try:
-            _ffmpeg(transcode_cmd(src, tmp, video, a_idx, cap))
+            _ffmpeg(transcode_cmd(src, tmp, video, a_idx, cap, src_kbps=source_video_kbps(pr, video)))
         except RuntimeError as ex:
             log(f"  {ep['label']}: VideoToolbox failed ({str(ex)[-200:]}); retrying with libx264…")
-            _ffmpeg(transcode_cmd(src, tmp, video, a_idx, cap, encoder="x264"))
+            _ffmpeg(transcode_cmd(src, tmp, video, a_idx, cap, encoder="x264",
+                                  src_kbps=source_video_kbps(pr, video)))
         tmp.replace(dest)
     result["video"] = True
 
@@ -529,7 +567,9 @@ def prepare_episode(cfg, man, ep, log=print):
             log(f"  {ep['label']}: embedded track {sub_idx} is tagged jpn but is not Japanese text — Stage 1 will ASR it")
     else:
         log(f"  {ep['label']}: no Japanese subtitles — Stage 1 will ASR it")
-    stage_copies(cfg, slug, ep_no, dest, subs, log=log, label=ep["label"])
+    if stage_copies(cfg, slug, ep_no, dest, subs, log=log, label=ep["label"]) and video_on_server(cfg):
+        dest.unlink()  # the series' video lives on the media server now
+        result["on_server"] = True
     return result
 
 
@@ -787,6 +827,10 @@ def materialize(cfg, slug, ep_no, log=print, remote=None):
         except (OSError, RuntimeError) as ex:
             log(f"  {ep['label']}: artifact restore skipped ({ex})")
     changed = False
+    if not (dest.exists() and dest.stat().st_size > 0) and video_on_server(cfg) and _stage_has(cfg, stage_mp4):
+        if not subs.exists() and _stage_has(cfg, stage_srt):
+            lib.copy_file(stage_srt, subs)
+        return Path(stage_mp4)
     if not (dest.exists() and dest.stat().st_size > 0):
         if _stage_has(cfg, stage_mp4):
             log(f"  {ep['label']}: copying the 480p stage copy from the media server…")
@@ -799,6 +843,10 @@ def materialize(cfg, slug, ep_no, log=print, remote=None):
             if res.get("duration"):
                 ep["duration"] = res["duration"]
             ep["staged_at"] = now_iso()
+            if res.get("on_server"):
+                ep["size"] = os.path.getsize(stage_mp4)
+                save_manifest(cfg, man)
+                return Path(stage_mp4)
         ep["fetched_at"] = now_iso()
         ep["size"] = dest.stat().st_size
         changed = True
@@ -881,10 +929,12 @@ def parse_episode_spec(spec):
 
 
 def ingest(cfg, remote_dir, slug=None, title=None, episodes=None, dry_run=False,
-           log=print, sequential=False):
+           log=print, sequential=False, stage_only=False):
     """Scan → manifest → per episode: transcode (or stage copy) + subs →
     enqueue. Idempotent: a re-run skips local videos, stage copies and queue
-    rows that already exist, so an interrupted ingest just resumes."""
+    rows that already exist, so an interrupted ingest just resumes.
+    `stage_only` stops before the enqueue — transcode first, align found
+    subtitles against the 480p audio, then re-run without it to enqueue."""
     remote_dir = lib.resolve(cfg, remote_dir)
     title = title or _wname(remote_dir.rstrip("/\\"))
     slug = slug or slugify(title)
@@ -948,6 +998,9 @@ def ingest(cfg, remote_dir, slug=None, title=None, episodes=None, dry_run=False,
             by_no = {r["ep_no"]: r for r in man["episodes"]}
             row = by_no[e["ep_no"]]
             summary["staged"].append(row["label"])
+            if stage_only:
+                log(f"  {row['label']}: staged (not enqueued)")
+                continue
             job, created = q.enqueue(conn, series_source(slug, e["ep_no"]),
                                      title=row["title"], series=slug,
                                      series_title=man["title"], ep_no=e["ep_no"])
@@ -1038,6 +1091,8 @@ def main(argv=None):
     p.add_argument("--sequential", action="store_true", help=seq_help)
     p.add_argument("--no-drain", action="store_true",
                    help="only enqueue; leave Stage 1 to the server's worker")
+    p.add_argument("--stage-only", action="store_true",
+                   help="transcode + stage, don't enqueue (align found subs first, then re-run)")
     sub.add_parser("list", help="known series")
     p = sub.add_parser("status", help="per-episode state for one series")
     p.add_argument("slug")
@@ -1072,8 +1127,8 @@ def main(argv=None):
     elif args.verb == "ingest":
         summary = ingest(cfg, args.remote_dir, slug=args.slug, title=args.title,
                          episodes=args.episodes, dry_run=args.dry_run, log=log,
-                         sequential=args.sequential)
-        if not args.dry_run and not args.no_drain and summary["enqueued"]:
+                         sequential=args.sequential, stage_only=args.stage_only)
+        if not args.dry_run and not args.no_drain and summary.get("enqueued"):
             from server import jobqueue as q
             from server.worker import drain
             conn = q.open_queue(Path(cfg["work_dir"]).expanduser() / "queue.db")

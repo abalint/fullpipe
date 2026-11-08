@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from engine.downloader import download_video  # noqa: E402
 from engine.paths import _NOWWIN, ffmpeg_path, ffprobe_path  # noqa: E402
 from server import jobqueue as q  # noqa: E402
-from tools._staging import downloads_dir, episode_dir  # noqa: E402
+from tools._staging import downloads_dir, episode_dir, video_file  # noqa: E402
 from tools.acquire import acquire  # noqa: E402
 from tools.coverage import run_coverage  # noqa: E402
 from tools.manga import acquire_manga, is_manga_source  # noqa: E402
@@ -104,8 +104,9 @@ def stage_video(cfg, source, record, log=lambda m: None):
     (audio-only sources have no video — the job still prepares fine)."""
     ep_dir = episode_dir(cfg, record["episode"]["id"], create=True)
     dest = ep_dir / "video.mp4"
-    if dest.exists():
-        return dest
+    have = video_file(cfg, record["episode"]["id"])  # a series' copy lives on the media server
+    if have is not None:
+        return have
 
     resolution = cfg.get("server", {}).get("video_resolution", "480p")
     if record["episode"]["kind"] == "youtube":
