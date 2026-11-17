@@ -160,3 +160,8 @@ Practicalities the first readers settled on:
 Write the JSON with the Write tool (UTF-8, `ensure_ascii` not needed).
 Work page by page; do not skip pages; do not stop early — when your batch
 is done, report how many pages you wrote and anything systematic you saw.
+
+Other readers run in parallel and share the scratchpad: if you script the
+writes, keep every helper file in your own subdirectory
+(`<scratchpad>/<episode>_<first stem>/`), never a bare `w.py` at the root —
+a reader overwriting another's helper silently drops pages (2026-11-16).
