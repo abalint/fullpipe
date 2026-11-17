@@ -833,3 +833,38 @@ telling it, a live event narrated as it happens, an insider reading the day's ca
   shape; OB刑事チャンネル panels gated silent. First offered 2026-11-07 (yt_14792eo_9hw, est 74 %).
 - mapped, not offered: **NIKKEI PODCAST** — a Nikkei reporter on one stock/industry story,
   25–30 min (`日経 ポッドキャスト 解説`, est 60 %); 朝ポキTV episodes carry a 12–16 min preamble.
+
+## Community FM (first mapped 2026-11-09, "radio news" pass)
+
+- **コミュニティFM（区のラジオ）** — a Tokyo ward's own station: a local host, ward news,
+  shop owners and neighbourhood guests, gentle pace. `かつしかFM` works (78.9 MHz official
+  channel, 1-h shows, ~100–800 views); `FM世田谷` returns 4-h live-stream VODs (DARADAラジオ);
+  `渋谷のラジオ` returns ANN shows with 渋谷龍太 (junk). Okinawa: `FMうるま タイラーのなるほどニュース`
+  (1–2 h, prefectural news chat). `ラジオ関西 ニュース` = 1-min clips only. Mood: calm.
+  First offered 2026-11-09 (yt_yGJtONY8vWY 武美怜の東西南北 あっぱれ葛飾, est 81 %).
+- near-box (news radio): **Lucky FM茨城 ダイバーシティニュース** — Ibaraki prefectural radio,
+  rotating commentators, weeknights 21:00, ~55 min, 300–500 views.
+  First offered 2026-11-09 (yt_MsXyJFAbzBg, est 66 %).
+
+## Corporate & archival voices (first mapped 2026-11-14, "audio content" pass)
+
+- **株主総会・決算説明会** — a listed company's AGM posted uncut by its IR channel: the
+  chair's report, then ordinary shareholders at the mic asking whatever they like and
+  the executives answering (ソフトバンクG 株主総会 100–130 min, 95–130k views; 日産, サイボウズ,
+  ゼンリン, 北の達人). Earnings briefings are the one-presenter variant (孫正義 決算説明会,
+  official SBG archive + 日経/時事 ノーカット, 200–380k for the loss quarters). `株主総会 ノーカット` ·
+  `株主総会 質疑応答` · `決算説明会 孫正義` — edu/hybrid. Formal keigo both ways, numbers and
+  company names (est 56–63 %). Risk: `株主総会 質疑応答` also returns 1–2-min FAQ/how-to clips
+  and one English-titled AGM (サンマルク). Measured on SBG 第46回: the shareholders' questions are off-mic in the archive — only the answers are audible, so the Q&A is one-sided; the keynote dominates (est 60 %, 13 picks / 113 min). First offered 2026-11-14 (yt_VrApzvjn8JA SBG 第46回, est 63 %).
+- **昭和の肉声（歴史的録音アーカイブ）** — famous recorded voices of the Shōwa era heard
+  whole: 三島由紀夫 最後の対談 (1970, 58 min audio), 田中角栄 応援演説 ノーカット (福井テレビ 1983,
+  14 min, 2.6 M views), 松下幸之助 経営講話 秘蔵音声 (PHP研究所, 1–10 min), NHK録音集「昭和の記録」
+  compilations. `田中角栄 演説 肉声` · `三島由紀夫 対談 音声` · `松下幸之助 肉声 講話` ·
+  `昭和 肉声 録音` — edu/hybrid. Period register, old audio. Risk: TBS's 三島 vs 東大全共闘
+  uploads are 2–3-min parts (the full debate is the Netflix film); PHP clips are short;
+  `昭和 肉声 録音` also returns train/frog field recordings. First offered 2026-11-14
+  (yt_YBAzs2m41xE 三島由紀夫 最後の対談, est 69 %).
+- mapped, not offered: **100分de名著** — a scholar teaching one classic to the hosts over four
+  25-min episodes (NHK Eテレ); YouTube carries fan re-uploads (Benjamin Woodward) and guest
+  spin-off talks. near-box: 授業系解説. Dead end: **ひるのいこい** (NHK farm-letters radio) — only
+  the theme music and a 62-min upload that gated `silent`.
